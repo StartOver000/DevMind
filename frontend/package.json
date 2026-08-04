@@ -1,0 +1,27 @@
+{
+  "name": "devmind-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "overrides": {
+    "esbuild": "^0.25.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "vue": "^3.4.38",
+    "vue-router": "^4.4.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.2",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^24.1.1",
+    "vite": "^6.4.3",
+    "vitest": "^3.2.7"
+  }
+}

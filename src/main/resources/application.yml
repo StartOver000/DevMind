@@ -1,0 +1,93 @@
+spring:
+  application:
+    name: devmind
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:devmind}
+    username: ${POSTGRES_USER:devmind}
+    password: ${POSTGRES_PASSWORD:devmind123}
+    hikari:
+      maximum-pool-size: 10
+  servlet:
+    multipart:
+      max-file-size: ${DEVMIND_MAX_FILE_SIZE_MB:20}MB
+      max-request-size: ${DEVMIND_MAX_FILE_SIZE_MB:20}MB
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:devmind-local}
+      base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+      chat:
+        options:
+          model: ${OPENAI_CHAT_MODEL:gpt-4o-mini}
+          temperature: 0.2
+          max-tokens: ${OPENAI_MAX_TOKENS:2000}
+      embedding:
+        options:
+          model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
+    model:
+      chat: openai
+      embedding: openai
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+devmind:
+  model-mode: ${DEVMIND_MODEL_MODE:openai}
+  storage-path: ${DEVMIND_STORAGE_PATH:./data/files}
+  max-file-size-mb: ${DEVMIND_MAX_FILE_SIZE_MB:20}
+  allowed-file-types: md,markdown,pdf
+  max-chunk-chars: ${DEVMIND_MAX_CHUNK_CHARS:1500}
+  overlap-chars: ${DEVMIND_OVERLAP_CHARS:200}
+  chunker-strategy: ${DEVMIND_CHUNKER_STRATEGY:boundary}
+  embedding-dimensions: ${DEVMIND_EMBEDDING_DIMENSIONS:1536}
+  retrieval-top-k: 5
+  retrieval-max-top-k: 10
+  retrieval-min-score: 0.35
+  retrieval-vector-weight: ${DEVMIND_RETRIEVAL_VECTOR_WEIGHT:0.7}
+  retrieval-keyword-weight: ${DEVMIND_RETRIEVAL_KEYWORD_WEIGHT:0.3}
+  retrieval-hybrid-enabled: ${DEVMIND_RETRIEVAL_HYBRID_ENABLED:true}
+  task-thread-pool-size: ${DEVMIND_TASK_THREAD_POOL_SIZE:4}
+  task-max-retries: ${DEVMIND_TASK_MAX_RETRIES:3}
+  task-retry-delay-ms: ${DEVMIND_TASK_RETRY_DELAY_MS:5000}
+  task-timeout-minutes: ${DEVMIND_TASK_TIMEOUT_MINUTES:5}
+  task-scan-interval-ms: ${DEVMIND_TASK_SCAN_INTERVAL_MS:60000}
+  task-scan-initial-delay-ms: ${DEVMIND_TASK_SCAN_INITIAL_DELAY_MS:60000}
+  sql-diagnosis-mode: ${DEVMIND_SQL_DIAGNOSIS_MODE:mock}
+  sql-diagnosis-datasource-type: ${DEVMIND_SQL_DATASOURCE_TYPE:mysql}
+  sql-diagnosis-jdbc-url: ${DEVMIND_SQL_JDBC_URL:}
+  sql-diagnosis-username: ${DEVMIND_SQL_USERNAME:}
+  sql-diagnosis-password: ${DEVMIND_SQL_PASSWORD:}
+  sql-diagnosis-max-sql-length: ${DEVMIND_SQL_MAX_LENGTH:2000}
+  rerank-mode: ${DEVMIND_RERANK_MODE:heuristic}
+  evaluation-top-k: ${DEVMIND_EVALUATION_TOP_K:5}
+  local-rag-fallback: ${DEVMIND_LOCAL_RAG_FALLBACK:true}
+  cost-prompt-per-1k: ${DEVMIND_COST_PROMPT_PER_1K:0.00015}
+  cost-completion-per-1k: ${DEVMIND_COST_COMPLETION_PER_1K:0.0006}
+  model-fallback-base-url: ${DEVMIND_MODEL_FALLBACK_BASE_URL:}
+  model-fallback-api-key: ${DEVMIND_MODEL_FALLBACK_API_KEY:}
+  model-fallback-chat-model: ${DEVMIND_MODEL_FALLBACK_CHAT_MODEL:}
+  zhipu-base-url: ${DEVMIND_ZHIPU_BASE_URL:}
+  zhipu-api-key: ${DEVMIND_ZHIPU_API_KEY:}
+  zhipu-chat-model: ${DEVMIND_ZHIPU_CHAT_MODEL:glm-4.7-flash}
+  zhipu-embedding-model: ${DEVMIND_ZHIPU_EMBEDDING_MODEL:embedding-2}
+  zhipu-max-tokens: ${DEVMIND_ZHIPU_MAX_TOKENS:2000}
+  auth-enabled: ${DEVMIND_AUTH_ENABLED:false}
+  quota:
+    daily-calls-limit: ${DEVMIND_QUOTA_DAILY_CALLS:0}
+    daily-cost-limit: ${DEVMIND_QUOTA_DAILY_COST:0}
+  security:
+    login-max-failures: ${DEVMIND_LOGIN_MAX_FAILURES:5}
+    login-lock-minutes: ${DEVMIND_LOGIN_LOCK_MINUTES:10}
+    rate-limit-per-minute: ${DEVMIND_RATE_LIMIT_PER_MINUTE:120}
+    rate-limit-login-per-minute: ${DEVMIND_RATE_LIMIT_LOGIN_PER_MINUTE:10}
+    token-ttl-days: ${DEVMIND_TOKEN_TTL_DAYS:7}
+    token-refresh-threshold-days: ${DEVMIND_TOKEN_REFRESH_THRESHOLD_DAYS:2}
+    master-key: ${DEVMIND_SECRET_MASTER_KEY:}

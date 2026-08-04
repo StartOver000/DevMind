@@ -1,0 +1,26 @@
+# 依赖安全自动跟踪：Dependabot 每周检查依赖更新与安全公告
+# 说明：本机 OWASP dependency-check 因 nvd.nist.gov 403 无法使用，改用 CI 免费 SCA 方案
+version: 2
+updates:
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

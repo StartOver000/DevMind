@@ -1,0 +1,83 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "title": "DevMind 监控面板",
+  "uid": "devmind",
+  "version": 1,
+  "panels": [
+    {
+      "title": "HTTP 请求量 (QPS)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum(rate(http_server_requests_seconds_count[5m])) by (uri)", "legendFormat": "{{uri}}" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+    {
+      "title": "HTTP P95 延迟 (s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))", "legendFormat": "P95" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+    {
+      "title": "模型调用 (次/分钟)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(devmind_model_calls_duration_count[5m])) by (scene)", "legendFormat": "{{scene}}" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+    {
+      "title": "模型调用失败率",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(devmind_model_calls_failed_total[5m]) / (rate(devmind_model_calls_duration_count[5m]) + 1)",
+          "legendFormat": "失败率"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+    {
+      "title": "限流与账号锁定 (次/分钟)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "targets": [
+        { "expr": "rate(devmind_rate_limited_total[5m])", "legendFormat": "限流" },
+        { "expr": "rate(devmind_login_locked_total[5m])", "legendFormat": "登录锁定" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+    {
+      "title": "数据库连接池",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "hikaricp_connections_active", "legendFormat": "活跃" },
+        { "expr": "hikaricp_connections_idle", "legendFormat": "空闲" },
+        { "expr": "hikaricp_connections_max", "legendFormat": "上限" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+    {
+      "title": "JVM 堆内存 (MB)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "sum(jvm_memory_used_bytes{area=\"heap\"}) / 1024 / 1024", "legendFormat": "堆已用" },
+        { "expr": "sum(jvm_memory_max_bytes{area=\"heap\"}) / 1024 / 1024", "legendFormat": "堆上限" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    }
+  ],
+  "time": { "from": "now-6h", "to": "now" }
+}

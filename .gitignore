@@ -1,0 +1,11 @@
+target/
+data/
+.env
+*.log
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# 前端依赖目录（构建产物 src/main/resources/static 需提交，供 Spring Boot 托管）
+frontend/node_modules/

@@ -1,0 +1,103 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: devmind-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: devmind
+      POSTGRES_USER: devmind
+      POSTGRES_PASSWORD: devmind123
+    ports:
+      - "5432:5432"
+    volumes:
+      - devmind-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devmind -d devmind"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: devmind-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${DEVMIND_PROFILE:-mock}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-devmind}
+      POSTGRES_USER: ${POSTGRES_USER:-devmind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devmind123}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-devmind-local}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4o-mini}
+      OPENAI_MAX_TOKENS: ${OPENAI_MAX_TOKENS:-2000}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      DEVMIND_EMBEDDING_DIMENSIONS: ${DEVMIND_EMBEDDING_DIMENSIONS:-1536}
+      DEVMIND_CHUNKER_STRATEGY: ${DEVMIND_CHUNKER_STRATEGY:-boundary}
+      DEVMIND_MODEL_MODE: ${DEVMIND_MODEL_MODE:-mock}
+      DEVMIND_SQL_DIAGNOSIS_MODE: ${DEVMIND_SQL_DIAGNOSIS_MODE:-mock}
+      DEVMIND_SQL_JDBC_URL: ${DEVMIND_SQL_JDBC_URL:-}
+      DEVMIND_SQL_USERNAME: ${DEVMIND_SQL_USERNAME:-}
+      DEVMIND_SQL_PASSWORD: ${DEVMIND_SQL_PASSWORD:-}
+      DEVMIND_MODEL_FALLBACK_BASE_URL: ${DEVMIND_MODEL_FALLBACK_BASE_URL:-}
+      DEVMIND_MODEL_FALLBACK_API_KEY: ${DEVMIND_MODEL_FALLBACK_API_KEY:-}
+      DEVMIND_MODEL_FALLBACK_CHAT_MODEL: ${DEVMIND_MODEL_FALLBACK_CHAT_MODEL:-}
+      DEVMIND_ZHIPU_BASE_URL: ${DEVMIND_ZHIPU_BASE_URL:-}
+      DEVMIND_ZHIPU_API_KEY: ${DEVMIND_ZHIPU_API_KEY:-}
+      DEVMIND_ZHIPU_CHAT_MODEL: ${DEVMIND_ZHIPU_CHAT_MODEL:-glm-4.7-flash}
+      DEVMIND_ZHIPU_EMBEDDING_MODEL: ${DEVMIND_ZHIPU_EMBEDDING_MODEL:-embedding-2}
+      DEVMIND_ZHIPU_MAX_TOKENS: ${DEVMIND_ZHIPU_MAX_TOKENS:-2000}
+      DEVMIND_AUTH_ENABLED: ${DEVMIND_AUTH_ENABLED:-false}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+
+  nginx:
+    image: nginx:alpine
+    container_name: devmind-nginx
+    profiles: ["nginx"]
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: devmind-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+    depends_on:
+      - app
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: devmind-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin123}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  devmind-pgdata:

@@ -1,0 +1,67 @@
+# DevMind Prometheus 告警规则示例
+# 使用方式：挂载到 Prometheus 配置的 rule_files 中
+groups:
+  - name: devmind
+    rules:
+      - alert: DevMindServiceDown
+        expr: up{job="devmind-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DevMind 服务不可达"
+          description: "job={{ $labels.job }} 已持续 1 分钟无上报"
+
+      - alert: DevMindModelFailureRateHigh
+        # 模型聊天调用失败率（5 分钟滑动）超过 50%
+        expr: >
+          rate(devmind_model_calls_failed_total[5m])
+          / (rate(devmind_model_calls_duration_count[5m]) + 1) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "模型调用失败率过高"
+          description: "最近 5 分钟模型调用失败率超过 50%，请检查模型服务与限流"
+
+      - alert: DevMindRateLimitedBurst
+        # 每分钟被限流拦截超过 10 次（说明流量异常或配额过低）
+        expr: rate(devmind_rate_limited_total[1m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "接口限流拦截过多"
+          description: "每分钟被限流拦截超过 10 次，可能存在刷接口或配额配置过低"
+
+      - alert: DevMindLoginLockedBurst
+        # 每分钟账号锁定超过 5 次（疑似暴力破解）
+        expr: rate(devmind_login_locked_total[1m]) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "疑似暴力登录"
+          description: "每分钟账号被锁定超过 5 次，可能存在暴力破解攻击"
+
+      - alert: DevMindDbConnectionsHigh
+        # 数据库活跃连接占用超过 90%
+        expr: hikaricp_connections_active > 0.9 * hikaricp_connections_max
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "数据库连接池接近占满"
+          description: "活跃连接占用超过 90%，可能存在慢查询或连接泄漏"
+
+      - alert: DevMindErrorRateHigh
+        # HTTP 5xx 错误率超过 5%
+        expr: >
+          sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+          / (sum(rate(http_server_requests_seconds_count[5m])) + 1) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "接口 5xx 错误率过高"
+          description: "最近 5 分钟 5xx 错误率超过 5%"

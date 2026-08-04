@@ -1,0 +1,10 @@
+spring:
+  ai:
+    openai:
+      api-key: mock
+      base-url: http://localhost:11434/v1
+
+devmind:
+  model-mode: mock
+  embedding-dimensions: 8
+  retrieval-min-score: 0.1

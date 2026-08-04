@@ -11,6 +11,11 @@
     --warn: #a05a10;
     --input-bg: #ffffff;
     --alt-bg: #fafcfd;
+    --bg-soft: #f2f5f7;
+    --primary: #1d6fb8;
+    --ok-weak: #e2f3e9;
+    --warn-weak: #fff2dc;
+    --danger-weak: #fbe4e4;
 }
 
 [data-theme="dark"] {
@@ -26,6 +31,11 @@
     --warn: #dca558;
     --input-bg: #171d24;
     --alt-bg: #171d24;
+    --bg-soft: #1a2129;
+    --primary: #4f9fe8;
+    --ok-weak: #1e3228;
+    --warn-weak: #332a1d;
+    --danger-weak: #382325;
 }
 
 * {
@@ -182,17 +192,17 @@ th {
 }
 
 .status.COMPLETED, .status.SUCCEEDED {
-    background: #e2f3e9;
+    background: var(--ok-weak);
     color: var(--ok);
 }
 
 .status.PROCESSING, .status.PENDING, .status.UPLOADED {
-    background: #fff2dc;
+    background: var(--warn-weak);
     color: var(--warn);
 }
 
 .status.FAILED {
-    background: #fbe4e4;
+    background: var(--danger-weak);
     color: var(--danger);
 }
 
@@ -240,17 +250,17 @@ th {
 }
 
 .risk-level.HIGH {
-    background: #fbe4e4;
+    background: var(--danger-weak);
     color: var(--danger);
 }
 
 .risk-level.MEDIUM {
-    background: #fff2dc;
+    background: var(--warn-weak);
     color: var(--warn);
 }
 
 .risk-level.LOW {
-    background: #e2f3e9;
+    background: var(--ok-weak);
     color: var(--ok);
 }
 
@@ -262,7 +272,7 @@ th {
 }
 
 .usage-card {
-    background: #fafcfd;
+    background: var(--alt-bg);
     border: 1px solid var(--line);
     border-radius: 6px;
     padding: 12px;

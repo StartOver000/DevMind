@@ -31,7 +31,7 @@ import { modalState, closeModal } from '@/stores/modal';
   width: min(560px, calc(100vw - 32px));
   max-height: 80vh;
   overflow: auto;
-  background: #fff;
+  background: var(--panel);
   border-radius: 8px;
   padding: 16px;
 }

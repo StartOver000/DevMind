@@ -53,9 +53,9 @@ onMounted(async () => {
 .preview :deep(blockquote) {
   margin: 0.8em 0;
   padding: 0.2em 1em;
-  border-left: 3px solid var(--primary, #4f8cff);
-  background: color-mix(in srgb, var(--bg-soft, #f5f5f5) 60%, transparent);
-  color: var(--text-soft);
+  border-left: 3px solid var(--primary);
+  background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
+  color: var(--muted);
 }
 .preview :deep(code) {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -72,7 +72,7 @@ onMounted(async () => {
   overflow: auto;
 }
 .preview :deep(pre code) { background: none; padding: 0; }
-.preview :deep(a) { color: var(--primary, #4f8cff); }
+.preview :deep(a) { color: var(--primary); }
 .preview :deep(table) {
   border-collapse: collapse;
   margin: 0.8em 0;

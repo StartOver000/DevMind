@@ -107,7 +107,7 @@ watch(() => props.kbId, loadMembers, { immediate: true });
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  background: #fafcfd;
+  background: var(--alt-bg);
   border: 1px solid var(--line);
   border-radius: 6px;
 }

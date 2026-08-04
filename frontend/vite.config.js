@@ -27,6 +27,8 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
-    globals: true
+    globals: true,
+    // Playwright E2E 由 npm run test:e2e 单独运行，vitest 只跑单元测试
+    exclude: ['e2e/**', 'node_modules/**', 'dist/**']
   }
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { api, formatTime, getToken, setToken, setCurrentUserId, getCurrentUserId } from '@/api/client';
+import { api, apiText, formatTime, getToken, setToken, setCurrentUserId, getCurrentUserId } from '@/api/client';
 
 describe('api client', () => {
   beforeEach(() => {
@@ -101,5 +101,31 @@ describe('api client', () => {
 
     const data = await api('/api/x');
     expect(data).toBeNull();
+  });
+
+  it('apiText 返回纯文本（不 JSON 解析），并附加用户头', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '# markdown 内容'
+    });
+    global.fetch = fetchMock;
+
+    const text = await apiText('/api/documents/1/content');
+    expect(text).toBe('# markdown 内容');
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/documents/1/content');
+    expect(options.headers['X-User-Id']).toBe('1');
+  });
+
+  it('apiText 非 2xx 抛出 HTTP 错误', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => 'server error'
+    });
+    global.fetch = fetchMock;
+
+    await expect(apiText('/api/documents/1/content')).rejects.toThrow('HTTP 500');
   });
 });

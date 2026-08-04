@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue';
-import { api } from '@/api/client';
+import { apiText } from '@/api/client';
 
 const props = defineProps({
   documentId: { type: Number, required: true }
@@ -10,7 +10,7 @@ const content = ref('加载中…');
 
 onMounted(async () => {
   try {
-    content.value = await api(`/api/documents/${props.documentId}/content`);
+    content.value = await apiText(`/api/documents/${props.documentId}/content`);
   } catch (err) {
     content.value = '加载失败：' + err.message;
   }

@@ -56,6 +56,27 @@ export async function api(path, options = {}) {
   return data;
 }
 
+/**
+ * 纯文本请求：后端返回非 JSON（如文档内容 /content）时使用，
+ * 避免 api() 的 JSON.parse 把文本解析失败后变成 null。
+ */
+export async function apiText(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  headers['X-User-Id'] = String(currentUserId);
+  const token = getToken();
+  if (token) {
+    headers['Authorization'] = 'Bearer ' + token;
+  }
+  const res = await fetch(path, { ...options, headers });
+  const text = await res.text();
+  if (!res.ok) {
+    const err = new Error(`HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return text;
+}
+
 /** 格式化后端时间字符串为 yyyy-MM-dd HH:mm:ss */
 export function formatTime(value) {
   if (!value) return '-';

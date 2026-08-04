@@ -9,3 +9,7 @@ data/
 
 # 前端依赖目录（构建产物 src/main/resources/static 需提交，供 Spring Boot 托管）
 frontend/node_modules/
+# Playwright 测试产物
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/

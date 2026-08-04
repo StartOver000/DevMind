@@ -31,13 +31,20 @@
 | GET | `/api/knowledge-bases` | 查询知识库列表 |
 | DELETE | `/api/knowledge-bases/{id}` | 禁用知识库 |
 | POST | `/api/knowledge-bases/{kbId}/documents` | 上传文档 |
+| POST | `/api/knowledge-bases/{kbId}/documents/batch` | 批量上传文档 |
+| GET | `/api/knowledge-bases/{kbId}/export` | 导出知识库（zip） |
 | GET | `/api/knowledge-bases/{kbId}/documents` | 查询文档列表 |
 | GET | `/api/documents/{id}` | 查询文档详情 |
+| GET | `/api/documents/{id}/content` | 文档内容预览 |
+| GET | `/api/documents/{id}/compare` | 文档版本对比 |
 | GET | `/api/tasks/{taskId}` | 查询处理任务 |
 | GET | `/api/documents/{id}/task` | 按文档查询处理任务 |
 | DELETE | `/api/documents/{id}` | 删除文档 |
 | POST | `/api/knowledge-bases/{kbId}/chat` | RAG 问答 |
+| POST | `/api/chat/aggregate` | 多知识库聚合问答 |
+| GET | `/api/conversations` | 查询会话列表 |
 | GET | `/api/conversations/{id}/messages` | 查询会话消息 |
+| DELETE | `/api/conversations/{id}` | 删除会话 |
 | GET | `/api/audit-logs` | 查询审计日志 |
 | POST | `/api/knowledge-bases/{id}/members` | 添加知识库成员 |
 | GET | `/api/knowledge-bases/{id}/members` | 查询知识库成员 |
@@ -50,6 +57,15 @@
 | POST | `/api/documents/{id}/rollback/{version}` | 回滚文档版本 |
 | GET | `/api/model-usage` | 查询模型用量 |
 | GET | `/api/model-usage/summary` | 查询模型用量汇总 |
+| POST | `/api/evaluations/retrieval` | 检索评估（50 条样本） |
+| POST | `/api/admin/secrets/encrypt` | API Key 加密（管理员） |
+| POST | `/api/teams` | 创建团队 |
+| GET | `/api/teams` | 查询我的团队 |
+| GET | `/api/teams/{id}` | 团队详情 + 成员 |
+| POST | `/api/teams/{id}/members` | 添加团队成员 |
+| GET | `/api/teams/{id}/members` | 团队成员列表 |
+| DELETE | `/api/teams/{id}/members/{userId}` | 移除团队成员 |
+| DELETE | `/api/teams/{id}` | 删除团队 |
 | POST | `/api/auth/register` | 注册 |
 | POST | `/api/auth/login` | 登录 |
 | GET | `/api/auth/me` | 当前用户 |

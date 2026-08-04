@@ -15,7 +15,7 @@ P0 安全与合规  ->  P1 业务正确性  ->  P2 工程质量  ->  P3 运维�
 
 | # | 检查项 | 说明 | 状态 |
 | --- | --- | --- | --- |
-| 1 | `auth-enabled` 默认值 | 已改为 `true`（application.yml + docker-compose + .env.example），未登录 403 / 登录 200 验证通过 | ✅ |
+| 1 | `auth-enabled` 默认值 | **用户决定：项目不上线，保持免登录**（application.yml/docker-compose/.env/.env.example 均为 `false`） | ✅ |
 | 2 | 认证全链路手测 | 未登录拦截、Token 过期、登出失效、滑动续期 | ⬜ |
 | 3 | 越权访问手测 | bob 访问 alice 私有库 → 403；团队外成员 → 403 | ⬜ |
 | 4 | API Key/密码泄露 | 日志 `Bearer ***` 脱敏、配置不提交 Git、`SecretCipher` 加密 | ⬜ |
@@ -40,7 +40,7 @@ P0 安全与合规  ->  P1 业务正确性  ->  P2 工程质量  ->  P3 运维�
 | # | 检查项 | 说明 | 状态 |
 | --- | --- | --- | --- |
 | 1 | **集成测试缺失** | 当前 67 个测试全部是单元测试，**无 `@SpringBootTest`/API 层测试**，建议补核心链路 | ✅ 已补 5 个集成用例（DevMindIntegrationTest，全量 72/72，见 guide-32） |
-| 2 | **前端无 E2E** | 仅 21 个组件单元测试，无 Playwright 端到端 | ⬜ |
+| 2 | **前端无 E2E** | 仅 21 个组件单元测试，无 Playwright 端到端 | ✅ 已补 Playwright E2E 4 用例（`frontend/e2e/core.spec.js`，`npm run test:e2e`） |
 | 3 | 代码评审 | AI 生成代码重点看：魔法数字、重复代码、命名一致性、异常边界 | ⬜ |
 | 4 | 过度设计/欠设计 | 40+ 配置字段、`RerankService` 缓存满则整体清空、熔断 60s 硬编码 | ⬜ |
 | 5 | 依赖锁定 | Docker 基础镜像（`maven:3.9-eclipse-temurin-17`、`pgvector:pg16` 等）是否锁定 patch | ⬜ |

@@ -83,6 +83,16 @@ Get-ChildItem src\main\java\com\devmind -Recurse -Filter *.java |
 - **注意**：`.env.example` 已把 `DEVMIND_AUTH_ENABLED` 设为 `true`（安全默认）；`docker-compose.yml` 内联默认仍为 `false`，部署时以 `.env` 为准。
 - 建议后续由人工把 `.env.example` 与 `application.yml` 全量比对（本次已补主要缺口）。
 
+## 六、后续完成项（用户授权一次性处理）
+
+| 项 | 结果 |
+| --- | --- |
+| **Spring Boot 3.3.4 → 3.3.13** | ✅ patch 级升级（含 2025 年 Spring 安全修复），全量 72/72 通过，部署 health=UP |
+| **前端 E2E** | ✅ Playwright 4/4 通过（导航/知识库创建/问答页/SQL 诊断页），`npm run test:e2e` |
+| **免登录保持** | ✅ 按用户决策（不上线）：application.yml / docker-compose / `.env` / `.env.example` 均为 `auth-enabled=false`，已部署验证 kbs=4 免登录可访问 |
+| **guide-03 接口表补录** | ✅ 补录聚合问答/批量上传/导出/预览/对比/会话管理/评估/密钥加密/团队管理共 16 个接口 |
+| **git 基线** | ✅ 已创建仓库并提交基线 commit（含代理 6518 配置说明） |
+
 ## 补充区：后端 dependency-check 结果
 
 **结论：本机 OWASP dependency-check 无法完成（外部阻塞）。**

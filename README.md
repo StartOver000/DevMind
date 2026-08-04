@@ -1,16 +1,27 @@
 # DevMind
 
-面向研发团队的 AI 知识检索与智能诊断平台。本项目实现 DevMind MVP：文档上传、文本解析与分块、向量入库、Top-K 检索、RAG 问答和引用来源返回。
+面向研发团队的 AI 知识检索与智能诊断平台。支持文档上传解析与向量入库、RAG 问答与引用溯源、SQL 执行计划诊断、多知识库聚合问答、多租户与团队隔离、模型限流降级与熔断。
+
+## 功能总览
+
+- 知识库：上传（单个/批量）、标签过滤、预览、版本对比与回滚、导出；
+- 问答：RAG 混合检索 + 查询路由 + Rerank（模型/启发式，可回退）、多轮会话、多库聚合、引用预览；
+- SQL 诊断：EXPLAIN 解析 + 规则初筛 + AI 建议（失败回退规则）；
+- 模型韧性：429 快速失败、RestClient 超时、熔断 60s、本地 RAG 兜底、备用模型切换、Embedding 缓存；
+- 平台：多租户团队隔离、登录/安全加固（可关）、用量配额与统计、50 条检索评估、Prometheus/Grafana 监控；
+- 前端：Vue 3 + Vite（单元测试 + Playwright E2E），构建产物由 Spring Boot 托管。
 
 ## 技术栈
 
-- JDK 17、Spring Boot 3.3.4
+- JDK 17、Spring Boot 3.3.13
 - Spring AI 1.0.0（OpenAI-compatible Chat + Embedding）
 - PostgreSQL 16 + pgvector
 - Apache Tika（PDF 解析）
 - JdbcTemplate（业务数据和向量检索）
 
 ## 快速启动
+
+默认免登录（`DEVMIND_AUTH_ENABLED=false`），演示账号 demo/demo123 也可直接登录：
 
 ```bash
 docker compose up -d
@@ -87,6 +98,10 @@ POST   /api/auth/login
 - [真实模型联调报告](docs/guide-12-真实模型联调报告.md)
 - [一键部署说明](docs/guide-09-一键部署说明.md)
 - [检索评估报告](docs/guide-10-检索评估报告.md)
+- [最终规划 X/Y/Z](docs/guide-29-最终规划.md)
+- [检索链路深度优化（含模型降级/熔断）](docs/guide-30-检索链路深度优化.md)
+- [人工验收清单](docs/guide-31-验收清单.md)
+- [验收补充报告](docs/guide-32-验收补充报告.md)
 
 原始设计文档：
 

@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
+import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/vue';
 import { api, getToken, setToken, setCurrentUserId, getCurrentUserId } from '@/api/client';
 import { showToast } from '@/stores/toast';
 import { session } from '@/stores/session';
@@ -19,6 +20,9 @@ const currentInitial = computed(() => {
   const name = currentUser.value?.displayName || currentUser.value?.username || '';
   return name ? name.charAt(0).toUpperCase() : '?';  
 });
+const currentLabel = computed(() =>
+  currentUser.value?.displayName || currentUser.value?.username || '选择用户'
+);
 
 function applyTheme(value) {
   document.documentElement.dataset.theme = value;
@@ -49,8 +53,8 @@ async function loadUsers() {
   }
 }
 
-function onUserChange(event) {
-  setCurrentUserId(Number(event.target.value));
+function onUserChange(value) {
+  setCurrentUserId(Number(value));
   session.userId = getCurrentUserId();
   session.requestReload();
 }
@@ -106,19 +110,32 @@ onMounted(loadUsers);
     </nav>
 
     <div class="right-group">
-      <div class="user-picker" title="切换当前用户">
-        <span class="avatar">{{ currentInitial }}</span>
-        <select
-          class="user-select"
-          :value="session.userId"
-          @change="onUserChange"
-          aria-label="切换当前用户"
-        >
-          <option v-for="u in users" :key="u.id" :value="u.id">
-            {{ u.displayName || u.username }} (#{{ u.id }})
-          </option>
-        </select>
-      </div>
+      <Listbox :model-value="session.userId" @update:model-value="onUserChange">
+        <div class="user-picker" title="切换当前用户">
+          <ListboxButton class="user-btn">
+            <span class="avatar">{{ currentInitial }}</span>
+            <span class="user-name">{{ currentLabel }}</span>
+            <svg class="chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4l4 4 4-4"/></svg>
+          </ListboxButton>
+
+          <Transition name="dropdown">
+            <ListboxOptions class="user-options">
+              <ListboxOption
+                v-for="u in users"
+                :key="u.id"
+                :value="u.id"
+                v-slot="{ active, selected }"
+              >
+                <div class="user-option" :class="{ active }">
+                  <span class="opt-avatar">{{ (u.displayName || u.username || '?').charAt(0).toUpperCase() }}</span>
+                  <span class="opt-name">{{ u.displayName || u.username }} <em>#{{ u.id }}</em></span>
+                  <svg v-if="selected" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                </div>
+              </ListboxOption>
+            </ListboxOptions>
+          </Transition>
+        </div>
+      </Listbox>
 
       <button class="theme-toggle" @click="toggleTheme" :title="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'">
         <svg v-if="theme === 'dark'" class="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
@@ -208,18 +225,30 @@ onMounted(loadUsers);
 }
 
 .user-picker {
+  position: relative;
+}
+
+.user-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 6px 3px 3px;
+  gap: 8px;
+  padding: 3px 10px 3px 3px;
   border: 1px solid var(--line);
   border-radius: 20px;
   background: var(--alt-bg);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
   transition: border-color 0.15s;
 }
 
-.user-picker:hover {
+.user-btn:hover {
   border-color: var(--accent);
+}
+
+.user-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .avatar {
@@ -237,25 +266,99 @@ onMounted(loadUsers);
   flex-shrink: 0;
 }
 
-.user-select {
-  appearance: none;
-  -webkit-appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font-size: 13px;
+.user-name {
   font-weight: 600;
-  padding: 4px 22px 4px 2px;
-  cursor: pointer;
-  max-width: 170px;
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%238b98a6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 4px center;
-  background-size: 12px;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.user-select:hover {
+.chevron {
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.user-picker[data-headlessui-state="open"] .chevron {
+  transform: rotate(180deg);
+}
+
+.user-options {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 230px;
+  max-height: 320px;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  z-index: 60;
+}
+
+.user-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.user-option.active {
+  background: var(--accent-weak);
   color: var(--accent);
+}
+
+.opt-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.opt-name {
+  flex: 1;
+  font-weight: 500;
+}
+
+.opt-name em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 12px;
+}
+
+.check {
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.dropdown-enter-active,
+.dropdown-leave-active {
+  transition: opacity 0.12s, transform 0.12s;
+}
+
+.dropdown-enter-from,
+.dropdown-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .theme-toggle {

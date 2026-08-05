@@ -91,7 +91,7 @@ class DocumentTaskServiceTest {
                 chunkerFactory,
                 chunkRepository,
                 modelGateway,
-                taskExecutor,
+                new InMemoryTaskQueue(taskExecutor),
                 taskScheduler,
                 properties,
                 meterRegistry
@@ -124,7 +124,7 @@ class DocumentTaskServiceTest {
                 chunkerFactory,
                 chunkRepository,
                 modelGateway,
-                taskExecutor,
+                new InMemoryTaskQueue(taskExecutor),
                 taskScheduler,
                 properties,
                 meterRegistry
@@ -157,7 +157,7 @@ class DocumentTaskServiceTest {
                 chunkerFactory,
                 chunkRepository,
                 modelGateway,
-                taskExecutor,
+                new InMemoryTaskQueue(taskExecutor),
                 taskScheduler,
                 properties,
                 meterRegistry

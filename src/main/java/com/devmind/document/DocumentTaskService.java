@@ -15,20 +15,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
-import org.springframework.core.task.TaskExecutor;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class DocumentTaskService {
@@ -41,11 +37,10 @@ public class DocumentTaskService {
     private final TextChunkerFactory chunkerFactory;
     private final ChunkRepository chunkRepository;
     private final AiModelGateway modelGateway;
-    private final TaskExecutor taskExecutor;
+    private final TaskQueue taskQueue;
     private final TaskScheduler taskScheduler;
     private final DevMindProperties properties;
     private final MeterRegistry meterRegistry;
-    private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
 
     public DocumentTaskService(
             DocumentTaskRepository taskRepository,
@@ -54,7 +49,7 @@ public class DocumentTaskService {
             TextChunkerFactory chunkerFactory,
             ChunkRepository chunkRepository,
             AiModelGateway modelGateway,
-            @Qualifier("documentTaskExecutor") TaskExecutor taskExecutor,
+            TaskQueue taskQueue,
             @Qualifier("documentTaskScheduler") TaskScheduler taskScheduler,
             DevMindProperties properties,
             MeterRegistry meterRegistry
@@ -65,7 +60,7 @@ public class DocumentTaskService {
         this.chunkerFactory = chunkerFactory;
         this.chunkRepository = chunkRepository;
         this.modelGateway = modelGateway;
-        this.taskExecutor = taskExecutor;
+        this.taskQueue = taskQueue;
         this.taskScheduler = taskScheduler;
         this.properties = properties;
         this.meterRegistry = meterRegistry;
@@ -83,17 +78,12 @@ public class DocumentTaskService {
         return toResponse(task);
     }
 
+    /**
+     * 提交任务到队列（Redis Stream 或内存队列）。
+     * 可重复提交：消费端按任务 ID 幂等（claimForProcessing 抢占），多实例不会重复处理。
+     */
     public void submitTask(Long taskId) {
-        if (!inFlight.add(taskId)) {
-            return;
-        }
-        taskExecutor.execute(() -> {
-            try {
-                processTask(taskId);
-            } finally {
-                inFlight.remove(taskId);
-            }
-        });
+        taskQueue.enqueue(taskId);
     }
 
     void processTask(Long taskId) {
@@ -159,6 +149,8 @@ public class DocumentTaskService {
 
     @EventListener(ApplicationReadyEvent.class)
     public void recoverTasksOnStartup() {
+        // 启动消费（幂等：重复触发只启动一次）
+        taskQueue.start(taskId -> processTask(taskId));
         int reset = taskRepository.resetAllProcessingToPending();
         if (reset > 0) {
             log.info("reset {} processing tasks to pending on startup", reset);
@@ -174,7 +166,6 @@ public class DocumentTaskService {
         OffsetDateTime before = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(properties.taskTimeoutMinutes());
         for (Long taskId : taskRepository.findStuckProcessingIds(before)) {
             taskRepository.resetToPending(taskId);
-            inFlight.remove(taskId);
             submitTask(taskId);
         }
         taskRepository.findPendingIds().forEach(this::submitTask);

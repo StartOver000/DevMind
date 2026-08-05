@@ -11,6 +11,11 @@ spring:
     multipart:
       max-file-size: ${DEVMIND_MAX_FILE_SIZE_MB:20}MB
       max-request-size: ${DEVMIND_MAX_FILE_SIZE_MB:20}MB
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      timeout: 5s
   ai:
     openai:
       api-key: ${OPENAI_API_KEY:devmind-local}
@@ -58,6 +63,9 @@ devmind:
   task-max-retries: ${DEVMIND_TASK_MAX_RETRIES:3}
   task-retry-delay-ms: ${DEVMIND_TASK_RETRY_DELAY_MS:5000}
   task-timeout-minutes: ${DEVMIND_TASK_TIMEOUT_MINUTES:5}
+  task-queue:
+    # redis = Redis Stream 消费者组（多实例负载均衡）；memory = 内存线程池（默认，无 Redis 兜底）
+    mode: ${DEVMIND_TASK_QUEUE_MODE:memory}
   task-scan-interval-ms: ${DEVMIND_TASK_SCAN_INTERVAL_MS:60000}
   task-scan-initial-delay-ms: ${DEVMIND_TASK_SCAN_INITIAL_DELAY_MS:60000}
   sql-diagnosis-mode: ${DEVMIND_SQL_DIAGNOSIS_MODE:mock}

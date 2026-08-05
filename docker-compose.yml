@@ -17,12 +17,29 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: devmind-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - devmind-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   app:
     build: .
     container_name: devmind-app
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       SPRING_PROFILES_ACTIVE: ${DEVMIND_PROFILE:-mock}
@@ -39,6 +56,9 @@ services:
       DEVMIND_EMBEDDING_DIMENSIONS: ${DEVMIND_EMBEDDING_DIMENSIONS:-1536}
       DEVMIND_CHUNKER_STRATEGY: ${DEVMIND_CHUNKER_STRATEGY:-boundary}
       DEVMIND_MODEL_MODE: ${DEVMIND_MODEL_MODE:-mock}
+      DEVMIND_TASK_QUEUE_MODE: ${DEVMIND_TASK_QUEUE_MODE:-redis}
+      SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
+      SPRING_DATA_REDIS_PORT: ${SPRING_DATA_REDIS_PORT:-6379}
       DEVMIND_SQL_DIAGNOSIS_MODE: ${DEVMIND_SQL_DIAGNOSIS_MODE:-mock}
       DEVMIND_SQL_JDBC_URL: ${DEVMIND_SQL_JDBC_URL:-}
       DEVMIND_SQL_USERNAME: ${DEVMIND_SQL_USERNAME:-}
@@ -101,3 +121,4 @@ services:
 
 volumes:
   devmind-pgdata:
+  devmind-redisdata:

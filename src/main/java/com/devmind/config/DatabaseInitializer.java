@@ -244,6 +244,15 @@ public class DatabaseInitializer implements ApplicationRunner {
                 """);
         jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_agent_trace_conversation ON agent_trace(conversation_id, id)");
         jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS agent_memory (
+                    user_id BIGINT NOT NULL,
+                    memory_key VARCHAR(100) NOT NULL,
+                    memory_value VARCHAR(500) NOT NULL,
+                    updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, memory_key)
+                )
+                """);
+        jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS sql_diagnosis (
                     id BIGSERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,

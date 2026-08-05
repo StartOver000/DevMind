@@ -44,6 +44,9 @@ class AgentServiceTest {
     private AgentConversationRepository conversationRepository;
 
     @Mock
+    private AgentMemoryRepository memoryRepository;
+
+    @Mock
     private UserService userService;
 
     @Mock
@@ -71,6 +74,7 @@ class AgentServiceTest {
                 chatRouter,
                 registry,
                 conversationRepository,
+                memoryRepository,
                 userService,
                 modelUsageService,
                 modelGateway,

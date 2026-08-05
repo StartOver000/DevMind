@@ -4,12 +4,15 @@ import com.devmind.agent.dto.AgentChatRequest;
 import com.devmind.agent.dto.AgentChatResponse;
 import com.devmind.agent.dto.AgentConversationItem;
 import com.devmind.agent.dto.AgentMessage;
+import com.devmind.agent.dto.MemoryItem;
+import com.devmind.agent.dto.MemoryUpdateRequest;
 import com.devmind.agent.dto.ToolTraceItem;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -68,5 +71,22 @@ public class AgentController {
             @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
     ) {
         conversationRepository.delete(id, userId);
+    }
+
+    // ---- 长期记忆 ----
+
+    @GetMapping("/memory")
+    public List<MemoryItem> memory(
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        return agentService.memory(userId);
+    }
+
+    @PutMapping("/memory")
+    public void updateMemory(
+            @RequestBody MemoryUpdateRequest request,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        agentService.updateMemory(request, userId);
     }
 }

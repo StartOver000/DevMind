@@ -81,8 +81,12 @@ public class AgentConversationRepository {
     /** 加载会话消息（按时间顺序，用于多轮上下文与历史展示） */
     public List<AgentMessage> listMessages(Long conversationId) {
         return jdbcTemplate.query(
-                "SELECT role, content FROM agent_message WHERE conversation_id = ? ORDER BY id",
-                (rs, rowNum) -> new AgentMessage(rs.getString("role"), rs.getString("content")),
+                "SELECT role, content, created_time FROM agent_message WHERE conversation_id = ? ORDER BY id",
+                (rs, rowNum) -> new AgentMessage(
+                        rs.getString("role"),
+                        rs.getString("content"),
+                        rs.getTimestamp("created_time").toInstant().atOffset(java.time.ZoneOffset.UTC)
+                ),
                 conversationId
         );
     }

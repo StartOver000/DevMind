@@ -3,6 +3,7 @@ package com.devmind.agent;
 import com.devmind.agent.dto.AgentChatRequest;
 import com.devmind.agent.dto.AgentChatResponse;
 import com.devmind.agent.dto.AgentMessage;
+import com.devmind.agent.dto.MemoryUpdateRequest;
 import com.devmind.agent.dto.ToolTraceItem;
 import com.devmind.ai.AiModelGateway;
 import com.devmind.ai.ChatRouter;
@@ -62,6 +63,7 @@ public class AgentService {
     private final ChatRouter chatRouter;
     private final ToolRegistry toolRegistry;
     private final AgentConversationRepository conversationRepository;
+    private final AgentMemoryRepository memoryRepository;
     private final UserService userService;
     private final ModelUsageService modelUsageService;
     private final AiModelGateway modelGateway;
@@ -73,6 +75,7 @@ public class AgentService {
             ChatRouter chatRouter,
             ToolRegistry toolRegistry,
             AgentConversationRepository conversationRepository,
+            AgentMemoryRepository memoryRepository,
             UserService userService,
             ModelUsageService modelUsageService,
             AiModelGateway modelGateway,
@@ -83,6 +86,7 @@ public class AgentService {
         this.chatRouter = chatRouter;
         this.toolRegistry = toolRegistry;
         this.conversationRepository = conversationRepository;
+        this.memoryRepository = memoryRepository;
         this.userService = userService;
         this.modelUsageService = modelUsageService;
         this.modelGateway = modelGateway;
@@ -102,6 +106,14 @@ public class AgentService {
 
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", SYSTEM_PROMPT));
+        // 长期记忆：注入用户偏好（跨会话保留）
+        List<com.devmind.agent.dto.MemoryItem> memory = memoryRepository.listByUser(userId);
+        if (memory != null && !memory.isEmpty()) {
+            String memoryText = memory.stream()
+                    .map(m -> m.key() + ": " + m.value())
+                    .collect(java.util.stream.Collectors.joining("；"));
+            messages.add(Map.of("role", "system", "content", "【用户长期记忆】" + memoryText + "（回答时可参考这些用户偏好）"));
+        }
         // 多轮记忆：加载该会话最近的历史消息作为上下文
         if (conversationId != null && conversationId > 0) {
             List<AgentMessage> history = conversationRepository.listMessages(conversationId);
@@ -201,6 +213,18 @@ public class AgentService {
             throw new ApiException(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在");
         }
         return conversationRepository.listTraces(conversationId);
+    }
+
+    /** 查询长期记忆 */
+    public List<com.devmind.agent.dto.MemoryItem> memory(Long userId) {
+        userService.requireUser(userId);
+        return memoryRepository.listByUser(userId);
+    }
+
+    /** 更新长期记忆（全量覆盖） */
+    public void updateMemory(MemoryUpdateRequest request, Long userId) {
+        userService.requireUser(userId);
+        memoryRepository.replaceAll(userId, request == null ? List.of() : request.items());
     }
 
     private void saveMessages(Long conversationId, String question, String answer) {

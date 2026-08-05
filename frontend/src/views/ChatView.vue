@@ -17,9 +17,13 @@ const result = ref(null);
 const loading = ref(false);
 const conversations = ref([]);
 const displayedAnswer = ref('');
-const lastQuestion = ref('');
 const messagesEl = ref(null);
 let typeTimer = null;
+
+// 消息流（{ role, content, time, error?, trace? }），支持完整多轮历史
+const thread = ref([]);
+// 正在打字的消息下标（渲染用 displayedAnswer）
+const typingIndex = ref(-1);
 
 // Agent 模式
 const mode = ref('rag');
@@ -34,6 +38,47 @@ const currentReferences = computed(() => {
   const r = currentResult.value;
   return (r && r.references) ? r.references : [];
 });
+
+// 长期记忆
+const memoryText = ref('');
+
+async function loadMemory() {
+  try {
+    const data = await api('/api/agent/memory');
+    memoryText.value = Array.isArray(data)
+      ? data.map((m) => `${m.key}: ${m.value}`).join('\n')
+      : '';
+  } catch (err) {
+    memoryText.value = '';
+  }
+}
+
+async function saveMemory() {
+  try {
+    const items = memoryText.value.split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        const idx = l.indexOf(':');
+        if (idx === -1) return null;
+        return { key: l.slice(0, idx).trim(), value: l.slice(idx + 1).trim() };
+      })
+      .filter(Boolean);
+    await api('/api/agent/memory', { method: 'PUT', body: JSON.stringify({ items }) });
+    showToast('长期记忆已保存');
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+function nowText() {
+  return new Date().toISOString();
+}
+
+function pushThread(role, content, time, extra) {
+  thread.value.push({ role, content, time, ...(extra || {}) });
+  scrollToBottom();
+}
 
 function scrollToBottom() {
   nextTick(() => {
@@ -54,10 +99,12 @@ function switchMode(next) {
   mode.value = next;
   stopTyping();
   displayedAnswer.value = '';
-  lastQuestion.value = '';
+  typingIndex.value = -1;
+  thread.value = [];
   if (next === 'agent') {
     result.value = null;
     loadAgentConversations();
+    loadMemory();
   } else {
     agentResult.value = null;
     loadConversations();
@@ -75,7 +122,9 @@ function typeAnswer(text) {
   stopTyping();
   const full = text || '';
   displayedAnswer.value = '';
+  typingIndex.value = thread.value.length - 1;
   if (!full) {
+    typingIndex.value = -1;
     return;
   }
   let i = 0;
@@ -84,6 +133,7 @@ function typeAnswer(text) {
     displayedAnswer.value = full.slice(0, i);
     if (i >= full.length) {
       displayedAnswer.value = full;
+      typingIndex.value = -1;
       stopTyping();
     }
   }, 16);
@@ -130,9 +180,10 @@ function newConversation() {
   result.value = null;
   agentResult.value = null;
   chatQuestion.value = '';
-  lastQuestion.value = '';
   stopTyping();
   displayedAnswer.value = '';
+  typingIndex.value = -1;
+  thread.value = [];
 }
 
 async function selectConversation(id) {
@@ -145,11 +196,15 @@ async function selectConversation(id) {
       chatKbIds.value = [conv.knowledgeBaseId];
     }
     const messages = data.messages || [];
+    thread.value = messages.map((m) => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content,
+      time: formatTime(m.createdTime)
+    }));
     const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
-    const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
     stopTyping();
-    displayedAnswer.value = lastAssistant ? lastAssistant.content : '';
-    lastQuestion.value = lastUserMsg ? lastUserMsg.content : '';
+    displayedAnswer.value = '';
+    typingIndex.value = -1;
     result.value = lastAssistant
       ? { conversationId: id, answer: lastAssistant.content, references: [] }
       : { conversationId: id, answer: '（该会话暂无助手回复）', references: [] };
@@ -188,9 +243,8 @@ async function sendChat() {
   }
   loading.value = true;
   result.value = null;
-  lastQuestion.value = question;
   chatQuestion.value = '';
-  scrollToBottom();
+  pushThread('user', question, nowText());
   try {
     let data;
     if (kbIds.length === 1) {
@@ -207,10 +261,12 @@ async function sendChat() {
       });
     }
     result.value = data;
+    pushThread('assistant', data.answer, nowText());
     typeAnswer(data.answer);
     await loadConversations();
   } catch (err) {
     result.value = { error: err.message };
+    pushThread('assistant', err.message, nowText(), { error: true });
     showToast(err.message, true);
   } finally {
     loading.value = false;
@@ -225,9 +281,8 @@ async function sendAgent() {
   }
   agentLoading.value = true;
   agentResult.value = null;
-  lastQuestion.value = question;
   chatQuestion.value = '';
-  scrollToBottom();
+  pushThread('user', question, nowText());
   try {
     const data = await api('/api/agent/chat', {
       method: 'POST',
@@ -235,10 +290,14 @@ async function sendAgent() {
     });
     conversationId.value = data.conversationId;
     agentResult.value = data;
+    pushThread('assistant', data.answer, nowText(), {
+      trace: (data.toolTrace && data.toolTrace.length) ? data.toolTrace : null
+    });
     typeAnswer(data.answer);
     await loadAgentConversations();
   } catch (err) {
     agentResult.value = { error: err.message };
+    pushThread('assistant', err.message, nowText(), { error: true });
     showToast(err.message, true);
   } finally {
     agentLoading.value = false;
@@ -258,26 +317,33 @@ async function selectAgentConversation(id) {
       api(`/api/agent/conversations/${id}/trace`)
     ]);
     const messages = msgData && Array.isArray(msgData) ? msgData : [];
-    const lastUser = [...messages].reverse().find((m) => m.role === 'user');
-    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
-    lastQuestion.value = lastUser ? lastUser.content : (conv ? conv.title : '');
-    if (lastAssistant) {
-      displayedAnswer.value = lastAssistant.content;
-      agentResult.value = {
-        conversationId: id,
-        answer: lastAssistant.content,
-        references: [],
-        toolTrace: (traceData && Array.isArray(traceData)) ? traceData : []
-      };
-    } else if (conv) {
-      chatQuestion.value = conv.title;
-      lastQuestion.value = conv.title;
+    const trace = (traceData && Array.isArray(traceData)) ? traceData : [];
+    thread.value = messages.map((m) => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content,
+      time: formatTime(m.createdTime)
+    }));
+    if (!thread.value.length && conv) {
+      thread.value = [{ role: 'user', content: conv.title, time: formatTime(conv.createdTime) }];
     }
+    // 轨迹附到最后一条 assistant 消息
+    if (trace.length && thread.value.length) {
+      const last = thread.value[thread.value.length - 1];
+      if (last.role === 'assistant') {
+        last.trace = trace;
+      }
+    }
+    const lastAssistant = [...thread.value].reverse().find((m) => m.role === 'assistant');
+    stopTyping();
+    displayedAnswer.value = '';
+    typingIndex.value = -1;
+    agentResult.value = lastAssistant
+      ? { conversationId: id, answer: lastAssistant.content, references: [], toolTrace: trace }
+      : { conversationId: id, answer: '', references: [], toolTrace: trace };
     scrollToBottom();
   } catch (err) {
     if (conv) {
-      chatQuestion.value = conv.title;
-      lastQuestion.value = conv.title;
+      thread.value = [{ role: 'user', content: conv.title, time: formatTime(conv.createdTime) }];
     }
     showToast(err.message, true);
   }
@@ -368,27 +434,19 @@ onBeforeUnmount(() => {
     <!-- 右侧对话区 -->
     <div class="chat-main">
       <div class="chat-messages" ref="messagesEl">
-        <div v-if="!lastQuestion && !currentResult" class="empty">
+        <div v-if="!thread.length && !loading && !agentLoading" class="empty">
           {{ mode === 'rag'
             ? '选择左侧会话或输入问题开始问答'
             : '选择左侧会话或输入问题，Agent 会自动调用工具（知识库检索/SQL 诊断等）回答' }}
         </div>
 
-        <!-- 用户消息 -->
-        <div v-if="lastQuestion" class="msg user">
-          <div class="bubble">{{ lastQuestion }}</div>
-        </div>
-
-        <!-- 回答消息 -->
-        <div v-if="hasAnswer" class="msg assistant">
-          <div class="bubble">
-            <div
-              v-if="mode === 'agent' && agentResult && agentResult.toolTrace && agentResult.toolTrace.length"
-              class="tool-trace"
-            >
+        <!-- 消息流（含时间戳，支持完整多轮历史） -->
+        <div v-for="(m, i) in thread" :key="i" class="msg" :class="m.role">
+          <div class="bubble" :class="{ error: m.error }">
+            <div v-if="m.trace && m.trace.length" class="tool-trace">
               <details>
-                <summary>Agent 执行轨迹（{{ agentResult.toolTrace.length }} 步）</summary>
-                <div v-for="(t, i) in agentResult.toolTrace" :key="i" class="tool-trace-item" :class="{ fail: !t.ok }">
+                <summary>Agent 执行轨迹（{{ m.trace.length }} 步）</summary>
+                <div v-for="(t, j) in m.trace" :key="j" class="tool-trace-item" :class="{ fail: !t.ok }">
                   <span class="tt-icon">{{ t.ok ? '✓' : '✗' }}</span>
                   <span class="tt-name">{{ t.tool }}</span>
                   <span class="tt-args">{{ t.args }}</span>
@@ -396,26 +454,28 @@ onBeforeUnmount(() => {
                 </div>
               </details>
             </div>
-            <div class="markdown-body" v-html="renderMarkdown(displayedAnswer)"></div>
-            <div v-if="currentReferences.length" class="refs">
-              <h4>引用来源（{{ currentReferences.length }}）</h4>
-              <div v-for="(ref, i) in currentReferences" :key="i" class="reference">
-                <div class="head">
-                  <span>{{ i + 1 }}. {{ ref.documentName }}</span>
-                  <span class="ref-actions">
-                    <span class="score">{{ ref.similarityScore.toFixed(4) }}</span>
-                    <button v-if="ref.documentId" class="small" @click="previewReference(ref)">预览</button>
-                  </span>
+            <template v-if="m.role === 'assistant'">
+              <div v-if="i === typingIndex" class="markdown-body" v-html="renderMarkdown(displayedAnswer)"></div>
+              <div v-else class="markdown-body" v-html="renderMarkdown(m.content)"></div>
+              <div v-if="i === thread.length - 1 && currentReferences.length" class="refs">
+                <h4>引用来源（{{ currentReferences.length }}）</h4>
+                <div v-for="(ref, k) in currentReferences" :key="k" class="reference">
+                  <div class="head">
+                    <span>{{ k + 1 }}. {{ ref.documentName }}</span>
+                    <span class="ref-actions">
+                      <span class="score">{{ ref.similarityScore.toFixed(4) }}</span>
+                      <button v-if="ref.documentId" class="small" @click="previewReference(ref)">预览</button>
+                    </span>
+                  </div>
+                  <p>{{ ref.content }}</p>
                 </div>
-                <p>{{ ref.content }}</p>
               </div>
-            </div>
+            </template>
+            <template v-else>
+              <div class="user-text">{{ m.content }}</div>
+            </template>
+            <div v-if="m.time" class="msg-time">{{ m.time }}</div>
           </div>
-        </div>
-
-        <!-- 错误消息 -->
-        <div v-if="currentError" class="msg assistant">
-          <div class="bubble error">{{ currentError }}</div>
         </div>
 
         <!-- 思考中 -->
@@ -447,6 +507,17 @@ onBeforeUnmount(() => {
             <label class="param">标签过滤
               <input v-model="chatTags" placeholder="例如：mysql,索引" class="wide">
             </label>
+          </div>
+        </details>
+        <details v-if="mode === 'agent'" class="rag-params">
+          <summary>长期记忆</summary>
+          <div class="rag-params-body column">
+            <textarea
+              v-model="memoryText"
+              rows="3"
+              placeholder="每行一条，格式：偏好: 内容&#10;例如：&#10;语言: 中文&#10;回答风格: 简洁直接"
+            ></textarea>
+            <button class="secondary small" @click="saveMemory">保存记忆</button>
           </div>
         </details>
         <div class="input-row">
@@ -632,6 +703,22 @@ onBeforeUnmount(() => {
   background: var(--alt-bg);
   border: 1px solid var(--line);
   border-bottom-left-radius: 4px;
+}
+
+.user-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-time {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+  text-align: right;
+}
+
+.msg.user .msg-time {
+  color: rgba(255, 255, 255, 0.75);
 }
 
 .bubble.error {

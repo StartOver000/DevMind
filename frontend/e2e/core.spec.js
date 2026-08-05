@@ -28,14 +28,17 @@ test('知识库页：创建知识库并出现在列表', async ({ page }) => {
   await expect(page.locator('.kb-item').filter({ hasText: name })).toBeVisible();
 });
 
-test('问答页：输入区/知识库多选/提问按钮可用', async ({ page }) => {
+test('问答页：输入区/知识库多选/发送按钮可用', async ({ page }) => {
   await page.goto('/#/chat');
-  await expect(page.locator('.chat-form h2')).toHaveText('RAG 问答');
-  // 知识库多选（至少 1 个勾选）
+  // 对话区与历史会话侧边栏
+  await expect(page.locator('.chat-main')).toBeVisible();
+  await expect(page.locator('.chat-sidebar')).toBeVisible();
+  // 展开检索参数，知识库多选（至少 1 个勾选）
+  await page.locator('.rag-params summary').click();
   const checkboxes = page.locator('.kb-check input');
   await expect(checkboxes.first()).toBeVisible();
-  // 提问按钮与输入框
-  await expect(page.getByRole('button', { name: '提问' })).toBeVisible();
+  // 发送按钮与输入框
+  await expect(page.getByRole('button', { name: '发送' })).toBeVisible();
   await expect(page.locator('textarea[placeholder*="输入问题"]')).toBeVisible();
 });
 

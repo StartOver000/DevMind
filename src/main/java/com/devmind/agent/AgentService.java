@@ -164,12 +164,14 @@ public class AgentService {
                             "tool_call_id", tc.id(),
                             "content", output
                     ));
+                    long costMs = System.currentTimeMillis() - start;
                     trace.add(new ToolTraceItem(
                             tc.name(),
                             truncate(tc.argumentsJson(), 120),
                             ok,
-                            System.currentTimeMillis() - start
+                            costMs
                     ));
+                    persistTrace(conversationId, tc.name(), truncate(tc.argumentsJson(), 200), ok, costMs);
                 }
             }
             throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "Agent 工具调用轮数超限");
@@ -190,6 +192,15 @@ public class AgentService {
         return conversationRepository.listMessages(conversationId);
     }
 
+    /** 查询会话工具调用轨迹（历史展示） */
+    public List<ToolTraceItem> trace(Long conversationId, Long userId) {
+        userService.requireUser(userId);
+        if (conversationId == null || !conversationRepository.existsForUser(conversationId, userId)) {
+            throw new ApiException(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在");
+        }
+        return conversationRepository.listTraces(conversationId);
+    }
+
     private void saveMessages(Long conversationId, String question, String answer) {
         if (conversationId == null || conversationId <= 0) {
             return;
@@ -199,6 +210,17 @@ public class AgentService {
             conversationRepository.saveMessage(conversationId, "assistant", answer == null ? "" : answer);
         } catch (Exception ex) {
             log.warn("agent 消息持久化失败: {}", ex.getMessage());
+        }
+    }
+
+    private void persistTrace(Long conversationId, String tool, String args, boolean ok, long costMs) {
+        if (conversationId == null || conversationId <= 0) {
+            return;
+        }
+        try {
+            conversationRepository.saveTrace(conversationId, tool, args, ok, costMs);
+        } catch (Exception ex) {
+            log.warn("agent 轨迹持久化失败: {}", ex.getMessage());
         }
     }
 

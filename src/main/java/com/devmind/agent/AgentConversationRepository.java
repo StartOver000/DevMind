@@ -2,6 +2,7 @@ package com.devmind.agent;
 
 import com.devmind.agent.dto.AgentConversationItem;
 import com.devmind.agent.dto.AgentMessage;
+import com.devmind.agent.dto.ToolTraceItem;
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -82,6 +83,28 @@ public class AgentConversationRepository {
         return jdbcTemplate.query(
                 "SELECT role, content FROM agent_message WHERE conversation_id = ? ORDER BY id",
                 (rs, rowNum) -> new AgentMessage(rs.getString("role"), rs.getString("content")),
+                conversationId
+        );
+    }
+
+    /** 保存一条工具调用轨迹 */
+    public void saveTrace(Long conversationId, String tool, String args, boolean ok, long costMs) {
+        jdbcTemplate.update(
+                "INSERT INTO agent_trace (conversation_id, tool, args, ok, cost_ms) VALUES (?, ?, ?, ?, ?)",
+                conversationId, tool, args, ok, costMs
+        );
+    }
+
+    /** 加载工具调用轨迹（历史展示） */
+    public List<ToolTraceItem> listTraces(Long conversationId) {
+        return jdbcTemplate.query(
+                "SELECT tool, args, ok, cost_ms FROM agent_trace WHERE conversation_id = ? ORDER BY id",
+                (rs, rowNum) -> new ToolTraceItem(
+                        rs.getString("tool"),
+                        rs.getString("args"),
+                        rs.getBoolean("ok"),
+                        rs.getLong("cost_ms")
+                ),
                 conversationId
         );
     }

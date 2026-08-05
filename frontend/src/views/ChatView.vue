@@ -252,9 +252,12 @@ async function selectAgentConversation(id) {
   displayedAnswer.value = '';
   agentResult.value = null;
   try {
-    // 加载会话历史消息（记忆）
-    const data = await api(`/api/agent/conversations/${id}/messages`);
-    const messages = data && Array.isArray(data) ? data : [];
+    // 加载会话历史消息 + 工具轨迹（记忆）
+    const [msgData, traceData] = await Promise.all([
+      api(`/api/agent/conversations/${id}/messages`),
+      api(`/api/agent/conversations/${id}/trace`)
+    ]);
+    const messages = msgData && Array.isArray(msgData) ? msgData : [];
     const lastUser = [...messages].reverse().find((m) => m.role === 'user');
     const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
     lastQuestion.value = lastUser ? lastUser.content : (conv ? conv.title : '');
@@ -264,7 +267,7 @@ async function selectAgentConversation(id) {
         conversationId: id,
         answer: lastAssistant.content,
         references: [],
-        toolTrace: []
+        toolTrace: (traceData && Array.isArray(traceData)) ? traceData : []
       };
     } else if (conv) {
       chatQuestion.value = conv.title;

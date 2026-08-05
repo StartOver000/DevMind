@@ -4,6 +4,7 @@ import com.devmind.agent.dto.AgentChatRequest;
 import com.devmind.agent.dto.AgentChatResponse;
 import com.devmind.agent.dto.AgentConversationItem;
 import com.devmind.agent.dto.AgentMessage;
+import com.devmind.agent.dto.ToolTraceItem;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -51,6 +52,14 @@ public class AgentController {
             @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
     ) {
         return agentService.messages(id, userId);
+    }
+
+    @GetMapping("/conversations/{id}/trace")
+    public List<ToolTraceItem> trace(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        return agentService.trace(id, userId);
     }
 
     @DeleteMapping("/conversations/{id}")

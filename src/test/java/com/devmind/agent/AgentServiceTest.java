@@ -28,7 +28,9 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -109,6 +111,10 @@ class AgentServiceTest {
         assertThat(response.toolTrace().get(0).tool()).isEqualTo("kb_search");
         assertThat(response.toolTrace().get(0).ok()).isTrue();
         verify(tool).execute(anyString(), any());
+        // 工具轨迹与消息均应持久化（记忆）
+        verify(conversationRepository).saveTrace(eq(100L), eq("kb_search"), anyString(), eq(true), anyLong());
+        verify(conversationRepository).saveMessage(eq(100L), eq("user"), anyString());
+        verify(conversationRepository).saveMessage(eq(100L), eq("assistant"), anyString());
     }
 
     @Test

@@ -34,6 +34,7 @@ x-app-env: &app-env
   DEVMIND_ZHIPU_EMBEDDING_MODEL: ${DEVMIND_ZHIPU_EMBEDDING_MODEL:-embedding-2}
   DEVMIND_ZHIPU_MAX_TOKENS: ${DEVMIND_ZHIPU_MAX_TOKENS:-2000}
   DEVMIND_AUTH_ENABLED: ${DEVMIND_AUTH_ENABLED:-false}
+  DEVMIND_OTLP_ENDPOINT: ${DEVMIND_OTLP_ENDPOINT:-http://tempo:4318/v1/traces}
 
 services:
   postgres:
@@ -129,6 +130,18 @@ services:
       - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
     depends_on:
       - app
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: devmind-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
 
   grafana:
     image: grafana/grafana:latest

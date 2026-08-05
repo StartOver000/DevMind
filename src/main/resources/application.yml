@@ -43,6 +43,12 @@ management:
   endpoint:
     health:
       show-details: always
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${DEVMIND_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
 
 devmind:
   model-mode: ${DEVMIND_MODEL_MODE:openai}

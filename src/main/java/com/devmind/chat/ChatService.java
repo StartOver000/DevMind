@@ -24,6 +24,8 @@ import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
 import com.devmind.user.UserService;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -62,6 +64,7 @@ public class ChatService {
     private final UserService userService;
     private final DevMindProperties properties;
     private final MeterRegistry meterRegistry;
+    private final ObservationRegistry observationRegistry;
 
     public ChatService(
             KnowledgeBaseService knowledgeBaseService,
@@ -74,7 +77,8 @@ public class ChatService {
             ModelUsageService modelUsageService,
             UserService userService,
             DevMindProperties properties,
-            MeterRegistry meterRegistry
+            MeterRegistry meterRegistry,
+            ObservationRegistry observationRegistry
     ) {
         this.knowledgeBaseService = knowledgeBaseService;
         this.chatRepository = chatRepository;
@@ -87,6 +91,7 @@ public class ChatService {
         this.userService = userService;
         this.properties = properties;
         this.meterRegistry = meterRegistry;
+        this.observationRegistry = observationRegistry;
     }
 
     @Transactional
@@ -109,20 +114,22 @@ public class ChatService {
         String searchQuery = QueryRewriter.rewrite(question, historyQuestions);
         QueryRouter.Route route = QueryRouter.route(searchQuery);
 
-        List<RetrievalResult> results = searchWithFallback(
-                knowledgeBaseId,
-                searchQuery,
-                topK,
-                route.vectorWeight(),
-                route.keywordWeight(),
-                buildMetadataFilter(request.tags())
-        );
+        List<RetrievalResult> results = Observation.createNotStarted("devmind.retrieval", observationRegistry)
+                .observe(() -> searchWithFallback(
+                        knowledgeBaseId,
+                        searchQuery,
+                        topK,
+                        route.vectorWeight(),
+                        route.keywordWeight(),
+                        buildMetadataFilter(request.tags())
+                ));
 
         String answer;
         if (results.isEmpty()) {
             answer = "知识库中没有找到足够相关内容。";
         } else {
-            answer = callModel(userId, question, results, history);
+            answer = Observation.createNotStarted("devmind.model.chat", observationRegistry)
+                    .observe(() -> callModel(userId, question, results, history));
         }
 
         chatRepository.insertMessage(conversationId, "assistant", answer, null, null);

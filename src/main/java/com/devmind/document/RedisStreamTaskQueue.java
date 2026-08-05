@@ -2,6 +2,7 @@ package com.devmind.document;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -13,6 +14,7 @@ import org.springframework.data.redis.core.StreamOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -22,14 +24,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 基于 Redis Stream 的任务队列（消费者组模式）：
  * - 生产：XADD 到 {@code devmind:task:stream}（消息体 = taskId + 尝试次数）
  * - 消费：XREADGROUP 消费者组阻塞读取，多实例天然负载均衡；处理成功 XACK
- * - 失败重投：消费异常时 XACK 原消息 + XADD 回流（attempt+1，上限 3 次），超限丢弃并告警
- * - 可靠性兜底：Pending 未 ACK 的消息由 document_task 状态机 + 定时扫描重新入队（见 DocumentTaskService）
+ * - 失败重投：消费异常时 XACK 原消息 + XADD 回流（attempt+1，上限 3 次），超限进死信队列 {@code devmind:task:dlq}
+ * - 可靠性兜底：Pending 未 ACK 的消息由 document_task 状态机 + 定时扫描重新入队（见 DocumentTaskService）；
+ *   死信队列由状态机扫描消费并标记任务 DEAD 终态
  */
 public class RedisStreamTaskQueue implements TaskQueue {
 
     private static final Logger log = LoggerFactory.getLogger(RedisStreamTaskQueue.class);
 
     static final String STREAM_KEY = "devmind:task:stream";
+    static final String DLQ_KEY = "devmind:task:dlq";
     static final String GROUP = "devmind-task-group";
     /** 单条消息最大尝试次数 */
     static final int MAX_ATTEMPT = 3;
@@ -135,17 +139,55 @@ public class RedisStreamTaskQueue implements TaskQueue {
         }
     }
 
-    /** 失败重投：尝试次数 < 上限则回流 +1，否则超限丢弃（任务状态仍由 DB 扫描兜底重投） */
+    /** 失败重投：尝试次数 < 上限则回流 +1，否则写入死信队列（任务最终由 DB 状态机扫描标记 DEAD） */
     private void retry(Long taskId, Map<String, String> value) {
         if (taskId == null) {
             return;
         }
         int attempt = parseLong(value == null ? null : value.get(FIELD_ATTEMPT)).intValue();
         if (attempt >= MAX_ATTEMPT) {
-            log.error("任务 {} 消息级重试超限（attempt={}），交由 DB 扫描兜底", taskId, attempt);
+            addToDlq(taskId);
             return;
         }
         add(taskId, attempt + 1);
+    }
+
+    /** 消息级重试超限：写入死信队列；Redis 不可用时记录错误（DB 状态机仍会继续兜底） */
+    @SuppressWarnings("null")
+    private void addToDlq(Long taskId) {
+        try {
+            MapRecord<String, String, String> record = StreamRecords.mapBacked(Map.of(FIELD_BODY, String.valueOf(taskId)))
+                    .withStreamKey(DLQ_KEY)
+                    .withId(RecordId.autoGenerate());
+            ops().add(record);
+            log.error("任务 {} 消息级重试超限（attempt={}），已进入死信队列 {}", taskId, MAX_ATTEMPT, DLQ_KEY);
+        } catch (Exception ex) {
+            log.error("任务 {} 写入死信队列失败: {}", taskId, ex.getMessage());
+        }
+    }
+
+    /** 消费死信队列：返回并清除其中任务 ID；Redis 不可用时返回空（由 DB 状态机继续兜底） */
+    @Override
+    @SuppressWarnings("null")
+    public List<Long> drainDead() {
+        try {
+            List<MapRecord<String, String, String>> records = ops().range(DLQ_KEY, Range.unbounded());
+            if (records == null || records.isEmpty()) {
+                return List.of();
+            }
+            List<Long> ids = new ArrayList<>(records.size());
+            for (MapRecord<String, String, String> record : records) {
+                Long taskId = parseLong(record.getValue() == null ? null : record.getValue().get(FIELD_BODY));
+                if (taskId != null) {
+                    ids.add(taskId);
+                }
+                ops().delete(DLQ_KEY, record.getId());
+            }
+            return ids;
+        } catch (Exception ex) {
+            log.warn("死信队列消费失败（Redis 不可用）: {}", ex.getMessage());
+            return List.of();
+        }
     }
 
     /** 确保消费者组存在；stream 未创建时静默等待（消息入队 XADD 会自动建 stream） */

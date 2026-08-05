@@ -65,3 +65,13 @@ groups:
         annotations:
           summary: "接口 5xx 错误率过高"
           description: "最近 5 分钟 5xx 错误率超过 5%"
+
+      - alert: DevMindTaskDeadQueue
+        # 文档任务死信队列出现积压（消费失败重试超限的任务未被及时处理）
+        expr: devmind_task_dlq_length > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "任务死信队列有积压"
+          description: "文档任务死信队列存在消息，任务可能持续失败，请检查 embedding 服务与文档处理链路"

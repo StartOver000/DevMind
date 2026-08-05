@@ -33,8 +33,10 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -80,6 +82,30 @@ class DocumentTaskServiceTest {
     void setUpMeterRegistry() {
         when(meterRegistry.counter(anyString())).thenReturn(mock(Counter.class));
         when(chunkerFactory.get()).thenReturn(textChunker);
+    }
+
+    @Test
+    void scanDeadTasksMarksDeadAndCounts() {
+        TaskQueue queue = mock(TaskQueue.class);
+        DocumentTaskService service = new DocumentTaskService(
+                taskRepository,
+                documentRepository,
+                parserRegistry,
+                chunkerFactory,
+                chunkRepository,
+                modelGateway,
+                queue,
+                taskScheduler,
+                properties,
+                meterRegistry
+        );
+        when(queue.drainDead()).thenReturn(List.of(11L, 22L));
+
+        service.scanDeadTasks();
+
+        verify(taskRepository).markDead(11L, "消息级重试超限，进入死信队列");
+        verify(taskRepository).markDead(22L, "消息级重试超限，进入死信队列");
+        verify(meterRegistry, times(2)).counter("devmind.task.dead");
     }
 
     @Test
@@ -141,10 +167,11 @@ class DocumentTaskServiceTest {
         when(parserRegistry.parse(anyString(), anyString(), any(byte[].class)))
                 .thenThrow(new RuntimeException("parse failed"));
 
-        service.processTask(1L);
+        // 重试路径：向上抛异常，由 MQ 消息级重投（不再 scheduleRetry）
+        assertThatThrownBy(() -> service.processTask(1L)).isInstanceOf(RuntimeException.class);
 
         verify(taskRepository).markFailedForRetry(eq(1L), anyString());
-        verify(taskScheduler).schedule(any(Runnable.class), any(Instant.class));
+        verify(taskScheduler, never()).schedule(any(Runnable.class), any(Instant.class));
         verify(documentRepository, never()).updateStatus(eq(10L), eq("FAILED"), anyString());
     }
 

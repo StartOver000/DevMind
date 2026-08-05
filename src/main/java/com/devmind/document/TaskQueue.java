@@ -24,6 +24,15 @@ public interface TaskQueue {
      */
     void start(TaskHandler handler);
 
+    /**
+     * 消费死信队列：返回并清除已进 DLQ 的任务 ID。
+     * Redis 实现读取 {@code devmind:task:dlq} 并逐条 XDEL；内存实现恒为空。
+     * 由任务状态机定时扫描调用，用于把消息级重试超限的任务标记为 DEAD 终态。
+     *
+     * @return 死信任务 ID 列表（可空实现返回空列表）
+     */
+    java.util.List<Long> drainDead();
+
     /** 任务处理回调 */
     @FunctionalInterface
     interface TaskHandler {

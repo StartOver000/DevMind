@@ -21,7 +21,6 @@ import org.springframework.stereotype.Service;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -38,6 +37,8 @@ public class DocumentTaskService {
     private final ChunkRepository chunkRepository;
     private final AiModelGateway modelGateway;
     private final TaskQueue taskQueue;
+    /** 保留注入（构造签名稳定）；延迟重试已由 MQ 消息级重投承担 */
+    @SuppressWarnings("unused")
     private final TaskScheduler taskScheduler;
     private final DevMindProperties properties;
     private final MeterRegistry meterRegistry;
@@ -86,7 +87,7 @@ public class DocumentTaskService {
         taskQueue.enqueue(taskId);
     }
 
-    void processTask(Long taskId) {
+    void processTask(Long taskId) throws Exception {
         DocumentTask task = taskRepository.findById(taskId).orElse(null);
         if (task == null || !"PENDING".equals(task.status())) {
             return;
@@ -125,26 +126,22 @@ public class DocumentTaskService {
         }
     }
 
-    private void handleFailure(Long taskId, DocumentTask task, Document document, Exception ex) {
+    /**
+     * 处理失败：DB 记录重试状态，重试路径向上抛异常给 MQ 层做消息级重投（attempt+1，3 次进 DLQ）；
+     * 达到 DB 层 max_retries 上限则标记终态 FAILED（不抛）。
+     */
+    private void handleFailure(Long taskId, DocumentTask task, Document document, Exception ex) throws Exception {
         String message = truncate(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage(), 2000);
         int nextRetry = task.retryCount() + 1;
         if (nextRetry < task.maxRetries()) {
             taskRepository.markFailedForRetry(taskId, message);
-            log.warn("document task failed, will retry, taskId={}, retry={}", taskId, nextRetry, ex);
-            scheduleRetry(taskId);
-        } else {
-            taskRepository.markFailedPermanent(taskId, message);
-            documentRepository.updateStatus(document.id(), "FAILED", message);
-            meterRegistry.counter("devmind.task.failed").increment();
-            log.error("document task failed permanently, taskId={}, documentId={}", taskId, document.id(), ex);
+            log.warn("document task failed, will retry via MQ, taskId={}, retry={}", taskId, nextRetry, ex);
+            throw ex;
         }
-    }
-
-    private void scheduleRetry(Long taskId) {
-        taskScheduler.schedule(
-                () -> submitTask(taskId),
-                Instant.now().plusMillis(properties.taskRetryDelayMs())
-        );
+        taskRepository.markFailedPermanent(taskId, message);
+        documentRepository.updateStatus(document.id(), "FAILED", message);
+        meterRegistry.counter("devmind.task.failed").increment();
+        log.error("document task failed permanently, taskId={}, documentId={}", taskId, document.id(), ex);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -169,6 +166,22 @@ public class DocumentTaskService {
             submitTask(taskId);
         }
         taskRepository.findPendingIds().forEach(this::submitTask);
+    }
+
+    /**
+     * 死信队列扫描：把消息级重试超限进 DLQ 的任务标记为 DEAD 终态，
+     * 终止无限循环重投（治"队列积压只增不减"），并计入 devmind.task.dead 指标。
+     */
+    @Scheduled(
+            fixedDelayString = "${devmind.task-scan-interval-ms:60000}",
+            initialDelayString = "${devmind.task-scan-initial-delay-ms:60000}"
+    )
+    public void scanDeadTasks() {
+        for (Long taskId : taskQueue.drainDead()) {
+            taskRepository.markDead(taskId, "消息级重试超限，进入死信队列");
+            meterRegistry.counter("devmind.task.dead").increment();
+            log.error("任务进入死信队列并标记 DEAD，taskId={}", taskId);
+        }
     }
 
     private DocumentTaskResponse toResponse(DocumentTask task) {

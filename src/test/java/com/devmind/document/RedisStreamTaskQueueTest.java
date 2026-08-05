@@ -8,6 +8,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -100,7 +101,7 @@ class RedisStreamTaskQueueTest {
     }
 
     @Test
-    void pollOnceDropsMessageWhenAttemptExceeded() throws Exception {
+    void pollOnceSendsToDlqWhenAttemptExceeded() throws Exception {
         when(ops.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
                 .thenReturn(List.of(record("42", "3", "1690000000000-0")));
         TaskQueue.TaskHandler handler = mock(TaskQueue.TaskHandler.class);
@@ -109,8 +110,44 @@ class RedisStreamTaskQueueTest {
         queue.pollOnce(handler);
 
         verify(ops).acknowledge(eq(RedisStreamTaskQueue.STREAM_KEY), eq(RedisStreamTaskQueue.GROUP), eq("1690000000000-0"));
-        // attempt 已达上限，不再回流
-        verify(ops, never()).add(any(MapRecord.class));
+        // attempt 已达上限：不再回流主 stream，改为写入死信队列
+        ArgumentCaptor<MapRecord> captor = ArgumentCaptor.forClass(MapRecord.class);
+        verify(ops, times(1)).add(captor.capture());
+        assertThat(captor.getValue().getStream()).isEqualTo(RedisStreamTaskQueue.DLQ_KEY);
+        Map<String, String> sent = (Map<String, String>) captor.getValue().getValue();
+        assertThat(sent.get("body")).isEqualTo("42");
+    }
+
+    @Test
+    void drainDeadReturnsAndDeletesDlqMessages() {
+        MapRecord<String, String, String> dlq1 = StreamRecords.mapBacked(Map.of("body", "7"))
+                .withStreamKey(RedisStreamTaskQueue.DLQ_KEY).withId(RecordId.of("1-0"));
+        MapRecord<String, String, String> dlq2 = StreamRecords.mapBacked(Map.of("body", "9"))
+                .withStreamKey(RedisStreamTaskQueue.DLQ_KEY).withId(RecordId.of("2-0"));
+        when(ops.range(eq(RedisStreamTaskQueue.DLQ_KEY), any(Range.class))).thenReturn(List.of(dlq1, dlq2));
+
+        List<Long> ids = queue.drainDead();
+
+        assertThat(ids).containsExactly(7L, 9L);
+        verify(ops).delete(RedisStreamTaskQueue.DLQ_KEY, RecordId.of("1-0"));
+        verify(ops).delete(RedisStreamTaskQueue.DLQ_KEY, RecordId.of("2-0"));
+    }
+
+    @Test
+    void drainDeadReturnsEmptyWhenDlqEmpty() {
+        when(ops.range(any(), any())).thenReturn(List.of());
+
+        assertThat(queue.drainDead()).isEmpty();
+    }
+
+    @Test
+    void drainDeadSkipsInvalidBodyButStillDeletes() {
+        MapRecord<String, String, String> bad = StreamRecords.mapBacked(Map.of("body", "not-a-number"))
+                .withStreamKey(RedisStreamTaskQueue.DLQ_KEY).withId(RecordId.of("1-0"));
+        when(ops.range(eq(RedisStreamTaskQueue.DLQ_KEY), any(Range.class))).thenReturn(List.of(bad));
+
+        assertThat(queue.drainDead()).isEmpty();
+        verify(ops).delete(RedisStreamTaskQueue.DLQ_KEY, RecordId.of("1-0"));
     }
 
     @Test

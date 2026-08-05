@@ -120,6 +120,16 @@ public class DocumentTaskRepository {
                 """, errorMessage, id);
     }
 
+    /** 标记为死信终态（消息级重试超限进 DLQ）；仅对仍在重试中的任务生效，已终态任务不动（幂等） */
+    public void markDead(Long id, String errorMessage) {
+        jdbcTemplate.update("""
+                UPDATE document_task
+                SET status = 'DEAD', retry_count = retry_count + 1,
+                    error_message = ?, updated_time = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('PENDING', 'PROCESSING')
+                """, errorMessage, id);
+    }
+
     public void cancelByDocument(Long documentId) {
         jdbcTemplate.update("""
                 UPDATE document_task

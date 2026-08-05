@@ -46,4 +46,10 @@ public class InMemoryTaskQueue implements TaskQueue {
     public void start(TaskHandler handler) {
         this.handler = handler;
     }
+
+    @Override
+    public java.util.List<Long> drainDead() {
+        // 内存队列无死信概念，恒为空
+        return java.util.List.of();
+    }
 }

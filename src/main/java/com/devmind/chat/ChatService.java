@@ -134,6 +134,8 @@ public class ChatService {
 
         chatRepository.insertMessage(conversationId, "assistant", answer, null, null);
         auditLogService.log(userId, "CHAT", "knowledge_base", knowledgeBaseId, question);
+        log.info("chat answered, knowledgeBaseId={}, questionLen={}, answerLen={}, refs={}, topK={}",
+                knowledgeBaseId, question.length(), answer.length(), results.size(), topK);
 
         List<Reference> references = toReferences(results);
         return new ChatResponse(conversationId, answer, references);

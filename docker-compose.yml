@@ -35,6 +35,8 @@ x-app-env: &app-env
   DEVMIND_ZHIPU_MAX_TOKENS: ${DEVMIND_ZHIPU_MAX_TOKENS:-2000}
   DEVMIND_AUTH_ENABLED: ${DEVMIND_AUTH_ENABLED:-false}
   DEVMIND_OTLP_ENDPOINT: ${DEVMIND_OTLP_ENDPOINT:-http://tempo:4318/v1/traces}
+  LOG_PATH: /app/logs
+  LOG_FILE: devmind.log
 
 services:
   postgres:
@@ -79,7 +81,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment: *app-env
+    environment:
+      <<: *app-env
+      LOG_FILE: app.log
     ports:
       - "8080:8080"
     volumes:
@@ -99,6 +103,7 @@ services:
     environment:
       <<: *app-env
       SERVER_PORT: "8081"
+      LOG_FILE: app2.log
     ports:
       - "8081:8081"
     volumes:
@@ -142,6 +147,25 @@ services:
       - "4318:4318"
     volumes:
       - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
+
+  loki:
+    image: grafana/loki:latest
+    container_name: devmind-loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "3100:3100"
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: devmind-promtail
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/promtail.yaml"]
+    volumes:
+      - ./logs:/var/log/devmind
+      - ./promtail:/etc/promtail:ro
+    depends_on:
+      - loki
 
   grafana:
     image: grafana/grafana:latest

@@ -114,6 +114,26 @@
         { "expr": "rate(devmind_model_fallback_total[5m]) by (provider)", "legendFormat": "{{provider}}" }
       ],
       "datasource": { "type": "prometheus" }
+    },
+    {
+      "title": "任务死信/滞留",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "targets": [
+        { "expr": "devmind_task_dlq_length", "legendFormat": "死信队列" },
+        { "expr": "devmind_task_dead_total", "legendFormat": "累计DEAD" }
+      ],
+      "datasource": { "type": "prometheus" }
+    },
+    {
+      "title": "应用日志（Loki 最近 50 条）",
+      "type": "logs",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "targets": [
+        { "expr": "{job=\"devmind\"}", "refId": "A" }
+      ],
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true }
     }
   ],
   "time": { "from": "now-6h", "to": "now" }

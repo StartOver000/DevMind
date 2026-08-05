@@ -40,4 +40,20 @@ public class AgentMemoryRepository {
             );
         }
     }
+
+    /** 单条合并：key 已存在则更新值，不存在则插入（供自动提取增量写入，不覆盖用户其他记忆） */
+    public void upsert(Long userId, String key, String value) {
+        if (userId == null || key == null || key.isBlank()) {
+            return;
+        }
+        jdbcTemplate.update(
+                """
+                INSERT INTO agent_memory (user_id, memory_key, memory_value)
+                VALUES (?, ?, ?)
+                ON CONFLICT (user_id, memory_key)
+                DO UPDATE SET memory_value = EXCLUDED.memory_value, updated_time = CURRENT_TIMESTAMP
+                """,
+                userId, key.trim(), value == null ? "" : value.trim()
+        );
+    }
 }

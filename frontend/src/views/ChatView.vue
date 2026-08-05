@@ -81,7 +81,8 @@ async function saveMemory() {
 }
 
 function nowText() {
-  return new Date().toISOString();
+  // 本地 24 小时制（与 formatTime 输出一致，不再暴露 ISO 时间戳）
+  return formatTime(new Date());
 }
 
 function pushThread(role, content, time, extra) {
@@ -581,7 +582,10 @@ onBeforeUnmount(() => {
               rows="3"
               placeholder="每行一条，格式：偏好: 内容&#10;例如：&#10;语言: 中文&#10;回答风格: 简洁直接"
             ></textarea>
-            <button class="secondary small" @click="saveMemory">保存记忆</button>
+            <div class="memory-actions">
+              <span class="memory-hint">会话结束后自动提取你的偏好，可手动编辑补充</span>
+              <button class="secondary small" @click="saveMemory">保存记忆</button>
+            </div>
           </div>
         </details>
         <div class="input-row">
@@ -850,6 +854,23 @@ onBeforeUnmount(() => {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--alt-bg);
+}
+
+.rag-params-body.column {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.memory-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.memory-hint {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .kb-line {

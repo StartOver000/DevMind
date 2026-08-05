@@ -44,7 +44,7 @@ public class AgentConversationRepository {
                 (rs, rowNum) -> new AgentConversationItem(
                         rs.getLong("id"),
                         rs.getString("title"),
-                        rs.getTimestamp("created_time").toLocalDateTime()
+                        rs.getTimestamp("created_time").toInstant().atOffset(java.time.ZoneOffset.UTC)
                 ),
                 userId, safeLimit
         );

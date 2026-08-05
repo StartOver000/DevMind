@@ -18,6 +18,24 @@ describe('api client', () => {
     expect(formatTime('')).toBe('-');
   });
 
+  it('formatTime 将 UTC/ISO 时间戳转为本地 24 小时制', () => {
+    const utc = '2026-08-05T06:00:00.000Z';
+    const d = new Date(utc);
+    const pad = (n) => String(n).padStart(2, '0');
+    const expected = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    // 不写死具体时刻，避免依赖测试机时区；断言已转为本地时间且为 24 小时制
+    expect(formatTime(utc)).toBe(expected);
+    expect(formatTime(utc)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    // 不能是 ISO 时间戳原样（含 T 或 Z）
+    expect(formatTime(utc)).not.toContain('T');
+    expect(formatTime(utc)).not.toContain('Z');
+  });
+
+  it('formatTime 对 Date 对象同样转本地 24 小时制', () => {
+    const d = new Date(2026, 7, 5, 14, 6, 54); // 本地时间 2026-08-05 14:06:54
+    expect(formatTime(d)).toBe('2026-08-05 14:06:54');
+  });
+
   it('token 存取', () => {
     expect(getToken()).toBeNull();
     setToken('abc123');

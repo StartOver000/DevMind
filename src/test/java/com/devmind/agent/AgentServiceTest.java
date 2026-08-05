@@ -182,4 +182,45 @@ class AgentServiceTest {
         assertThat(response.answer()).contains("RAG");
         assertThat(response.references()).isNotEmpty();
     }
+
+    @Test
+    void extractsMemoryAfterSuccessfulChat() {
+        AgentTool tool = kbTool();
+        when(tool.execute(anyString(), any())).thenReturn(
+                "[{\"documentName\":\"a.md\",\"content\":\"RAG 是检索增强生成\",\"similarityScore\":0.9}]"
+        );
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(101L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("c1", "kb_search", "{\"question\":\"x\"}"))),
+                        new AiModelGateway.ChatResult("根据检索结果回答。", "m", 0, 0)
+                );
+        // 提取器返回两行用户偏好（自动提取长期记忆）
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult("语言: 中文\n回答风格: 简洁直接", "m", 0, 0));
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "查一下 RAG", null), 1L);
+
+        assertThat(response.answer()).contains("根据检索结果回答");
+        // 偏好按 key-value 合并写入记忆（非全量覆盖）
+        verify(memoryRepository).upsert(eq(1L), eq("语言"), eq("中文"));
+        verify(memoryRepository).upsert(eq(1L), eq("回答风格"), eq("简洁直接"));
+    }
+
+    @Test
+    void memoryExtractionFailureDoesNotBreakChat() {
+        AgentService service = service(new ToolRegistry(List.of(kbTool())));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(new AiModelGateway.ChatResult("直接回答。", "m", 0, 0));
+        // 提取器失败（429/熔断），主流程不受影响
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenThrow(new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型限流"));
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "你好", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("直接回答。");
+    }
 }

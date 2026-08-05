@@ -75,3 +75,13 @@ groups:
         annotations:
           summary: "任务死信队列有积压"
           description: "文档任务死信队列存在消息，任务可能持续失败，请检查 embedding 服务与文档处理链路"
+
+      - alert: DevMindRetrievalRegression
+        # 检索质量回退：离线评估 MRR / Recall@10 低于基线 5% 以上
+        expr: rate(devmind_retrieval_regression_total[10m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "检索质量回退"
+          description: "离线评估显示检索质量低于基线 5% 以上，请检查检索配置或知识库变更"

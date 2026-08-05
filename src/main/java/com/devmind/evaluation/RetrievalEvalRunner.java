@@ -7,6 +7,9 @@ import com.devmind.evaluation.dto.RetrievalEvaluationResponse;
 import com.devmind.retrieval.RerankService;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -15,6 +18,7 @@ import org.springframework.stereotype.Component;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,7 +27,9 @@ import java.util.Map;
 /**
  * 离线检索评估 Runner：应用启动时带 {@code --eval} 参数触发。
  * 1) 用当前配置跑完整评估集，输出 MRR / Recall@5 / Recall@10 / NDCG@10 报告（含 JSON 落盘）。
- * 2) 混合检索权重 α 网格寻优（复用同一批向量，仅换权重），输出最优组合。
+ * 2) 检索质量护栏：与 {@code data/eval/baseline.json} 对比，MRR / Recall@10 回退超 5% 记
+ *    {@code devmind.retrieval.regression} 指标并输出告警日志（首次用 {@code --update-baseline} 建立基线）。
+ * 3) 混合检索权重 α 网格寻优（复用同一批向量，仅换权重），输出最优组合。
  */
 @Component
 public class RetrievalEvalRunner implements ApplicationRunner {
@@ -33,25 +39,31 @@ public class RetrievalEvalRunner implements ApplicationRunner {
     /** 评估使用的知识库（JavaGuide 专题库） */
     private static final long EVAL_KB_ID = 19L;
     private static final double[] ALPHA_CANDIDATES = {0.1, 0.3, 0.5, 0.7, 0.9};
+    /** 回退告警阈值：低于基线 5% 即告警 */
+    private static final double REGRESSION_THRESHOLD = 0.95;
 
     private final RetrievalEvaluationService evaluationService;
     private final RetrievalService retrievalService;
     private final AiModelGateway modelGateway;
     private final RerankService rerankService;
     private final DevMindProperties properties;
+    private final MeterRegistry meterRegistry;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public RetrievalEvalRunner(
             RetrievalEvaluationService evaluationService,
             RetrievalService retrievalService,
             AiModelGateway modelGateway,
             RerankService rerankService,
-            DevMindProperties properties
+            DevMindProperties properties,
+            MeterRegistry meterRegistry
     ) {
         this.evaluationService = evaluationService;
         this.retrievalService = retrievalService;
         this.modelGateway = modelGateway;
         this.rerankService = rerankService;
         this.properties = properties;
+        this.meterRegistry = meterRegistry;
     }
 
     @Override
@@ -68,8 +80,77 @@ public class RetrievalEvalRunner implements ApplicationRunner {
                 properties.retrievalVectorWeight(), report.total(), round(report.hitRate()),
                 round(report.mrr()), round(report.recall5()), round(report.recall10()), round(report.ndcg10()));
         writeReport(report);
+        if (args.containsOption("update-baseline")) {
+            writeBaseline(report);
+        } else {
+            checkBaseline(report);
+        }
         runAlphaSearch();
         log.info("=== 离线检索评估结束 ===");
+        // 离线 CLI：评估完成后显式退出 JVM（Spring 调度线程为非 daemon，否则 docker compose run 永不退出）
+        System.exit(0);
+    }
+
+    /** 检索质量护栏：与基线对比，MRR / Recall@10 回退超 5% 记 devmind.retrieval.regression 并告警 */
+    private void checkBaseline(RetrievalEvaluationResponse report) {
+        try {
+            Path base = Path.of("data/eval/baseline.json");
+            if (!Files.exists(base)) {
+                log.warn("[GUARD] NO_BASELINE 未发现基线 data/eval/baseline.json，首次运行请加 --update-baseline 建立基线");
+                return;
+            }
+            JsonNode baseline = objectMapper.readTree(Files.readString(base));
+            double baseMrr = baseline.path("mrr").asDouble(0);
+            double baseRecall10 = baseline.path("recall10").asDouble(0);
+            boolean regressed = (baseMrr > 0 && report.mrr() < baseMrr * REGRESSION_THRESHOLD)
+                    || (baseRecall10 > 0 && report.recall10() < baseRecall10 * REGRESSION_THRESHOLD);
+            if (regressed) {
+                meterRegistry.counter("devmind.retrieval.regression").increment();
+                log.error("[GUARD] FAIL 检索质量回退：MRR={}（基线 {}）Recall@10={}（基线 {}），请检查检索配置或知识库变更",
+                        round(report.mrr()), baseMrr, round(report.recall10()), baseRecall10);
+            } else {
+                log.info("[GUARD] PASS 检索质量护栏通过：MRR={}（基线 {}），Recall@10={}（基线 {}）",
+                        round(report.mrr()), baseMrr, round(report.recall10()), baseRecall10);
+            }
+        } catch (Exception ex) {
+            log.warn("基线对比失败: {}", ex.getMessage());
+        }
+    }
+
+    /** 把当前报告写为基线（--update-baseline） */
+    private void writeBaseline(RetrievalEvaluationResponse report) {
+        try {
+            Path dir = Path.of("data/eval");
+            Files.createDirectories(dir);
+            Files.writeString(dir.resolve("baseline.json"), """
+                    {
+                      "knowledgeBaseId": %d,
+                      "total": %d,
+                      "hits": %d,
+                      "hitRate": %.4f,
+                      "mrr": %.4f,
+                      "recall5": %.4f,
+                      "recall10": %.4f,
+                      "ndcg10": %.4f,
+                      "vectorWeight": %s,
+                      "updatedAt": "%s"
+                    }
+                    """.formatted(
+                    EVAL_KB_ID,
+                    report.total(),
+                    report.hits(),
+                    report.hitRate(),
+                    report.mrr(),
+                    report.recall5(),
+                    report.recall10(),
+                    report.ndcg10(),
+                    properties.retrievalVectorWeight(),
+                    OffsetDateTime.now()
+            ));
+            log.info("检索质量基线已写入 data/eval/baseline.json（MRR={}）", round(report.mrr()));
+        } catch (Exception ex) {
+            log.warn("基线写盘失败: {}", ex.getMessage());
+        }
     }
 
     /** α 网格寻优：同一批问题只 embed 一次，换混合权重跑检索，取 MRR 最优 */

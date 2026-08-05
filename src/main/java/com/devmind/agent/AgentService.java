@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * 研发问答 Agent：ReAct 式执行循环。
@@ -96,6 +97,26 @@ public class AgentService {
     }
 
     public AgentChatResponse chat(AgentChatRequest request, Long userId) {
+        return doChat(request, userId, null);
+    }
+
+    /**
+     * Agent 流式入口：与 {@link #chat} 逻辑一致，但每次工具执行完成时通过
+     * {@code onTrace} 实时回调（供 SSE 推送工具轨迹），最终答案由调用方分片推送。
+     */
+    public AgentChatResponse chatStream(
+            AgentChatRequest request,
+            Long userId,
+            Consumer<ToolTraceItem> onTrace
+    ) {
+        return doChat(request, userId, onTrace);
+    }
+
+    private AgentChatResponse doChat(
+            AgentChatRequest request,
+            Long userId,
+            Consumer<ToolTraceItem> onTrace
+    ) {
         userService.requireUser(userId);
         String question = request.question() == null ? "" : request.question().trim();
         if (question.isEmpty()) {
@@ -179,12 +200,16 @@ public class AgentService {
                             "content", output
                     ));
                     long costMs = System.currentTimeMillis() - start;
-                    trace.add(new ToolTraceItem(
+                    ToolTraceItem item = new ToolTraceItem(
                             tc.name(),
                             truncate(tc.argumentsJson(), 120),
                             ok,
                             costMs
-                    ));
+                    );
+                    trace.add(item);
+                    if (onTrace != null) {
+                        onTrace.accept(item);
+                    }
                     persistTrace(conversationId, tc.name(), truncate(tc.argumentsJson(), 200), ok, costMs);
                 }
             }

@@ -1,12 +1,21 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
-import { api, formatTime } from '@/api/client';
+import { api, formatTime, getCurrentUserId, getToken } from '@/api/client';
 import { renderMarkdown } from '@/utils/markdown';
+import { streamFetch } from '@/utils/sse';
 import { showToast } from '@/stores/toast';
 import { session } from '@/stores/session';
 import { kbsStore } from '@/stores/kbs';
 import { openModal } from '@/stores/modal';
 import DocumentPreview from '@/components/DocumentPreview.vue';
+
+/** 附加身份 headers（与 api client 一致） */
+function userHeaders() {
+  const headers = { 'X-User-Id': String(getCurrentUserId()) };
+  const token = getToken();
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  return headers;
+}
 
 const chatKbIds = ref([]);
 const chatTopK = ref(5);
@@ -245,28 +254,58 @@ async function sendChat() {
   result.value = null;
   chatQuestion.value = '';
   pushThread('user', question, nowText());
+  // 占位 assistant 消息，流式增量填充
+  const assistantIndex = thread.value.length;
+  pushThread('assistant', '', nowText());
   try {
-    let data;
     if (kbIds.length === 1) {
-      data = await api(`/api/knowledge-bases/${kbIds[0]}/chat`, {
-        method: 'POST',
-        body: JSON.stringify({ question, topK, conversationId: conversationId.value, tags: parseTags(chatTags.value) })
-      });
-      conversationId.value = data.conversationId;
+      await streamFetch(
+        `/api/knowledge-bases/${kbIds[0]}/chat/stream`,
+        { question, topK, conversationId: conversationId.value, tags: parseTags(chatTags.value) },
+        {
+          onMeta: (meta) => {
+            if (meta.conversationId) conversationId.value = meta.conversationId;
+            const refs = Array.isArray(meta.references) ? meta.references : [];
+            result.value = { conversationId: conversationId.value, answer: '', references: refs };
+            if (thread.value[assistantIndex]) thread.value[assistantIndex].refs = refs;
+            scrollToBottom();
+          },
+          onDelta: (chunk) => {
+            const m = thread.value[assistantIndex];
+            if (m) {
+              m.content += chunk;
+              scrollToBottom();
+            }
+          },
+          onError: (err) => { throw err; }
+        },
+        { headers: userHeaders() }
+      );
+      // 流结束后补全 result（引用已在 meta 中设置）
+      const finalMsg = thread.value[assistantIndex];
+      if (result.value && finalMsg) result.value.answer = finalMsg.content;
     } else {
+      // 多库聚合：无流式端点，走原一次性接口
       conversationId.value = null;
-      data = await api('/api/chat/aggregate', {
+      const data = await api('/api/chat/aggregate', {
         method: 'POST',
         body: JSON.stringify({ knowledgeBaseIds: kbIds, question, topK, tags: parseTags(chatTags.value) })
       });
+      result.value = data;
+      if (thread.value[assistantIndex]) {
+        thread.value[assistantIndex].content = data.answer;
+        thread.value[assistantIndex].refs = data.references || [];
+      }
+      scrollToBottom();
     }
-    result.value = data;
-    pushThread('assistant', data.answer, nowText());
-    typeAnswer(data.answer);
     await loadConversations();
   } catch (err) {
+    const m = thread.value[assistantIndex];
+    if (m) {
+      m.content = err.message;
+      m.error = true;
+    }
     result.value = { error: err.message };
-    pushThread('assistant', err.message, nowText(), { error: true });
     showToast(err.message, true);
   } finally {
     loading.value = false;
@@ -283,19 +322,44 @@ async function sendAgent() {
   agentResult.value = null;
   chatQuestion.value = '';
   pushThread('user', question, nowText());
+  // 占位 assistant 消息，工具轨迹实时挂载、回答增量填充
+  const assistantIndex = thread.value.length;
+  pushThread('assistant', '', nowText());
+  const traces = [];
   try {
-    const data = await api('/api/agent/chat', {
-      method: 'POST',
-      body: JSON.stringify({ conversationId: conversationId.value || 0, question })
-    });
-    conversationId.value = data.conversationId;
-    agentResult.value = data;
-    pushThread('assistant', data.answer, nowText(), {
-      trace: (data.toolTrace && data.toolTrace.length) ? data.toolTrace : null
-    });
-    typeAnswer(data.answer);
+    await streamFetch(
+      '/api/agent/chat/stream',
+      { conversationId: conversationId.value || 0, question },
+      {
+        onTrace: (t) => {
+          traces.push(t);
+          const m = thread.value[assistantIndex];
+          if (m) {
+            m.trace = [...traces];
+            scrollToBottom();
+          }
+        },
+        onDelta: (chunk) => {
+          const m = thread.value[assistantIndex];
+          if (m) {
+            m.content += chunk;
+            scrollToBottom();
+          }
+        },
+        onDone: (done) => {
+          if (done && done.conversationId) conversationId.value = done.conversationId;
+          const finalMsg = thread.value[assistantIndex];
+          const answer = finalMsg ? finalMsg.content : '';
+          agentResult.value = { conversationId: conversationId.value, answer, references: [], toolTrace: traces };
+        },
+        onError: (err) => { throw err; }
+      },
+      { headers: userHeaders() }
+    );
     await loadAgentConversations();
   } catch (err) {
+    // 移除空占位，展示错误
+    thread.value = thread.value.slice(0, -1);
     agentResult.value = { error: err.message };
     pushThread('assistant', err.message, nowText(), { error: true });
     showToast(err.message, true);

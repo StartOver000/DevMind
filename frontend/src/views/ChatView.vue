@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { api, formatTime } from '@/api/client';
+import { renderMarkdown } from '@/utils/markdown';
 import { showToast } from '@/stores/toast';
 import { session } from '@/stores/session';
 import { kbsStore } from '@/stores/kbs';
@@ -336,7 +337,7 @@ onBeforeUnmount(() => {
             <h2>回答</h2>
             <span class="status SUCCEEDED">会话 #{{ result.conversationId }}</span>
           </div>
-          <div class="answer">{{ displayedAnswer }}</div>
+          <div class="answer markdown-body" v-html="renderMarkdown(displayedAnswer)"></div>
           <h3>引用来源（{{ result.references.length }}）</h3>
           <div v-for="(ref, i) in result.references" :key="i" class="reference">
             <div class="head">
@@ -371,7 +372,7 @@ onBeforeUnmount(() => {
               </div>
             </details>
           </div>
-          <div class="answer">{{ displayedAnswer }}</div>
+          <div class="answer markdown-body" v-html="renderMarkdown(displayedAnswer)"></div>
           <h3 v-if="agentResult.references && agentResult.references.length">引用来源（{{ agentResult.references.length }}）</h3>
           <div v-for="(ref, i) in (agentResult.references || [])" :key="i" class="reference">
             <div class="head">

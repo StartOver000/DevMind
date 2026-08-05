@@ -10,4 +10,4 @@ scrape_configs:
   - job_name: devmind-app
     metrics_path: /actuator/prometheus
     static_configs:
-      - targets: ['devmind-app:8080']
+      - targets: ['devmind-app:8080', 'devmind-app2:8081']

@@ -18,6 +18,7 @@ import com.devmind.retrieval.LocalRagAnswerer;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
 import com.devmind.user.UserService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -84,6 +85,7 @@ public class AgentService {
     private final RetrievalService retrievalService;
     private final KnowledgeBaseService knowledgeBaseService;
     private final DevMindProperties properties;
+    private final MeterRegistry meterRegistry;
 
     public AgentService(
             ChatRouter chatRouter,
@@ -95,7 +97,8 @@ public class AgentService {
             AiModelGateway modelGateway,
             RetrievalService retrievalService,
             KnowledgeBaseService knowledgeBaseService,
-            DevMindProperties properties
+            DevMindProperties properties,
+            MeterRegistry meterRegistry
     ) {
         this.chatRouter = chatRouter;
         this.toolRegistry = toolRegistry;
@@ -107,6 +110,7 @@ public class AgentService {
         this.retrievalService = retrievalService;
         this.knowledgeBaseService = knowledgeBaseService;
         this.properties = properties;
+        this.meterRegistry = meterRegistry;
     }
 
     public AgentChatResponse chat(AgentChatRequest request, Long userId) {
@@ -352,6 +356,7 @@ public class AgentService {
             Long userId,
             List<ToolTraceItem> trace
     ) {
+        meterRegistry.counter("devmind.rag.degraded").increment();
         try {
             Long kbId = firstAccessibleKnowledgeBase(userId);
             if (kbId == null) {

@@ -83,7 +83,8 @@ class ChatServiceTest {
                 auditLogService,
                 modelUsageService,
                 userService,
-                properties
+                properties,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry()
         );
         KnowledgeBase knowledgeBase = new KnowledgeBase(1L, "kb", null, "ENABLED", 1L, null, null, null);
         when(knowledgeBaseService.requireEnabledKnowledgeBaseAccess(1L, 1L)).thenReturn(knowledgeBase);
@@ -118,7 +119,8 @@ class ChatServiceTest {
                 auditLogService,
                 modelUsageService,
                 userService,
-                properties
+                properties,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry()
         );
         RetrievalResult result = new RetrievalResult(
                 1L, 1L, "a.md", 0, "RAG 是把检索与生成结合的架构。",

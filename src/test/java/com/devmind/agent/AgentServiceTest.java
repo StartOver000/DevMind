@@ -80,7 +80,8 @@ class AgentServiceTest {
                 modelGateway,
                 retrievalService,
                 knowledgeBaseService,
-                properties()
+                properties(),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry()
         );
     }
 

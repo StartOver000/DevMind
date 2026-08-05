@@ -47,6 +47,7 @@ public class ChatRouter {
     private final AiModelGateway primaryGateway;
     private final List<ChatProvider> fallbackProviders;
     private final CircuitStateStore circuitStateStore;
+    private final MeterRegistry meterRegistry;
     private final Timer chatTimer;
     private final Counter failedCounter;
 
@@ -61,6 +62,7 @@ public class ChatRouter {
         this.primaryGateway = primaryGateway;
         this.circuitStateStore = circuitStateStore;
         this.fallbackProviders = buildFallbackProviders(restClientBuilder, properties, secretCipher);
+        this.meterRegistry = meterRegistry;
         this.chatTimer = Timer.builder("devmind.model.calls.duration")
                 .description("模型聊天调用耗时")
                 .register(meterRegistry);
@@ -167,6 +169,11 @@ public class ChatRouter {
             AiModelGateway.ChatResult result = invokeWithRetry(action, provider.name());
             circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
             circuitStateStore.reset(key);
+            // 备用 Provider 接管计数（按 provider 归因）
+            Counter.builder("devmind.model.fallback")
+                    .tag("provider", provider.name())
+                    .register(meterRegistry)
+                    .increment();
             return result;
         } catch (Exception error) {
             circuitStateStore.recordFailure(key, CIRCUIT_FAILURE_THRESHOLD, isRateLimited(error), CIRCUIT_OPEN_MS);

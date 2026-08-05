@@ -23,6 +23,7 @@ import com.devmind.retrieval.RerankService;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
 import com.devmind.user.UserService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -60,6 +61,7 @@ public class ChatService {
     private final ModelUsageService modelUsageService;
     private final UserService userService;
     private final DevMindProperties properties;
+    private final MeterRegistry meterRegistry;
 
     public ChatService(
             KnowledgeBaseService knowledgeBaseService,
@@ -71,7 +73,8 @@ public class ChatService {
             AuditLogService auditLogService,
             ModelUsageService modelUsageService,
             UserService userService,
-            DevMindProperties properties
+            DevMindProperties properties,
+            MeterRegistry meterRegistry
     ) {
         this.knowledgeBaseService = knowledgeBaseService;
         this.chatRepository = chatRepository;
@@ -83,6 +86,7 @@ public class ChatService {
         this.modelUsageService = modelUsageService;
         this.userService = userService;
         this.properties = properties;
+        this.meterRegistry = meterRegistry;
     }
 
     @Transactional
@@ -299,12 +303,14 @@ public class ChatService {
         } catch (ApiException ex) {
             if (ex.getCode() == ErrorCode.MODEL_CALL_FAILED && properties.localRagFallback()) {
                 log.warn("模型调用失败，降级为本地 RAG 回答: {}", ex.getMessage());
+                meterRegistry.counter("devmind.rag.degraded").increment();
                 return LocalRagAnswerer.answer(question, results);
             }
             throw ex;
         } catch (Exception ex) {
             if (properties.localRagFallback()) {
                 log.warn("模型调用异常，降级为本地 RAG 回答: {}", ex.getMessage());
+                meterRegistry.counter("devmind.rag.degraded").increment();
                 return LocalRagAnswerer.answer(question, results);
             }
             throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型调用失败: " + ex.getMessage());

@@ -15,7 +15,7 @@
       "targets": [
         { "expr": "sum(rate(http_server_requests_seconds_count[5m])) by (uri)", "legendFormat": "{{uri}}" }
       ],
-      "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": { "type": "prometheus" }
     },
     {
       "title": "HTTP P95 延迟 (s)",
@@ -24,7 +24,7 @@
       "targets": [
         { "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))", "legendFormat": "P95" }
       ],
-      "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": { "type": "prometheus" }
     },
     {
       "title": "模型调用 (次/分钟)",
@@ -33,7 +33,7 @@
       "targets": [
         { "expr": "sum(rate(devmind_model_calls_duration_count[5m])) by (scene)", "legendFormat": "{{scene}}" }
       ],
-      "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": { "type": "prometheus" }
     },
     {
       "title": "模型调用失败率",
@@ -45,7 +45,7 @@
           "legendFormat": "失败率"
         }
       ],
-      "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": { "type": "prometheus" }
     },
     {
       "title": "限流与账号锁定 (次/分钟)",
@@ -55,7 +55,7 @@
         { "expr": "rate(devmind_rate_limited_total[5m])", "legendFormat": "限流" },
         { "expr": "rate(devmind_login_locked_total[5m])", "legendFormat": "登录锁定" }
       ],
-      "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": { "type": "prometheus" }
     },
     {
       "title": "数据库连接池",
@@ -66,7 +66,7 @@
         { "expr": "hikaricp_connections_idle", "legendFormat": "空闲" },
         { "expr": "hikaricp_connections_max", "legendFormat": "上限" }
       ],
-      "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": { "type": "prometheus" }
     },
     {
       "title": "JVM 堆内存 (MB)",
@@ -76,7 +76,44 @@
         { "expr": "sum(jvm_memory_used_bytes{area=\"heap\"}) / 1024 / 1024", "legendFormat": "堆已用" },
         { "expr": "sum(jvm_memory_max_bytes{area=\"heap\"}) / 1024 / 1024", "legendFormat": "堆上限" }
       ],
-      "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": { "type": "prometheus" }
+    },
+    {
+      "title": "文档任务成功率",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        { "expr": "rate(devmind_task_succeeded_total[5m])", "legendFormat": "成功" },
+        { "expr": "rate(devmind_task_failed_total[5m])", "legendFormat": "失败" }
+      ],
+      "datasource": { "type": "prometheus" }
+    },
+    {
+      "title": "任务队列积压",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        { "expr": "devmind_task_queue_length", "legendFormat": "未消费" }
+      ],
+      "datasource": { "type": "prometheus" }
+    },
+    {
+      "title": "本地 RAG 降级 (次/分钟)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "targets": [
+        { "expr": "rate(devmind_rag_degraded_total[5m])", "legendFormat": "降级" }
+      ],
+      "datasource": { "type": "prometheus" }
+    },
+    {
+      "title": "备用 Provider 接管 (次/分钟)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "targets": [
+        { "expr": "rate(devmind_model_fallback_total[5m]) by (provider)", "legendFormat": "{{provider}}" }
+      ],
+      "datasource": { "type": "prometheus" }
     }
   ],
   "time": { "from": "now-6h", "to": "now" }

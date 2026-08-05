@@ -31,6 +31,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -81,7 +82,8 @@ class AgentServiceTest {
                 retrievalService,
                 knowledgeBaseService,
                 properties(),
-                new io.micrometer.core.instrument.simple.SimpleMeterRegistry()
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry(),
+                new ToolCallValidator(registry)
         );
     }
 
@@ -91,6 +93,30 @@ class AgentServiceTest {
         when(tool.description()).thenReturn("检索知识库");
         when(tool.parametersJsonSchema()).thenReturn("{}");
         return tool;
+    }
+
+    @Test
+    void rejectsUnknownToolCallAndContinues() {
+        AgentTool tool = kbTool();
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        // 模型幻觉：返回不存在的工具名 → 校验拦截，不执行、回填错误、继续到最终回答
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("c1", "not_exist_tool", "{\"q\":1}"))),
+                        new AiModelGateway.ChatResult("正常回答", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "问题", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("正常回答");
+        // 未知工具不执行
+        verify(tool, never()).execute(anyString(), any());
+        // 轨迹记录为失败，链路不中断
+        assertThat(response.toolTrace()).hasSize(1);
+        assertThat(response.toolTrace().get(0).tool()).isEqualTo("not_exist_tool");
+        assertThat(response.toolTrace().get(0).ok()).isFalse();
     }
 
     @Test

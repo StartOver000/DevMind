@@ -86,6 +86,12 @@ public class AgentService {
     private final KnowledgeBaseService knowledgeBaseService;
     private final DevMindProperties properties;
     private final MeterRegistry meterRegistry;
+    private final ToolCallValidator toolCallValidator;
+    /** 单工具执行超时（秒） */
+    private static final int TOOL_TIMEOUT_SECONDS = 20;
+    /** 工具执行线程池（配合超时熔断） */
+    private final java.util.concurrent.ExecutorService toolExecutor =
+            java.util.concurrent.Executors.newCachedThreadPool();
 
     public AgentService(
             ChatRouter chatRouter,
@@ -98,7 +104,8 @@ public class AgentService {
             RetrievalService retrievalService,
             KnowledgeBaseService knowledgeBaseService,
             DevMindProperties properties,
-            MeterRegistry meterRegistry
+            MeterRegistry meterRegistry,
+            ToolCallValidator toolCallValidator
     ) {
         this.chatRouter = chatRouter;
         this.toolRegistry = toolRegistry;
@@ -111,6 +118,12 @@ public class AgentService {
         this.knowledgeBaseService = knowledgeBaseService;
         this.properties = properties;
         this.meterRegistry = meterRegistry;
+        this.toolCallValidator = toolCallValidator;
+    }
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        toolExecutor.shutdownNow();
     }
 
     public AgentChatResponse chat(AgentChatRequest request, Long userId) {
@@ -198,18 +211,33 @@ public class AgentService {
                         ))
                         .toList());
                 messages.add(assistantMsg);
-                // 逐个执行工具
+                // 逐个执行工具：执行前校验（工具名/参数 JSON），非法回填错误不中断；合法则带超时执行
                 for (AiModelGateway.ToolCall tc : toolCalls) {
                     long start = System.currentTimeMillis();
                     String output;
                     boolean ok;
-                    try {
-                        output = toolRegistry.execute(tc.name(), tc.argumentsJson(), userId);
-                        ok = true;
-                    } catch (Exception ex) {
-                        log.warn("agent 工具 {} 执行失败: {}", tc.name(), ex.getMessage());
-                        output = "{\"error\": \"工具执行失败: " + ex.getMessage() + "\"}";
+                    ToolCallValidator.Validation validation = toolCallValidator.validate(tc.name(), tc.argumentsJson());
+                    if (!validation.valid()) {
+                        meterRegistry.counter("devmind.agent.tool_invalid", "reason", "invalid").increment();
+                        log.warn("agent 工具调用校验失败: {}", validation.error());
+                        output = "{\"error\": \"工具调用无效: " + validation.error() + "\"}";
                         ok = false;
+                    } else {
+                        try {
+                            java.util.concurrent.Future<String> future = toolExecutor.submit(() ->
+                                    toolRegistry.execute(validation.toolName(), validation.argumentsJson(), userId));
+                            output = future.get(TOOL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+                            ok = true;
+                        } catch (java.util.concurrent.TimeoutException ex) {
+                            meterRegistry.counter("devmind.agent.tool_timeout").increment();
+                            log.warn("agent 工具 {} 执行超时（{}s）", tc.name(), TOOL_TIMEOUT_SECONDS);
+                            output = "{\"error\": \"工具执行超时\"}";
+                            ok = false;
+                        } catch (Exception ex) {
+                            log.warn("agent 工具 {} 执行失败: {}", tc.name(), ex.getMessage());
+                            output = "{\"error\": \"工具执行失败: " + ex.getMessage() + "\"}";
+                            ok = false;
+                        }
                     }
                     output = truncate(output, MAX_TOOL_RESULT_CHARS);
                     messages.add(Map.of(

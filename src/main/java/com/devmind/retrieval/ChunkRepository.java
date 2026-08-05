@@ -10,10 +10,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Repository
@@ -45,6 +47,61 @@ public class ChunkRepository {
     ) {
         for (int i = 0; i < chunks.size(); i++) {
             TextChunk chunk = chunks.get(i);
+            List<Double> vector = embeddings.get(i);
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            if (chunk.heading() != null) {
+                metadata.put("heading", chunk.heading());
+            }
+            if (documentMetadata != null) {
+                metadata.putAll(documentMetadata);
+            }
+            jdbcTemplate.update("""
+                    INSERT INTO document_chunk
+                        (document_id, chunk_index, content, content_hash, metadata, embedding, created_time)
+                    VALUES (?, ?, ?, ?, ?::jsonb, ?::vector, CURRENT_TIMESTAMP)
+                    """,
+                    documentId,
+                    chunk.index(),
+                    chunk.content(),
+                    HashUtils.sha256(chunk.content()),
+                    toJson(metadata),
+                    toVector(vector));
+        }
+    }
+
+    /** 查询文档现有片段的全部内容哈希（供增量 diff 使用） */
+    public Set<String> findHashSetByDocument(Long documentId) {
+        return new HashSet<>(jdbcTemplate.queryForList(
+                "SELECT content_hash FROM document_chunk WHERE document_id = ?",
+                String.class,
+                documentId
+        ));
+    }
+
+    /**
+     * 增量替换片段（同一事务内完成，原子可见）：
+     * 删除 {@code removedHashes} 对应的旧片段，再插入 {@code changedChunks} 的新片段；
+     * 未变更片段不动（不重算 embedding）。检索要么看到全旧、要么看到全新。
+     */
+    @Transactional
+    public void updateChunksIncremental(
+            Long documentId,
+            List<TextChunk> changedChunks,
+            List<List<Double>> embeddings,
+            List<String> removedHashes,
+            Map<String, Object> documentMetadata
+    ) {
+        if (removedHashes != null) {
+            for (String hash : removedHashes) {
+                jdbcTemplate.update(
+                        "DELETE FROM document_chunk WHERE document_id = ? AND content_hash = ?",
+                        documentId,
+                        hash
+                );
+            }
+        }
+        for (int i = 0; i < changedChunks.size(); i++) {
+            TextChunk chunk = changedChunks.get(i);
             List<Double> vector = embeddings.get(i);
             Map<String, Object> metadata = new LinkedHashMap<>();
             if (chunk.heading() != null) {

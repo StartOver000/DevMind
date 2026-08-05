@@ -3,6 +3,7 @@ package com.devmind.document;
 import com.devmind.ai.AiModelGateway;
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
+import com.devmind.common.HashUtils;
 import com.devmind.config.DevMindProperties;
 import com.devmind.document.chunker.TextChunk;
 import com.devmind.document.chunker.TextChunkerFactory;
@@ -23,7 +24,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 @Service
 public class DocumentTaskService {
@@ -108,19 +111,35 @@ public class DocumentTaskService {
             byte[] bytes = Files.readAllBytes(Path.of(filePath));
             String text = parserRegistry.parse(document.fileName(), document.fileType(), bytes);
             List<TextChunk> chunks = chunkerFactory.get().chunk(text);
-            List<List<Double>> embeddings = modelGateway.embed(
-                    chunks.stream().map(TextChunk::content).toList()
-            );
-            chunkRepository.insertChunks(
+            // 增量更新：按内容哈希 diff，只重算新增/变更片段，复用未变更片段（embedding 调用大幅减少）
+            Set<String> existingHashes = chunkRepository.findHashSetByDocument(document.id());
+            List<TextChunk> changedChunks = new ArrayList<>();
+            List<String> removedHashes = new ArrayList<>();
+            for (TextChunk chunk : chunks) {
+                String hash = HashUtils.sha256(chunk.content());
+                if (existingHashes.remove(hash)) {
+                    meterRegistry.counter("devmind.document.reused").increment();
+                } else {
+                    changedChunks.add(chunk);
+                }
+            }
+            removedHashes.addAll(existingHashes);
+            List<List<Double>> embeddings = changedChunks.isEmpty()
+                    ? List.of()
+                    : modelGateway.embed(changedChunks.stream().map(TextChunk::content).toList());
+            chunkRepository.updateChunksIncremental(
                     document.id(),
-                    chunks,
+                    changedChunks,
                     embeddings,
+                    removedHashes,
                     document.metadata() == null ? java.util.Map.of() : document.metadata()
             );
+            meterRegistry.counter("devmind.document.rechunked").increment(changedChunks.size());
             documentRepository.updateStatus(document.id(), "COMPLETED", null);
             taskRepository.markSucceeded(taskId);
             meterRegistry.counter("devmind.task.succeeded").increment();
-            log.info("document task succeeded, taskId={}, documentId={}, chunks={}", taskId, document.id(), chunks.size());
+            log.info("document task succeeded, taskId={}, documentId={}, chunks={}, changed={}, removed={}",
+                    taskId, document.id(), chunks.size(), changedChunks.size(), removedHashes.size());
         } catch (Exception ex) {
             handleFailure(taskId, task, document, ex);
         }

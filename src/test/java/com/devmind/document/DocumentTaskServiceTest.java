@@ -36,6 +36,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @ExtendWith(MockitoExtension.class)
@@ -133,12 +134,52 @@ class DocumentTaskServiceTest {
         when(documentRepository.findById(10L)).thenReturn(Optional.of(document));
         when(parserRegistry.parse(anyString(), anyString(), any(byte[].class))).thenReturn("hello");
         when(textChunker.chunk("hello")).thenReturn(List.of(new TextChunk(0, "hello", "title")));
+        when(chunkRepository.findHashSetByDocument(any())).thenReturn(new java.util.HashSet<>());
         when(modelGateway.embed(anyList())).thenReturn(List.of(List.of(1.0, 0.0)));
 
         service.processTask(1L);
 
         verify(documentRepository).updateStatus(10L, "COMPLETED", null);
         verify(taskRepository).markSucceeded(1L);
+        verify(chunkRepository).updateChunksIncremental(eq(10L), any(), any(), any(), any());
+    }
+
+    @Test
+    void reusesUnchangedChunksIncrementally(@TempDir Path tempDir) throws Exception {
+        DocumentTaskService service = new DocumentTaskService(
+                taskRepository,
+                documentRepository,
+                parserRegistry,
+                chunkerFactory,
+                chunkRepository,
+                modelGateway,
+                new InMemoryTaskQueue(taskExecutor),
+                taskScheduler,
+                properties,
+                meterRegistry
+        );
+        Path file = tempDir.resolve("a.md");
+        Files.writeString(file, "hello");
+        DocumentTask task = new DocumentTask(1L, 10L, "PENDING", 0, 3, null, null, null);
+        Document document = new Document(
+                10L, 1L, "a.md", "markdown", 5L, file.toString(), "hash", "UPLOADED", null, null, null, null, Map.of()
+        );
+        when(taskRepository.findById(1L)).thenReturn(Optional.of(task));
+        when(taskRepository.claimForProcessing(1L)).thenReturn(true);
+        when(documentRepository.findById(10L)).thenReturn(Optional.of(document));
+        when(parserRegistry.parse(anyString(), anyString(), any(byte[].class))).thenReturn("hello");
+        when(textChunker.chunk("hello")).thenReturn(List.of(new TextChunk(0, "hello", "title")));
+        // 存量哈希已包含该片段内容 → 全部复用，不调 embedding、不插入新片段
+        String existingHash = com.devmind.common.HashUtils.sha256("hello");
+        when(chunkRepository.findHashSetByDocument(any())).thenReturn(new java.util.HashSet<>(java.util.Set.of(existingHash)));
+
+        service.processTask(1L);
+
+        verify(modelGateway, never()).embed(anyList());
+        org.mockito.ArgumentCaptor<List> changedCaptor = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(chunkRepository).updateChunksIncremental(eq(10L), changedCaptor.capture(), any(), any(), any());
+        assertThat(changedCaptor.getValue()).isEmpty();
+        verify(documentRepository).updateStatus(10L, "COMPLETED", null);
     }
 
     @Test

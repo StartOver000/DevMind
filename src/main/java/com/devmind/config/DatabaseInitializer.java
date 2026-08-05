@@ -117,9 +117,16 @@ public class DatabaseInitializer implements ApplicationRunner {
                     error_message VARCHAR(2000),
                     created_by BIGINT,
                     created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    CONSTRAINT uq_document_kb_hash UNIQUE (knowledge_base_id, content_hash)
+                    updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
+                """);
+        // 软删文档（DELETED 标记）保留行用于版本快照/审计，因此唯一约束只对非 DELETED 生效，
+        // 避免同内容文档重新上传/更新时撞 uq_document_kb_hash。
+        jdbcTemplate.execute("ALTER TABLE document DROP CONSTRAINT IF EXISTS uq_document_kb_hash");
+        jdbcTemplate.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_document_kb_hash
+                ON document(knowledge_base_id, content_hash)
+                WHERE status <> 'DELETED'
                 """);
         jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_document_kb_status ON document(knowledge_base_id, status)");
         jdbcTemplate.execute("ALTER TABLE document ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1");

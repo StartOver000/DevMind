@@ -49,6 +49,16 @@ public class RetrievalEvaluationService {
     }
 
     public RetrievalEvaluationResponse evaluate(EvaluationRequest request, Long userId) {
+        return evaluate(request, userId, properties.retrievalVectorWeight(), properties.retrievalKeywordWeight());
+    }
+
+    /** 支持指定混合检索权重（供离线 α 寻优），其余逻辑与 {@link #evaluate(EvaluationRequest, Long)} 一致 */
+    public RetrievalEvaluationResponse evaluate(
+            EvaluationRequest request,
+            Long userId,
+            double vectorWeight,
+            double keywordWeight
+    ) {
         Long knowledgeBaseId = request.knowledgeBaseId();
         Map<String, Object> metadataFilter = request.tags() == null || request.tags().isEmpty()
                 ? Map.of()
@@ -57,6 +67,10 @@ public class RetrievalEvaluationService {
         knowledgeBaseService.requireEnabledKnowledgeBaseAccess(knowledgeBaseId, userId);
         List<EvaluationItem> items = new ArrayList<>();
         Map<String, int[]> topicStats = new LinkedHashMap<>();
+        double mrrSum = 0;
+        double recall5Sum = 0;
+        double recall10Sum = 0;
+        double ndcg10Sum = 0;
         for (EvaluationQuestion question : QUESTIONS) {
             topicStats.computeIfAbsent(question.topic(), k -> new int[2]);
             topicStats.get(question.topic())[0]++;
@@ -68,8 +82,8 @@ public class RetrievalEvaluationService {
                     question.question(),
                     10,
                     0.1,
-                    properties.retrievalVectorWeight(),
-                    properties.retrievalKeywordWeight(),
+                    vectorWeight,
+                    keywordWeight,
                     properties.retrievalHybridEnabled(),
                     metadataFilter
             );
@@ -79,13 +93,18 @@ public class RetrievalEvaluationService {
                     properties.evaluationTopK(),
                     request.rerankMode()
             );
-            boolean hit = top.stream().anyMatch(result ->
+            java.util.function.Predicate<RetrievalResult> relevant = result ->
                     result.content().contains(question.expected())
-                            || result.documentName().contains(question.expected())
-            );
+                            || result.documentName().contains(question.expected());
+            boolean hit = top.stream().anyMatch(relevant);
             if (hit) {
                 topicStats.get(question.topic())[1]++;
             }
+            RetrievalMetricsCalculator.Metrics metrics = RetrievalMetricsCalculator.compute(top, relevant);
+            mrrSum += metrics.mrr();
+            recall5Sum += metrics.recall5();
+            recall10Sum += metrics.recall10();
+            ndcg10Sum += metrics.ndcg10();
             items.add(new EvaluationItem(
                     question.question(),
                     question.expected(),
@@ -103,18 +122,29 @@ public class RetrievalEvaluationService {
                         entry.getValue()[0] == 0 ? 0 : (double) entry.getValue()[1] / entry.getValue()[0]
                 ))
                 .toList();
-        double hitRate = questions().size() == 0 ? 0 : (double) hits / questions().size();
-        return new RetrievalEvaluationResponse(questions().size(), hits, hitRate, items, topics);
+        int total = questions().size();
+        double hitRate = total == 0 ? 0 : (double) hits / total;
+        return new RetrievalEvaluationResponse(
+                total,
+                hits,
+                hitRate,
+                total == 0 ? 0 : mrrSum / total,
+                total == 0 ? 0 : recall5Sum / total,
+                total == 0 ? 0 : recall10Sum / total,
+                total == 0 ? 0 : ndcg10Sum / total,
+                items,
+                topics
+        );
     }
 
     private List<EvaluationQuestion> questions() {
         return QUESTIONS;
     }
 
-    private record EvaluationQuestion(String question, String expected, String topic) {
+    record EvaluationQuestion(String question, String expected, String topic) {
     }
 
-    private static final List<EvaluationQuestion> QUESTIONS = List.of(
+    static final List<EvaluationQuestion> QUESTIONS = List.of(
             // ===== MySQL 索引与深分页（20 条，覆盖 MySQL索引专题.md） =====
             new EvaluationQuestion("MySQL 深分页为什么会慢", "深分页", "MySQL索引"),
             new EvaluationQuestion("深分页怎么优化", "深分页", "MySQL索引"),

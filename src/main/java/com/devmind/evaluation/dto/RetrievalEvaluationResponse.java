@@ -6,6 +6,10 @@ public record RetrievalEvaluationResponse(
         int total,
         int hits,
         double hitRate,
+        double mrr,
+        double recall5,
+        double recall10,
+        double ndcg10,
         List<EvaluationItem> items,
         List<EvaluationTopicResult> topics
 ) {

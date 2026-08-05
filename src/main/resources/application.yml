@@ -66,6 +66,8 @@ devmind:
   task-queue:
     # redis = Redis Stream 消费者组（多实例负载均衡）；memory = 内存线程池（默认，无 Redis 兜底）
     mode: ${DEVMIND_TASK_QUEUE_MODE:memory}
+  # 本地状态存储（限流计数/熔断状态）：redis = 多实例共享；memory = JVM 本地（默认）
+  state-store: ${DEVMIND_STATE_STORE:memory}
   # 备用 embedding（如硅基流动 bge-m3）：主 embedding 失败时自动切换，需与主模型维度一致（1024 维）
   embedding-fallback:
     base-url: ${DEVMIND_EMBEDDING_FALLBACK_BASE_URL:}

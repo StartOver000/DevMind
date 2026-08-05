@@ -1,6 +1,7 @@
 package com.devmind.ai;
 
 import com.devmind.common.ApiException;
+import com.devmind.common.CircuitStateStore;
 import com.devmind.common.ErrorCode;
 import com.devmind.config.DevMindProperties;
 import com.devmind.security.SecretCipher;
@@ -18,7 +19,6 @@ import org.springframework.web.client.RestClient;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 @Component
@@ -32,17 +32,17 @@ public class ChatRouter {
     private static final long CIRCUIT_OPEN_MS = 60_000L;
     /** 备用模型（常为免费模型，有瞬时限流）最大调用尝试次数 */
     private static final int FALLBACK_MAX_ATTEMPTS = 3;
+    /** 主模型熔断状态 key（多实例共享） */
+    private static final String PRIMARY_CIRCUIT_KEY = "primary";
 
     private final AiModelGateway primaryGateway;
     private final RestClient.Builder restClientBuilder;
     private final DevMindProperties properties;
     private final SecretCipher secretCipher;
     private final ObjectMapper objectMapper;
+    private final CircuitStateStore circuitStateStore;
     private final Timer chatTimer;
     private final Counter failedCounter;
-
-    private final AtomicInteger consecutiveFailures = new AtomicInteger();
-    private volatile long circuitOpenUntil = 0L;
 
     public ChatRouter(
             AiModelGateway primaryGateway,
@@ -50,6 +50,7 @@ public class ChatRouter {
             DevMindProperties properties,
             SecretCipher secretCipher,
             ObjectMapper objectMapper,
+            CircuitStateStore circuitStateStore,
             MeterRegistry meterRegistry
     ) {
         this.primaryGateway = primaryGateway;
@@ -57,6 +58,7 @@ public class ChatRouter {
         this.properties = properties;
         this.secretCipher = secretCipher;
         this.objectMapper = objectMapper;
+        this.circuitStateStore = circuitStateStore;
         this.chatTimer = Timer.builder("devmind.model.calls.duration")
                 .description("模型聊天调用耗时")
                 .register(meterRegistry);
@@ -75,7 +77,7 @@ public class ChatRouter {
         }
         try {
             AiModelGateway.ChatResult result = chatTimer.record(() -> primaryGateway.chat(systemPrompt, userPrompt));
-            consecutiveFailures.set(0);
+            circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
             return result;
         } catch (Exception primaryError) {
             failedCounter.increment();
@@ -84,7 +86,7 @@ public class ChatRouter {
             }
             try {
                 AiModelGateway.ChatResult fallback = chatTimer.record(() -> callFallback(systemPrompt, userPrompt));
-                consecutiveFailures.set(0);
+                circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
                 return fallback;
             } catch (Exception fallbackError) {
                 failedCounter.increment();
@@ -113,7 +115,7 @@ public class ChatRouter {
         }
         try {
             AiModelGateway.ChatResult result = chatTimer.record(() -> primaryGateway.chatWithTools(systemPrompt, messages, tools));
-            consecutiveFailures.set(0);
+            circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
             return result;
         } catch (Exception primaryError) {
             failedCounter.increment();
@@ -122,7 +124,7 @@ public class ChatRouter {
             }
             try {
                 AiModelGateway.ChatResult fallback = chatTimer.record(() -> callFallbackWithTools(systemPrompt, messages, tools));
-                consecutiveFailures.set(0);
+                circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
                 return fallback;
             } catch (Exception fallbackError) {
                 failedCounter.increment();
@@ -138,9 +140,7 @@ public class ChatRouter {
     private AiModelGateway.ChatResult fail(Exception error) {
         String message = error.getMessage() == null ? "" : error.getMessage();
         boolean rateLimited = message.contains("429") || message.contains("Too Many");
-        if (rateLimited || consecutiveFailures.incrementAndGet() >= CIRCUIT_FAILURE_THRESHOLD) {
-            circuitOpenUntil = System.currentTimeMillis() + CIRCUIT_OPEN_MS;
-        }
+        circuitStateStore.recordFailure(PRIMARY_CIRCUIT_KEY, CIRCUIT_FAILURE_THRESHOLD, rateLimited, CIRCUIT_OPEN_MS);
         if (error instanceof ApiException apiError) {
             throw apiError;
         }
@@ -148,17 +148,7 @@ public class ChatRouter {
     }
 
     private boolean isCircuitOpen() {
-        long openUntil = circuitOpenUntil;
-        if (openUntil == 0L) {
-            return false;
-        }
-        if (System.currentTimeMillis() >= openUntil) {
-            // 熔断时间到，半开：重置计数，放一个请求试探
-            circuitOpenUntil = 0L;
-            consecutiveFailures.set(0);
-            return false;
-        }
-        return true;
+        return circuitStateStore.isOpen(PRIMARY_CIRCUIT_KEY);
     }
 
     private AiModelGateway.ChatResult callFallback(String systemPrompt, String userPrompt) {

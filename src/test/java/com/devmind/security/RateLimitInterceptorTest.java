@@ -1,5 +1,6 @@
 package com.devmind.security;
 
+import com.devmind.common.InMemoryRateLimitStore;
 import com.devmind.config.DevMindSecurityProperties;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
@@ -29,6 +30,7 @@ class RateLimitInterceptorTest {
         // 一般接口每用户每分钟最多 3 次
         RateLimitInterceptor interceptor = new RateLimitInterceptor(
                 new DevMindSecurityProperties(5, 10, 3, 2, 7, 2, ""),
+                new InMemoryRateLimitStore(),
                 new SimpleMeterRegistry()
         );
         when(request.getRequestURI()).thenReturn("/api/knowledge-bases");
@@ -46,6 +48,7 @@ class RateLimitInterceptorTest {
     void loginEndpointHasStricterLimit() throws Exception {
         RateLimitInterceptor interceptor = new RateLimitInterceptor(
                 new DevMindSecurityProperties(5, 10, 100, 2, 7, 2, ""),
+                new InMemoryRateLimitStore(),
                 new SimpleMeterRegistry()
         );
         when(request.getRequestURI()).thenReturn("/api/auth/login");
@@ -61,6 +64,7 @@ class RateLimitInterceptorTest {
     void limitZeroDisablesRateLimit() throws Exception {
         RateLimitInterceptor interceptor = new RateLimitInterceptor(
                 new DevMindSecurityProperties(5, 10, 0, 0, 7, 2, ""),
+                new InMemoryRateLimitStore(),
                 new SimpleMeterRegistry()
         );
         when(request.getRequestURI()).thenReturn("/api/knowledge-bases");

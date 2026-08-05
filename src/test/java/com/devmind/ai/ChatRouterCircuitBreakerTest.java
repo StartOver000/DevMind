@@ -3,6 +3,7 @@ package com.devmind.ai;
 import com.devmind.common.ApiException;
 import com.devmind.config.DevMindProperties;
 import com.devmind.security.SecretCipher;
+import com.devmind.common.InMemoryCircuitStateStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -58,6 +59,7 @@ class ChatRouterCircuitBreakerTest {
                 baseProperties(""),
                 secretCipher,
                 new ObjectMapper(),
+                new InMemoryCircuitStateStore(),
                 new SimpleMeterRegistry()
         );
     }
@@ -115,6 +117,7 @@ class ChatRouterCircuitBreakerTest {
                 baseProperties("https://fallback.example.com"),
                 secretCipher,
                 new ObjectMapper(),
+                new InMemoryCircuitStateStore(),
                 new SimpleMeterRegistry()
         );
         when(secretCipher.resolve(anyString())).thenReturn("fb-secret");

@@ -139,6 +139,11 @@ async function selectConversation(id) {
   try {
     const data = await api(`/api/conversations/${id}/messages`);
     conversationId.value = id;
+    // 同步该会话的知识库到选中状态，避免“会话不属于该知识库”
+    const conv = conversations.value.find((c) => c.id === id);
+    if (conv && conv.knowledgeBaseId) {
+      chatKbIds.value = [conv.knowledgeBaseId];
+    }
     const messages = data.messages || [];
     const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
     const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
@@ -240,16 +245,39 @@ async function sendAgent() {
   }
 }
 
-function selectAgentConversation(id) {
+async function selectAgentConversation(id) {
   const conv = agentConversations.value.find((c) => c.id === id);
   conversationId.value = id;
-  if (conv) {
-    chatQuestion.value = conv.title;
-    lastQuestion.value = conv.title;
-  }
   stopTyping();
   displayedAnswer.value = '';
   agentResult.value = null;
+  try {
+    // 加载会话历史消息（记忆）
+    const data = await api(`/api/agent/conversations/${id}/messages`);
+    const messages = data && Array.isArray(data) ? data : [];
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+    lastQuestion.value = lastUser ? lastUser.content : (conv ? conv.title : '');
+    if (lastAssistant) {
+      displayedAnswer.value = lastAssistant.content;
+      agentResult.value = {
+        conversationId: id,
+        answer: lastAssistant.content,
+        references: [],
+        toolTrace: []
+      };
+    } else if (conv) {
+      chatQuestion.value = conv.title;
+      lastQuestion.value = conv.title;
+    }
+    scrollToBottom();
+  } catch (err) {
+    if (conv) {
+      chatQuestion.value = conv.title;
+      lastQuestion.value = conv.title;
+    }
+    showToast(err.message, true);
+  }
 }
 
 async function removeAgentConversation(id) {

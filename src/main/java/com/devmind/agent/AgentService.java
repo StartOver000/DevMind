@@ -2,6 +2,7 @@ package com.devmind.agent;
 
 import com.devmind.agent.dto.AgentChatRequest;
 import com.devmind.agent.dto.AgentChatResponse;
+import com.devmind.agent.dto.AgentMessage;
 import com.devmind.agent.dto.ToolTraceItem;
 import com.devmind.ai.AiModelGateway;
 import com.devmind.ai.ChatRouter;
@@ -99,6 +100,17 @@ public class AgentService {
 
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", SYSTEM_PROMPT));
+        // 多轮记忆：加载该会话最近的历史消息作为上下文
+        if (conversationId != null && conversationId > 0) {
+            List<AgentMessage> history = conversationRepository.listMessages(conversationId);
+            if (history != null && !history.isEmpty()) {
+                int from = Math.max(0, history.size() - 6);
+                for (int i = from; i < history.size(); i++) {
+                    AgentMessage historyItem = history.get(i);
+                    messages.add(Map.of("role", historyItem.role(), "content", historyItem.content()));
+                }
+            }
+        }
         if (request.history() != null) {
             for (AgentChatRequest.HistoryItem item : request.history()) {
                 messages.add(Map.of("role", item.role(), "content", item.content()));
@@ -118,6 +130,7 @@ public class AgentService {
                 List<AiModelGateway.ToolCall> toolCalls = result.toolCalls();
                 if (toolCalls == null || toolCalls.isEmpty()) {
                     String answer = result.content() == null ? "" : result.content();
+                    saveMessages(conversationId, question, answer);
                     return new AgentChatResponse(conversationId, answer, List.of(), trace);
                 }
                 // 回填 assistant（含 tool_calls）
@@ -162,7 +175,30 @@ public class AgentService {
             throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "Agent 工具调用轮数超限");
         } catch (Exception ex) {
             log.warn("agent 链路失败，降级本地 RAG: {}", ex.getMessage());
-            return fallbackToLocalRag(conversationId, question, userId, trace);
+            AgentChatResponse fallback = fallbackToLocalRag(conversationId, question, userId, trace);
+            saveMessages(conversationId, question, fallback.answer());
+            return fallback;
+        }
+    }
+
+    /** 查询会话消息（历史展示） */
+    public List<AgentMessage> messages(Long conversationId, Long userId) {
+        userService.requireUser(userId);
+        if (conversationId == null || !conversationRepository.existsForUser(conversationId, userId)) {
+            throw new ApiException(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在");
+        }
+        return conversationRepository.listMessages(conversationId);
+    }
+
+    private void saveMessages(Long conversationId, String question, String answer) {
+        if (conversationId == null || conversationId <= 0) {
+            return;
+        }
+        try {
+            conversationRepository.saveMessage(conversationId, "user", question);
+            conversationRepository.saveMessage(conversationId, "assistant", answer == null ? "" : answer);
+        } catch (Exception ex) {
+            log.warn("agent 消息持久化失败: {}", ex.getMessage());
         }
     }
 

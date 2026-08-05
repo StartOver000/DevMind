@@ -82,6 +82,8 @@ public class AgentEvaluationService {
             new EvalCase("深分页为什么慢？检索一下知识库里的资料", List.of("kb_search")),
             new EvalCase("分析这个 SQL 的性能问题，并从知识库找优化方案", List.of("sql_diagnose", "kb_search")),
             new EvalCase("知识库里有哪些内容？", List.of("kb_info")),
+            new EvalCase("知识库里有索引相关的文档吗？", List.of("doc_list")),
+            new EvalCase("我今天的模型用量和费用是多少？", List.of("usage_query")),
             new EvalCase("先看看知识库有什么，再帮我查一下索引优化资料", List.of("kb_info", "kb_search")),
             new EvalCase("你好，介绍一下你自己", List.of())
     );

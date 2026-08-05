@@ -66,6 +66,11 @@ devmind:
   task-queue:
     # redis = Redis Stream 消费者组（多实例负载均衡）；memory = 内存线程池（默认，无 Redis 兜底）
     mode: ${DEVMIND_TASK_QUEUE_MODE:memory}
+  # 备用 embedding（如硅基流动 bge-m3）：主 embedding 失败时自动切换，需与主模型维度一致（1024 维）
+  embedding-fallback:
+    base-url: ${DEVMIND_EMBEDDING_FALLBACK_BASE_URL:}
+    api-key: ${DEVMIND_EMBEDDING_FALLBACK_API_KEY:}
+    model: ${DEVMIND_EMBEDDING_FALLBACK_MODEL:BAAI/bge-m3}
   task-scan-interval-ms: ${DEVMIND_TASK_SCAN_INTERVAL_MS:60000}
   task-scan-initial-delay-ms: ${DEVMIND_TASK_SCAN_INITIAL_DELAY_MS:60000}
   sql-diagnosis-mode: ${DEVMIND_SQL_DIAGNOSIS_MODE:mock}

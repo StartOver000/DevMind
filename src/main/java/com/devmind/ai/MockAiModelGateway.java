@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 public class MockAiModelGateway implements AiModelGateway {
 
@@ -26,6 +27,60 @@ public class MockAiModelGateway implements AiModelGateway {
                 "mock-chat",
                 0,
                 0
+        );
+    }
+
+    /**
+     * 确定性工具调用（测试/演示用）：
+     * - 问题含 sql/慢 关键字 → 返回 sql_diagnose 工具调用
+     * - 问题含 检索/方案/优化/查 关键字 → 返回 kb_search 工具调用
+     * - 已携带 tool 消息（工具结果已回填）→ 直接返回总结文本，不再调用工具
+     */
+    @Override
+    public ChatResult chatWithTools(String systemPrompt, List<Map<String, Object>> messages, List<ToolSpec> tools) {
+        boolean hasToolResult = messages.stream().anyMatch(m -> "tool".equals(m.get("role")));
+        String userText = messages.stream()
+                .filter(m -> "user".equals(m.get("role")))
+                .map(m -> String.valueOf(m.get("content")))
+                .reduce("", (a, b) -> a + " " + b);
+        String lower = userText.toLowerCase();
+
+        if (hasToolResult) {
+            return new ChatResult(
+                    "模拟模型：已基于工具结果完成分析。\n\n（mock 模式：工具已执行，配置真实模型后由模型总结）",
+                    "mock-chat",
+                    0,
+                    0,
+                    List.of()
+            );
+        }
+        if (lower.contains("sql") || lower.contains("慢") || lower.contains("explain")) {
+            return new ChatResult(
+                    "",
+                    "mock-chat",
+                    0,
+                    0,
+                    List.of(new ToolCall("call_mock_sql", "sql_diagnose",
+                            "{\"sql\":\"SELECT * FROM orders ORDER BY created_time LIMIT 100000, 20\"}"))
+            );
+        }
+        if (lower.contains("检索") || lower.contains("方案") || lower.contains("优化")
+                || lower.contains("知识库") || lower.contains("查")) {
+            return new ChatResult(
+                    "",
+                    "mock-chat",
+                    0,
+                    0,
+                    List.of(new ToolCall("call_mock_kb", "kb_search",
+                            "{\"question\":\"深分页优化方案\"}"))
+            );
+        }
+        return new ChatResult(
+                "模拟模型：这是直接回答（无工具调用）。\n\n" + userText.substring(0, Math.min(userText.length(), 200)),
+                "mock-chat",
+                0,
+                0,
+                List.of()
         );
     }
 

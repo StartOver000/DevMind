@@ -83,6 +83,31 @@ public class ChatRouter {
         }
     }
 
+    /**
+     * Agent 工具调用：透传主网关，同样受熔断保护。
+     * 不走备用模型（备用链路不保证支持 function calling），失败走 fail() 统一熔断策略。
+     */
+    public AiModelGateway.ChatResult chatWithTools(
+            String systemPrompt,
+            List<Map<String, Object>> messages,
+            List<AiModelGateway.ToolSpec> tools
+    ) {
+        if (isCircuitOpen()) {
+            throw new ApiException(
+                    ErrorCode.MODEL_CALL_FAILED,
+                    "模型服务连续失败，已进入熔断降级，请稍后重试"
+            );
+        }
+        try {
+            AiModelGateway.ChatResult result = chatTimer.record(() -> primaryGateway.chatWithTools(systemPrompt, messages, tools));
+            consecutiveFailures.set(0);
+            return result;
+        } catch (Exception error) {
+            failedCounter.increment();
+            return fail(error);
+        }
+    }
+
     /** 主备均失败：429 限流立即熔断（持续状态，重试无意义）；其他错误累计达到阈值后熔断。 */
     private AiModelGateway.ChatResult fail(Exception error) {
         String message = error.getMessage() == null ? "" : error.getMessage();

@@ -39,10 +39,11 @@ public class AiModelConfig {
             RestClient.Builder restClientBuilder,
             DevMindProperties properties,
             SecretCipher secretCipher,
-            EmbeddingCacheRepository cache
+            EmbeddingCacheRepository cache,
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper
     ) {
         return new CachedEmbeddingGateway(
-                new ZhipuRestModelGateway(restClientBuilder, properties, secretCipher),
+                new ZhipuRestModelGateway(restClientBuilder, properties, secretCipher, objectMapper),
                 cache
         );
     }

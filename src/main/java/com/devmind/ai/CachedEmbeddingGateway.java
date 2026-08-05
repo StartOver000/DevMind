@@ -57,6 +57,11 @@ public class CachedEmbeddingGateway implements AiModelGateway {
         return acquire(() -> delegate.chat(systemPrompt, userPrompt));
     }
 
+    @Override
+    public ChatResult chatWithTools(String systemPrompt, java.util.List<java.util.Map<String, Object>> messages, java.util.List<ToolSpec> tools) {
+        return acquire(() -> delegate.chatWithTools(systemPrompt, messages, tools));
+    }
+
     private <T> T acquire(java.util.function.Supplier<T> action) {
         try {
             semaphore.acquire();

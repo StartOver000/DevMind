@@ -18,6 +18,26 @@ const conversations = ref([]);
 const displayedAnswer = ref('');
 let typeTimer = null;
 
+// Agent 模式
+const mode = ref('rag');
+const agentResult = ref(null);
+const agentConversations = ref([]);
+const agentLoading = ref(false);
+
+function switchMode(next) {
+  if (next === mode.value) return;
+  mode.value = next;
+  stopTyping();
+  displayedAnswer.value = '';
+  if (next === 'agent') {
+    result.value = null;
+    loadAgentConversations();
+  } else {
+    agentResult.value = null;
+    loadConversations();
+  }
+}
+
 function stopTyping() {
   if (typeTimer) {
     clearInterval(typeTimer);
@@ -70,9 +90,19 @@ async function loadConversations() {
   }
 }
 
+async function loadAgentConversations() {
+  try {
+    const data = await api('/api/agent/conversations?limit=50');
+    agentConversations.value = Array.isArray(data) ? data : [];
+  } catch (err) {
+    agentConversations.value = [];
+  }
+}
+
 function newConversation() {
   conversationId.value = null;
   result.value = null;
+  agentResult.value = null;
   chatQuestion.value = '';
   stopTyping();
   displayedAnswer.value = '';
@@ -149,6 +179,57 @@ async function sendChat() {
   }
 }
 
+async function sendAgent() {
+  const question = chatQuestion.value.trim();
+  if (!question) {
+    showToast('请输入问题', true);
+    return;
+  }
+  agentLoading.value = true;
+  agentResult.value = null;
+  try {
+    const data = await api('/api/agent/chat', {
+      method: 'POST',
+      body: JSON.stringify({ conversationId: conversationId.value || 0, question })
+    });
+    conversationId.value = data.conversationId;
+    agentResult.value = data;
+    typeAnswer(data.answer);
+    await loadAgentConversations();
+  } catch (err) {
+    agentResult.value = { error: err.message };
+    showToast(err.message, true);
+  } finally {
+    agentLoading.value = false;
+  }
+}
+
+function selectAgentConversation(id) {
+  const conv = agentConversations.value.find((c) => c.id === id);
+  conversationId.value = id;
+  if (conv) {
+    chatQuestion.value = conv.title;
+  }
+  stopTyping();
+  displayedAnswer.value = '';
+  agentResult.value = null;
+}
+
+async function removeAgentConversation(id) {
+  if (!confirm('确认删除该会话？')) return;
+  try {
+    await api(`/api/agent/conversations/${id}`, { method: 'DELETE' });
+    if (conversationId.value === id) {
+      conversationId.value = null;
+      agentResult.value = null;
+    }
+    await loadAgentConversations();
+    showToast('会话已删除');
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
 watch(
   () => session.reloadKey,
   () => {
@@ -156,6 +237,7 @@ watch(
     conversationId.value = null;
     ensureKbs();
     loadConversations();
+    loadAgentConversations();
   }
 );
 
@@ -173,29 +255,37 @@ onBeforeUnmount(() => {
   <section class="chat-grid">
     <div class="chat-left">
       <div class="panel chat-form">
-      <h2>RAG 问答</h2>
-      <label>知识库（可多选，多选为跨库聚合问答）
-        <div class="kb-check-group">
-          <label v-for="kb in kbsStore.kbs" :key="kb.id" class="kb-check">
-            <input type="checkbox" :value="kb.id" v-model="chatKbIds">
-            {{ kb.name }}
-          </label>
+      <div class="panel-header">
+        <h2>{{ mode === 'rag' ? 'RAG 问答' : 'Agent 问答' }}</h2>
+        <div class="mode-switch">
+          <button class="small" :class="{ active: mode === 'rag' }" @click="switchMode('rag')">RAG</button>
+          <button class="small" :class="{ active: mode === 'agent' }" @click="switchMode('agent')">Agent</button>
         </div>
-      </label>
-      <label>Top-K
-        <input v-model.number="chatTopK" type="number" min="1" max="10">
-      </label>
-      <label>标签过滤（逗号分隔，可选）
-        <input v-model="chatTags" placeholder="例如：mysql,索引">
-      </label>
+      </div>
+      <template v-if="mode === 'rag'">
+        <label>知识库（可多选，多选为跨库聚合问答）
+          <div class="kb-check-group">
+            <label v-for="kb in kbsStore.kbs" :key="kb.id" class="kb-check">
+              <input type="checkbox" :value="kb.id" v-model="chatKbIds">
+              {{ kb.name }}
+            </label>
+          </div>
+        </label>
+        <label>Top-K
+          <input v-model.number="chatTopK" type="number" min="1" max="10">
+        </label>
+        <label>标签过滤（逗号分隔，可选）
+          <input v-model="chatTags" placeholder="例如：mysql,索引">
+        </label>
+      </template>
       <textarea
         v-model="chatQuestion"
         rows="4"
         maxlength="2000"
-        placeholder="输入问题，例如：MySQL 深分页为什么会变慢？"
+        :placeholder="mode === 'rag' ? '输入问题，例如：MySQL 深分页为什么会变慢？' : '输入问题，Agent 会自动调用工具（知识库检索/SQL 诊断等）回答，例如：深分页为什么慢？怎么优化？'"
       ></textarea>
-      <button class="primary" :disabled="loading" @click="sendChat">
-        {{ loading ? '检索中…' : '提问' }}
+      <button class="primary" :disabled="loading || agentLoading" @click="mode === 'rag' ? sendChat() : sendAgent()">
+        {{ (mode === 'rag' ? loading : agentLoading) ? '处理中…' : '提问' }}
       </button>
     </div>
     <div class="panel chat-history">
@@ -203,43 +293,97 @@ onBeforeUnmount(() => {
         <h2>历史会话</h2>
         <button class="secondary small" @click="newConversation">新建</button>
       </div>
-      <div v-if="!conversations.length" class="empty small">暂无历史会话</div>
-      <div
-        v-for="c in conversations"
-        :key="c.id"
-        class="conv-item"
-        :class="{ active: c.id === conversationId }"
-      >
-        <button class="conv-main" @click="selectConversation(c.id)">
-          <span class="conv-title">{{ c.title }}</span>
-          <span class="conv-time">{{ formatTime(c.updatedTime) }}</span>
-        </button>
-        <button class="conv-del" title="删除会话" @click="removeConversation(c.id)">✕</button>
-      </div>
-    </div>
-    </div>
-    <div class="panel chat-result" :class="{ empty: !result }">
-      <div v-if="!result" class="empty">回答会显示在这里</div>
-      <template v-else-if="result.error">
-        <div class="empty">{{ result.error }}</div>
+      <template v-if="mode === 'rag'">
+        <div v-if="!conversations.length" class="empty small">暂无历史会话</div>
+        <div
+          v-for="c in conversations"
+          :key="c.id"
+          class="conv-item"
+          :class="{ active: c.id === conversationId }"
+        >
+          <button class="conv-main" @click="selectConversation(c.id)">
+            <span class="conv-title">{{ c.title }}</span>
+            <span class="conv-time">{{ formatTime(c.updatedTime) }}</span>
+          </button>
+          <button class="conv-del" title="删除会话" @click="removeConversation(c.id)">✕</button>
+        </div>
       </template>
       <template v-else>
-        <div class="panel-header">
-          <h2>回答</h2>
-          <span class="status SUCCEEDED">会话 #{{ result.conversationId }}</span>
+        <div v-if="!agentConversations.length" class="empty small">暂无 Agent 会话</div>
+        <div
+          v-for="c in agentConversations"
+          :key="c.id"
+          class="conv-item"
+          :class="{ active: c.id === conversationId }"
+        >
+          <button class="conv-main" @click="selectAgentConversation(c.id)">
+            <span class="conv-title">{{ c.title }}</span>
+            <span class="conv-time">{{ formatTime(c.createdTime) }}</span>
+          </button>
+          <button class="conv-del" title="删除会话" @click="removeAgentConversation(c.id)">✕</button>
         </div>
-        <div class="answer">{{ displayedAnswer }}</div>
-        <h3>引用来源（{{ result.references.length }}）</h3>
-        <div v-for="(ref, i) in result.references" :key="i" class="reference">
-          <div class="head">
-            <span>{{ i + 1 }}. {{ ref.documentName }}</span>
-            <span class="ref-actions">
-              <span class="score">{{ ref.similarityScore.toFixed(4) }}</span>
-              <button v-if="ref.documentId" class="small" @click="previewReference(ref)">预览</button>
-            </span>
+      </template>
+    </div>
+    </div>
+    <div class="panel chat-result" :class="{ empty: (mode === 'rag' && !result) || (mode === 'agent' && !agentResult) }">
+      <template v-if="mode === 'rag'">
+        <div v-if="!result" class="empty">回答会显示在这里</div>
+        <template v-else-if="result.error">
+          <div class="empty">{{ result.error }}</div>
+        </template>
+        <template v-else>
+          <div class="panel-header">
+            <h2>回答</h2>
+            <span class="status SUCCEEDED">会话 #{{ result.conversationId }}</span>
           </div>
-          <p>{{ ref.content }}</p>
-        </div>
+          <div class="answer">{{ displayedAnswer }}</div>
+          <h3>引用来源（{{ result.references.length }}）</h3>
+          <div v-for="(ref, i) in result.references" :key="i" class="reference">
+            <div class="head">
+              <span>{{ i + 1 }}. {{ ref.documentName }}</span>
+              <span class="ref-actions">
+                <span class="score">{{ ref.similarityScore.toFixed(4) }}</span>
+                <button v-if="ref.documentId" class="small" @click="previewReference(ref)">预览</button>
+              </span>
+            </div>
+            <p>{{ ref.content }}</p>
+          </div>
+        </template>
+      </template>
+      <template v-else>
+        <div v-if="!agentResult" class="empty">回答会显示在这里（Agent 会自动调用工具）</div>
+        <template v-else-if="agentResult.error">
+          <div class="empty">{{ agentResult.error }}</div>
+        </template>
+        <template v-else>
+          <div class="panel-header">
+            <h2>回答</h2>
+            <span class="status SUCCEEDED">Agent 会话 #{{ agentResult.conversationId }}</span>
+          </div>
+          <div v-if="agentResult.toolTrace && agentResult.toolTrace.length" class="tool-trace">
+            <details>
+              <summary>Agent 执行轨迹（{{ agentResult.toolTrace.length }} 步）</summary>
+              <div v-for="(t, i) in agentResult.toolTrace" :key="i" class="tool-trace-item" :class="{ fail: !t.ok }">
+                <span class="tt-icon">{{ t.ok ? '✓' : '✗' }}</span>
+                <span class="tt-name">{{ t.tool }}</span>
+                <span class="tt-args">{{ t.args }}</span>
+                <span class="tt-time">{{ t.costMs }}ms</span>
+              </div>
+            </details>
+          </div>
+          <div class="answer">{{ displayedAnswer }}</div>
+          <h3 v-if="agentResult.references && agentResult.references.length">引用来源（{{ agentResult.references.length }}）</h3>
+          <div v-for="(ref, i) in (agentResult.references || [])" :key="i" class="reference">
+            <div class="head">
+              <span>{{ i + 1 }}. {{ ref.documentName }}</span>
+              <span class="ref-actions">
+                <span class="score">{{ ref.similarityScore.toFixed(4) }}</span>
+                <button v-if="ref.documentId" class="small" @click="previewReference(ref)">预览</button>
+              </span>
+            </div>
+            <p>{{ ref.content }}</p>
+          </div>
+        </template>
       </template>
     </div>
   </section>
@@ -280,6 +424,86 @@ onBeforeUnmount(() => {
 
 .kb-check input {
   width: auto;
+}
+
+.mode-switch {
+  display: flex;
+  gap: 4px;
+}
+
+.mode-switch button {
+  padding: 5px 12px;
+  color: var(--muted);
+}
+
+.mode-switch button.active {
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tool-trace {
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--alt-bg);
+}
+
+.tool-trace summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tool-trace-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tool-trace-item:last-child {
+  border-bottom: 0;
+}
+
+.tool-trace-item.fail .tt-name {
+  color: var(--danger);
+}
+
+.tt-icon {
+  width: 16px;
+  color: var(--ok);
+}
+
+.tt-icon:has(+ .tt-name) {
+  color: var(--ok);
+}
+
+.tool-trace-item.fail .tt-icon {
+  color: var(--danger);
+}
+
+.tt-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tt-args {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+.tt-time {
+  margin-left: auto;
+  color: var(--muted);
+  flex-shrink: 0;
 }
 
 .chat-history {

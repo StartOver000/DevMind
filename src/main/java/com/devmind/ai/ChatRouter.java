@@ -5,22 +5,27 @@ import com.devmind.common.CircuitStateStore;
 import com.devmind.common.ErrorCode;
 import com.devmind.config.DevMindProperties;
 import com.devmind.security.SecretCipher;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
-import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
+/**
+ * 多 Provider 模型路由：
+ * - 主网关（primaryGateway，按 model-mode 装配）失败后，按序尝试备用 Provider 列表，
+ *   每个 Provider 独立熔断状态（互不影响、故障域隔离），全部失败才抛异常交给上层降级。
+ * - 备用 Provider 常为免费模型（OpenRouter 等，有瞬时限流），调用带退避重试。
+ * - 增加新 Provider：在 {@link #buildFallbackProviders()} 加一个 {@link OpenAiCompatibleGateway} 即可（配置驱动）。
+ */
 @Component
 public class ChatRouter {
 
@@ -30,16 +35,17 @@ public class ChatRouter {
     private static final int CIRCUIT_FAILURE_THRESHOLD = 3;
     /** 熔断打开后多久尝试恢复 */
     private static final long CIRCUIT_OPEN_MS = 60_000L;
-    /** 备用模型（常为免费模型，有瞬时限流）最大调用尝试次数 */
+    /** 备用 Provider（免费模型，有瞬时限流）最大调用尝试次数 */
     private static final int FALLBACK_MAX_ATTEMPTS = 3;
-    /** 主模型熔断状态 key（多实例共享） */
+    /** 主模型熔断状态 key */
     private static final String PRIMARY_CIRCUIT_KEY = "primary";
 
+    /** 备用 Provider：name 用于熔断隔离与日志；supportsTools 用于 Agent 工具链路 */
+    public record ChatProvider(String name, AiModelGateway gateway, boolean supportsTools) {
+    }
+
     private final AiModelGateway primaryGateway;
-    private final RestClient.Builder restClientBuilder;
-    private final DevMindProperties properties;
-    private final SecretCipher secretCipher;
-    private final ObjectMapper objectMapper;
+    private final List<ChatProvider> fallbackProviders;
     private final CircuitStateStore circuitStateStore;
     private final Timer chatTimer;
     private final Counter failedCounter;
@@ -49,16 +55,12 @@ public class ChatRouter {
             RestClient.Builder restClientBuilder,
             DevMindProperties properties,
             SecretCipher secretCipher,
-            ObjectMapper objectMapper,
             CircuitStateStore circuitStateStore,
             MeterRegistry meterRegistry
     ) {
         this.primaryGateway = primaryGateway;
-        this.restClientBuilder = restClientBuilder;
-        this.properties = properties;
-        this.secretCipher = secretCipher;
-        this.objectMapper = objectMapper;
         this.circuitStateStore = circuitStateStore;
+        this.fallbackProviders = buildFallbackProviders(restClientBuilder, properties, secretCipher);
         this.chatTimer = Timer.builder("devmind.model.calls.duration")
                 .description("模型聊天调用耗时")
                 .register(meterRegistry);
@@ -67,9 +69,29 @@ public class ChatRouter {
                 .register(meterRegistry);
     }
 
+    /** 从配置构建备用 Provider 列表（目前：OpenRouter 备用 chat 网关，可扩展） */
+    private List<ChatProvider> buildFallbackProviders(
+            RestClient.Builder restClientBuilder,
+            DevMindProperties properties,
+            SecretCipher secretCipher
+    ) {
+        List<ChatProvider> providers = new ArrayList<>();
+        if (properties.modelFallbackBaseUrl() != null && !properties.modelFallbackBaseUrl().isBlank()) {
+            OpenAiCompatibleGateway openrouter = new OpenAiCompatibleGateway(
+                    restClientBuilder,
+                    properties.modelFallbackBaseUrl(),
+                    secretCipher.resolve(properties.modelFallbackApiKey()),
+                    properties.modelFallbackChatModel(),
+                    new ObjectMapper()
+            );
+            providers.add(new ChatProvider("openrouter", openrouter, true));
+        }
+        return providers;
+    }
+
     public AiModelGateway.ChatResult chat(String systemPrompt, String userPrompt) {
-        if (isCircuitOpen()) {
-            // 熔断打开：不再重试主/备模型，快速失败，让上层立即走本地 RAG 降级
+        if (isCircuitOpen(PRIMARY_CIRCUIT_KEY)) {
+            // 熔断打开：不再重试任何模型，快速失败，让上层立即走本地 RAG 降级
             throw new ApiException(
                     ErrorCode.MODEL_CALL_FAILED,
                     "模型服务连续失败，已进入熔断降级，请稍后重试"
@@ -81,33 +103,26 @@ public class ChatRouter {
             return result;
         } catch (Exception primaryError) {
             failedCounter.increment();
-            if (properties.modelFallbackBaseUrl().isBlank()) {
-                return fail(primaryError);
+            for (ChatProvider provider : fallbackProviders) {
+                AiModelGateway.ChatResult result = tryProvider(provider, () -> provider.gateway().chat(systemPrompt, userPrompt));
+                if (result != null) {
+                    return result;
+                }
             }
-            try {
-                AiModelGateway.ChatResult fallback = chatTimer.record(() -> callFallback(systemPrompt, userPrompt));
-                circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
-                return fallback;
-            } catch (Exception fallbackError) {
-                failedCounter.increment();
-                return fail(new ApiException(
-                        ErrorCode.MODEL_CALL_FAILED,
-                        "模型调用失败: " + fallbackError.getMessage()
-                ));
-            }
+            return fail(primaryError);
         }
     }
 
     /**
-     * Agent 工具调用：优先主网关，失败自动切备用模型（备用支持 function calling 时可用），
-     * 全部失败才走 fail() 统一熔断策略。
+     * Agent 工具调用：主网关失败后按序尝试支持 tools 的备用 Provider，
+     * 每个 Provider 独立熔断；全部失败走 fail() 统一熔断策略。
      */
     public AiModelGateway.ChatResult chatWithTools(
             String systemPrompt,
             List<Map<String, Object>> messages,
             List<AiModelGateway.ToolSpec> tools
     ) {
-        if (isCircuitOpen()) {
+        if (isCircuitOpen(PRIMARY_CIRCUIT_KEY)) {
             throw new ApiException(
                     ErrorCode.MODEL_CALL_FAILED,
                     "模型服务连续失败，已进入熔断降级，请稍后重试"
@@ -119,135 +134,83 @@ public class ChatRouter {
             return result;
         } catch (Exception primaryError) {
             failedCounter.increment();
-            if (properties.modelFallbackBaseUrl().isBlank()) {
-                return fail(primaryError);
+            for (ChatProvider provider : fallbackProviders) {
+                if (!provider.supportsTools()) {
+                    continue;
+                }
+                AiModelGateway.ChatResult result = tryProvider(
+                        provider,
+                        () -> provider.gateway().chatWithTools(systemPrompt, messages, tools)
+                );
+                if (result != null) {
+                    return result;
+                }
             }
-            try {
-                AiModelGateway.ChatResult fallback = chatTimer.record(() -> callFallbackWithTools(systemPrompt, messages, tools));
-                circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
-                return fallback;
-            } catch (Exception fallbackError) {
-                failedCounter.increment();
-                return fail(new ApiException(
-                        ErrorCode.MODEL_CALL_FAILED,
-                        "模型调用失败: " + fallbackError.getMessage()
-                ));
-            }
+            return fail(primaryError);
+        }
+    }
+
+    /**
+     * 尝试一个备用 Provider：熔断跳过、退避重试 {@link #FALLBACK_MAX_ATTEMPTS} 次；
+     * 成功则重置自身与主模型计数并返回，失败则记录该 Provider 独立熔断并返回 null。
+     */
+    private AiModelGateway.ChatResult tryProvider(
+            ChatProvider provider,
+            Supplier<AiModelGateway.ChatResult> action
+    ) {
+        String key = providerKey(provider.name());
+        if (circuitStateStore.isOpen(key)) {
+            log.warn("备用 Provider {} 熔断中，跳过", provider.name());
+            return null;
+        }
+        try {
+            AiModelGateway.ChatResult result = invokeWithRetry(action, provider.name());
+            circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
+            circuitStateStore.reset(key);
+            return result;
+        } catch (Exception error) {
+            circuitStateStore.recordFailure(key, CIRCUIT_FAILURE_THRESHOLD, isRateLimited(error), CIRCUIT_OPEN_MS);
+            failedCounter.increment();
+            log.warn("备用 Provider {} 调用失败: {}", provider.name(), error.getMessage());
+            return null;
         }
     }
 
     /** 主备均失败：429 限流立即熔断（持续状态，重试无意义）；其他错误累计达到阈值后熔断。 */
     private AiModelGateway.ChatResult fail(Exception error) {
-        String message = error.getMessage() == null ? "" : error.getMessage();
-        boolean rateLimited = message.contains("429") || message.contains("Too Many");
-        circuitStateStore.recordFailure(PRIMARY_CIRCUIT_KEY, CIRCUIT_FAILURE_THRESHOLD, rateLimited, CIRCUIT_OPEN_MS);
+        circuitStateStore.recordFailure(PRIMARY_CIRCUIT_KEY, CIRCUIT_FAILURE_THRESHOLD, isRateLimited(error), CIRCUIT_OPEN_MS);
         if (error instanceof ApiException apiError) {
             throw apiError;
         }
         throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型调用失败: " + error.getMessage());
     }
 
-    private boolean isCircuitOpen() {
-        return circuitStateStore.isOpen(PRIMARY_CIRCUIT_KEY);
+    private boolean isCircuitOpen(String key) {
+        return circuitStateStore.isOpen(key);
     }
 
-    private AiModelGateway.ChatResult callFallback(String systemPrompt, String userPrompt) {
-        RestClient client = restClientBuilder.baseUrl(properties.modelFallbackBaseUrl()).build();
-        Map<String, Object> body = Map.of(
-                "model", properties.modelFallbackChatModel(),
-                "messages", List.of(
-                        Map.of("role", "system", "content", systemPrompt),
-                        Map.of("role", "user", "content", userPrompt)
-                ),
-                "temperature", 0.2
-        );
-        FallbackChatResponse response = callFallbackWithRetry(() -> client.post()
-                .uri("/chat/completions")
-                .header("Authorization", "Bearer " + secretCipher.resolve(properties.modelFallbackApiKey()))
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(body)
-                .retrieve()
-                .body(FallbackChatResponse.class));
-        return new AiModelGateway.ChatResult(
-                response.choices().get(0).message().content(),
-                properties.modelFallbackChatModel(),
-                null,
-                null
-        );
+    private static String providerKey(String name) {
+        return "provider:" + name;
     }
 
-    /**
-     * 备用模型工具调用：备用链路（如 OpenRouter Nemotron）支持 function calling 时，
-     * 主模型 429/故障下 Agent 仍可完成工具编排。请求体含 tools 定义。
-     */
-    @SuppressWarnings("null")
-    private AiModelGateway.ChatResult callFallbackWithTools(
-            String systemPrompt,
-            List<Map<String, Object>> messages,
-            List<AiModelGateway.ToolSpec> tools
-    ) {
-        RestClient client = restClientBuilder.baseUrl(properties.modelFallbackBaseUrl()).build();
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", properties.modelFallbackChatModel());
-        body.put("messages", messages);
-        body.put("temperature", 0.2);
-        body.put("tools", tools.stream()
-                .map(tool -> Map.of(
-                        "type", "function",
-                        "function", Map.of(
-                                "name", tool.name(),
-                                "description", tool.description(),
-                                "parameters", parseJson(tool.parametersJson())
-                        )
-                ))
-                .toList());
-        FallbackChatResponse response = callFallbackWithRetry(() -> client.post()
-                .uri("/chat/completions")
-                .header("Authorization", "Bearer " + secretCipher.resolve(properties.modelFallbackApiKey()))
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(body)
-                .retrieve()
-                .body(FallbackChatResponse.class));
-        FallbackChatResponse.Message message = response.choices().get(0).message();
-        List<AiModelGateway.ToolCall> toolCalls = null;
-        if (message.tool_calls() != null && !message.tool_calls().isEmpty()) {
-            toolCalls = message.tool_calls().stream()
-                    .map(tc -> new AiModelGateway.ToolCall(
-                            tc.id() == null ? "" : tc.id(),
-                            tc.function() == null ? "" : tc.function().name(),
-                            tc.function() == null || tc.function().arguments() == null ? "{}" : tc.function().arguments()
-                    ))
-                    .toList();
-        }
-        return new AiModelGateway.ChatResult(
-                message == null || message.content() == null ? "" : message.content(),
-                properties.modelFallbackChatModel(),
-                null,
-                null,
-                toolCalls
-        );
-    }
-
-    /**
-     * 备用模型调用重试：免费模型常有瞬时限流（空 choices / 错误响应），
-     * 退避重试最多 {@link #FALLBACK_MAX_ATTEMPTS} 次，全部失败才抛出。
-     */
-    private FallbackChatResponse callFallbackWithRetry(Supplier<FallbackChatResponse> action) {
-        FallbackChatResponse response = null;
+    /** Provider 调用退避重试（免费模型常有瞬时限流） */
+    private AiModelGateway.ChatResult invokeWithRetry(Supplier<AiModelGateway.ChatResult> action, String name) {
         Exception last = null;
         for (int attempt = 1; attempt <= FALLBACK_MAX_ATTEMPTS; attempt++) {
             try {
-                response = action.get();
-                if (response != null && response.choices() != null && !response.choices().isEmpty()) {
-                    return response;
-                }
+                return action.get();
             } catch (Exception ex) {
                 last = ex;
-                log.warn("备用模型调用失败 attempt={}: {}", attempt, ex.getMessage());
+                log.warn("备用 Provider {} 调用失败 attempt={}: {}", name, attempt, ex.getMessage());
             }
             sleep(1000L * attempt);
         }
-        throw new IllegalStateException("备用模型返回为空", last);
+        throw new IllegalStateException("备用 Provider 调用失败: " + name, last);
+    }
+
+    private static boolean isRateLimited(Exception error) {
+        String message = error.getMessage() == null ? "" : error.getMessage();
+        return message.contains("429") || message.contains("Too Many");
     }
 
     private static void sleep(long millis) {
@@ -255,36 +218,6 @@ public class ChatRouter {
             Thread.sleep(millis);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-        }
-    }
-
-    @SuppressWarnings("null")
-    private Map<String, Object> parseJson(String json) {
-        if (json == null || json.isBlank()) {
-            return Map.of();
-        }
-        try {
-            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {
-            });
-        } catch (Exception ex) {
-            return Map.of();
-        }
-    }
-
-    public record FallbackChatResponse(List<Choice> choices) {
-        public record Choice(Message message) {
-        }
-
-        public record Message(String content, List<ToolCallData> tool_calls) {
-            public Message(String content) {
-                this(content, null);
-            }
-        }
-
-        public record ToolCallData(String id, String type, FunctionCall function) {
-        }
-
-        public record FunctionCall(String name, String arguments) {
         }
     }
 }

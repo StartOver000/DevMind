@@ -4,7 +4,6 @@ import com.devmind.common.ApiException;
 import com.devmind.config.DevMindProperties;
 import com.devmind.security.SecretCipher;
 import com.devmind.common.InMemoryCircuitStateStore;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,7 +57,6 @@ class ChatRouterCircuitBreakerTest {
                 restClientBuilder,
                 baseProperties(""),
                 secretCipher,
-                new ObjectMapper(),
                 new InMemoryCircuitStateStore(),
                 new SimpleMeterRegistry()
         );
@@ -111,19 +109,7 @@ class ChatRouterCircuitBreakerTest {
 
     @Test
     void chatWithToolsFallsBackToSecondaryWhenPrimaryFails() {
-        router = new ChatRouter(
-                primaryGateway,
-                restClientBuilder,
-                baseProperties("https://fallback.example.com"),
-                secretCipher,
-                new ObjectMapper(),
-                new InMemoryCircuitStateStore(),
-                new SimpleMeterRegistry()
-        );
-        when(secretCipher.resolve(anyString())).thenReturn("fb-secret");
-        doThrow(new RuntimeException("HTTP 429"))
-                .when(primaryGateway).chatWithTools(anyString(), anyList(), anyList());
-
+        // 先绑定 mock 响应，再构建 router（构造内部会用同一 builder 构建备用 Provider 客户端）
         MockRestServiceServer server = MockRestServiceServer.bindTo(restClientBuilder).build();
         server.expect(requestTo("https://fallback.example.com/chat/completions"))
                 .andRespond(withSuccess(
@@ -134,6 +120,18 @@ class ChatRouterCircuitBreakerTest {
                         """,
                         MediaType.APPLICATION_JSON
                 ));
+
+        when(secretCipher.resolve(anyString())).thenReturn("fb-secret");
+        router = new ChatRouter(
+                primaryGateway,
+                restClientBuilder,
+                baseProperties("https://fallback.example.com"),
+                secretCipher,
+                new InMemoryCircuitStateStore(),
+                new SimpleMeterRegistry()
+        );
+        doThrow(new RuntimeException("HTTP 429"))
+                .when(primaryGateway).chatWithTools(anyString(), anyList(), anyList());
 
         AiModelGateway.ChatResult result = router.chatWithTools(
                 "s",

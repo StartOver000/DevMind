@@ -46,7 +46,8 @@ onMounted(loadUsage);
       </div>
       <div v-else class="empty small">加载中…</div>
     </div>
-    <div class="panel">
+    <div class="usage-cols">
+    <div class="panel scroll-panel">
       <div class="panel-header"><h2>最近调用</h2></div>
       <div class="table-wrap">
         <table>
@@ -66,7 +67,7 @@ onMounted(loadUsage);
         </table>
       </div>
     </div>
-    <div class="panel">
+    <div class="panel scroll-panel">
       <div class="panel-header"><h2>工具调用（近 7 天）</h2></div>
       <div v-if="!toolStats.length" class="empty small">暂无工具调用记录</div>
       <div v-else class="table-wrap">
@@ -87,7 +88,7 @@ onMounted(loadUsage);
         </table>
       </div>
     </div>
-    <div class="panel">
+    <div class="panel scroll-panel">
       <div class="panel-header"><h2>工作流运行（近 7 天）</h2></div>
       <div v-if="!workflowStats.length" class="empty small">暂无工作流运行记录</div>
       <div v-else class="table-wrap">
@@ -107,6 +108,7 @@ onMounted(loadUsage);
         </table>
       </div>
     </div>
+    </div>
   </div>
 </template>
 
@@ -114,5 +116,31 @@ onMounted(loadUsage);
 .usage-stack {
   display: grid;
   gap: 16px;
+}
+
+/* 三个统计表格并排，内容多时列内滚动，一屏展示 */
+.usage-cols {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+/* 表格面板：内容多时面板内滚动，不撑高整个页面 */
+.usage-cols .scroll-panel {
+  height: calc(100vh - 190px);
+  min-height: 240px;
+  overflow-y: auto;
+}
+
+@media (max-width: 1100px) {
+  .usage-cols {
+    grid-template-columns: 1fr;
+  }
+  .usage-cols .scroll-panel {
+    height: auto;
+    max-height: 360px;
+    overflow-y: auto;
+  }
 }
 </style>

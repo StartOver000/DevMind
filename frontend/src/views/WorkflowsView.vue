@@ -322,7 +322,7 @@ onMounted(load);
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel scroll-panel">
       <h2>我的流程（{{ workflows.length }}）</h2>
       <div v-if="loading" class="empty">加载中…</div>
       <div v-else-if="!workflows.length" class="empty">还没有流程。左侧描述需求，AI 帮你生成。</div>
@@ -404,6 +404,20 @@ onMounted(load);
 .wf-grid .panel {
   display: grid;
   gap: 10px;
+}
+
+/* 右侧"我的流程"：内容多时面板内滚动，不撑高整个页面 */
+.scroll-panel {
+  height: calc(100vh - 110px);
+  overflow-y: auto;
+  align-content: start;
+}
+
+@media (max-width: 900px) {
+  .scroll-panel {
+    height: auto;
+    overflow: visible;
+  }
 }
 
 .draft {

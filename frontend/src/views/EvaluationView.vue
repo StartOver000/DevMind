@@ -124,7 +124,7 @@ onMounted(ensureKbs);
       </div>
     </div>
 
-    <div class="eval-grid">
+    <div class="eval-grid scroll-grid">
     <div class="panel eval-form">
       <h2>检索评估</h2>
       <label>知识库
@@ -235,6 +235,20 @@ onMounted(ensureKbs);
   gap: 16px;
   grid-template-columns: 360px 1fr;
   align-items: start;
+}
+
+/* 检索评估区块：内容多时整体内部滚动，不撑高页面 */
+.scroll-grid {
+  height: calc(100vh - 420px);
+  min-height: 240px;
+  overflow-y: auto;
+}
+
+@media (max-width: 900px) {
+  .scroll-grid {
+    height: auto;
+    overflow: visible;
+  }
 }
 
 .eval-form {

@@ -46,16 +46,26 @@ public class WorkflowScheduler {
     /**
      * 启动时清理历史卡死的 RUNNING run（如进程崩溃/工具挂起留下的），
      * 避免它们永久阻塞对应工作流的后续执行。
+     * 单机场景：启动即接管，清理全部 RUNNING（含刚遗留不足 5 分钟的），
+     * 再用 5 分钟阈值兜底（防止极端情况下误伤）。
      */
     @PostConstruct
     public void cleanupStaleRuns() {
         try {
-            int cleaned = runRepository.failStaleRuns(5);
-            if (cleaned > 0) {
-                log.warn("启动清理 {} 个滞留 RUNNING 的 workflow run（标记 FAILED）", cleaned);
+            int cleanedAll = runRepository.failAllRunningOnStartup();
+            if (cleanedAll > 0) {
+                log.warn("启动清理 {} 个滞留 RUNNING 的 workflow run（标记 FAILED）", cleanedAll);
             }
         } catch (Exception ex) {
             log.warn("启动清理滞留 run 失败: {}", ex.getMessage());
+        }
+        try {
+            int cleaned = runRepository.failStaleRuns(5);
+            if (cleaned > 0) {
+                log.warn("启动兜底清理 {} 个超时 RUNNING 的 workflow run", cleaned);
+            }
+        } catch (Exception ex) {
+            log.warn("启动兜底清理滞留 run 失败: {}", ex.getMessage());
         }
     }
 

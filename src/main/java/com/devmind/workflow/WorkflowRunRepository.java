@@ -84,6 +84,20 @@ public class WorkflowRunRepository {
                 """, staleMinutes, staleMinutes);
     }
 
+    /**
+     * 启动时清理全部滞留 RUNNING run（单机场景：新进程启动即接管，旧进程残留都应终止）。
+     * 防止进程被强杀后残留 RUNNING 阻塞对应工作流后续执行（如定时任务反复报"正在执行中"）。
+     */
+    public int failAllRunningOnStartup() {
+        return jdbcTemplate.update("""
+                UPDATE workflow_run
+                SET status = 'FAILED',
+                    error = '进程重启，遗留执行被终止',
+                    finished_at = CURRENT_TIMESTAMP
+                WHERE status = 'RUNNING'
+                """);
+    }
+
     public void insertStep(Long runId, int index, String toolName, String inputJson, String outputJson,
                            String status, long costMs, String error) {
         jdbcTemplate.update(

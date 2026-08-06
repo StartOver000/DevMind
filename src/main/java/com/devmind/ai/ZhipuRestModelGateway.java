@@ -177,10 +177,11 @@ public class ZhipuRestModelGateway implements AiModelGateway {
             } catch (Exception ex) {
                 last = ex;
                 log.warn("zhipu api call failed, attempt={}, error={}", i + 1, ex.getMessage());
-                // 429 限流是账户级持续状态，短时重试大概率仍 429：
+                // 429 限流 / 超时是账户级持续状态，短时重试大概率仍失败：
                 // 直接放弃，让上层（关键词检索降级 / ChatRouter 熔断 + 本地 RAG）立即兜底，避免每次请求吃满退避。
                 String message = ex.getMessage() == null ? "" : ex.getMessage();
-                if (message.contains("429") || message.contains("Too Many")) {
+                if (message.contains("429") || message.contains("Too Many")
+                        || message.contains("timed out") || message.contains("Timeout")) {
                     break;
                 }
                 long baseDelay = 2000L;

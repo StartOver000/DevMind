@@ -144,4 +144,78 @@ class ChatRouterCircuitBreakerTest {
         assertThat(result.toolCalls().get(0).name()).isEqualTo("kb_search");
         server.verify();
     }
+
+    @Test
+    void rateLimitedPrimarySkipsPrimaryOnNextCallAndUsesFallback() {
+        // 主模型 429 熔断后：后续请求直接走备用，不再调用主模型（避免每个请求都白等 429）
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restClientBuilder).build();
+        // 备用返回成功 JSON（两次调用）
+        server.expect(requestTo("https://fallback.example.com/chat/completions"))
+                .andRespond(withSuccess(
+                        "{\"choices\":[{\"message\":{\"content\":\"fb-ok\"}}]}",
+                        MediaType.APPLICATION_JSON
+                ));
+        server.expect(requestTo("https://fallback.example.com/chat/completions"))
+                .andRespond(withSuccess(
+                        "{\"choices\":[{\"message\":{\"content\":\"fb-ok-2\"}}]}",
+                        MediaType.APPLICATION_JSON
+                ));
+
+        when(secretCipher.resolve(anyString())).thenReturn("fb-secret");
+        router = new ChatRouter(
+                primaryGateway,
+                restClientBuilder,
+                baseProperties("https://fallback.example.com"),
+                secretCipher,
+                new InMemoryCircuitStateStore(),
+                new SimpleMeterRegistry()
+        );
+        doThrow(new RuntimeException("HTTP 429"))
+                .when(primaryGateway).chat(anyString(), anyString());
+
+        // 第 1 次：主模型 429 → 备用接管成功
+        AiModelGateway.ChatResult first = router.chat("s", "u");
+        assertThat(first.content()).isEqualTo("fb-ok");
+        // 第 2 次：主模型已熔断（429 冷却期内），直接走备用，不再调用主模型
+        AiModelGateway.ChatResult second = router.chat("s", "u");
+        assertThat(second.content()).isEqualTo("fb-ok-2");
+
+        // 主模型只被调用 1 次（第二次被熔断跳过）
+        verify(primaryGateway, times(1)).chat(anyString(), anyString());
+        server.verify();
+    }
+
+    @Test
+    void nonRateLimitedFailureResetsPrimaryOnFallbackSuccess() {
+        // 主模型偶发失败（非 429）→ 备用成功 → 主模型计数清零，下次仍尝试主模型
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restClientBuilder).build();
+        server.expect(requestTo("https://fallback.example.com/chat/completions"))
+                .andRespond(withSuccess(
+                        "{\"choices\":[{\"message\":{\"content\":\"fb-ok\"}}]}",
+                        MediaType.APPLICATION_JSON
+                ));
+
+        when(secretCipher.resolve(anyString())).thenReturn("fb-secret");
+        router = new ChatRouter(
+                primaryGateway,
+                restClientBuilder,
+                baseProperties("https://fallback.example.com"),
+                secretCipher,
+                new InMemoryCircuitStateStore(),
+                new SimpleMeterRegistry()
+        );
+        doThrow(new RuntimeException("boom"))
+                .doReturn(new AiModelGateway.ChatResult("ok", "mock", 0, 0))
+                .when(primaryGateway).chat(anyString(), anyString());
+
+        // 第 1 次：主模型非限流失败 → 备用接管
+        AiModelGateway.ChatResult first = router.chat("s", "u");
+        assertThat(first.content()).isEqualTo("fb-ok");
+        // 第 2 次：主模型计数已清零（非 429），重新尝试主模型并成功
+        AiModelGateway.ChatResult second = router.chat("s", "u");
+        assertThat(second.content()).isEqualTo("ok");
+
+        verify(primaryGateway, times(2)).chat(anyString(), anyString());
+        server.verify();
+    }
 }

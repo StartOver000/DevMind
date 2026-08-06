@@ -108,7 +108,12 @@ public class ChatRouter {
 
     public AiModelGateway.ChatResult chat(String systemPrompt, String userPrompt) {
         if (isCircuitOpen(PRIMARY_CIRCUIT_KEY)) {
-            // 熔断打开：不再重试任何模型，快速失败，让上层立即走本地 RAG 降级
+            // 主模型熔断中（如持续 429）：跳过主模型直接走备用，避免每个请求都白等一次失败
+            AiModelGateway.ChatResult fallback = chatViaFallbacks(
+                    provider -> provider.gateway().chat(systemPrompt, userPrompt));
+            if (fallback != null) {
+                return fallback;
+            }
             throw new ApiException(
                     ErrorCode.MODEL_CALL_FAILED,
                     "模型服务连续失败，已进入熔断降级，请稍后重试"
@@ -120,11 +125,20 @@ public class ChatRouter {
             return result;
         } catch (Exception primaryError) {
             failedCounter.increment();
-            for (ChatProvider provider : fallbackProviders) {
-                AiModelGateway.ChatResult result = tryProvider(provider, () -> provider.gateway().chat(systemPrompt, userPrompt));
-                if (result != null) {
-                    return result;
+            boolean rateLimited = isRateLimited(primaryError);
+            if (rateLimited) {
+                // 429 是账户级持续状态（短时重试大概率仍 429）：立即熔断主模型，
+                // 冷却期内的请求直接走备用，而不是每次都在智谱上白等。
+                circuitStateStore.recordFailure(PRIMARY_CIRCUIT_KEY, 1, true, CIRCUIT_OPEN_MS);
+            }
+            AiModelGateway.ChatResult result = chatViaFallbacks(
+                    provider -> provider.gateway().chat(systemPrompt, userPrompt));
+            if (result != null) {
+                // 备用接管成功：主模型若非限流（偶发失败）则清零计数恢复；限流熔断保留到冷却期结束
+                if (!rateLimited) {
+                    circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
                 }
+                return result;
             }
             return fail(primaryError);
         }
@@ -140,6 +154,11 @@ public class ChatRouter {
             List<AiModelGateway.ToolSpec> tools
     ) {
         if (isCircuitOpen(PRIMARY_CIRCUIT_KEY)) {
+            AiModelGateway.ChatResult fallback = chatViaFallbacks(
+                    provider -> provider.gateway().chatWithTools(systemPrompt, messages, tools));
+            if (fallback != null) {
+                return fallback;
+            }
             throw new ApiException(
                     ErrorCode.MODEL_CALL_FAILED,
                     "模型服务连续失败，已进入熔断降级，请稍后重试"
@@ -151,25 +170,41 @@ public class ChatRouter {
             return result;
         } catch (Exception primaryError) {
             failedCounter.increment();
-            for (ChatProvider provider : fallbackProviders) {
-                if (!provider.supportsTools()) {
-                    continue;
+            boolean rateLimited = isRateLimited(primaryError);
+            if (rateLimited) {
+                circuitStateStore.recordFailure(PRIMARY_CIRCUIT_KEY, 1, true, CIRCUIT_OPEN_MS);
+            }
+            AiModelGateway.ChatResult result = chatViaFallbacks(
+                    provider -> provider.gateway().chatWithTools(systemPrompt, messages, tools));
+            if (result != null) {
+                if (!rateLimited) {
+                    circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
                 }
-                AiModelGateway.ChatResult result = tryProvider(
-                        provider,
-                        () -> provider.gateway().chatWithTools(systemPrompt, messages, tools)
-                );
-                if (result != null) {
-                    return result;
-                }
+                return result;
             }
             return fail(primaryError);
         }
     }
 
     /**
+     * 依次尝试备用 Provider，返回第一个成功的；全部失败返回 null。
+     */
+    private AiModelGateway.ChatResult chatViaFallbacks(
+            java.util.function.Function<ChatProvider, AiModelGateway.ChatResult> action
+    ) {
+        for (ChatProvider provider : fallbackProviders) {
+            AiModelGateway.ChatResult result = tryProvider(provider, () -> action.apply(provider));
+            if (result != null) {
+                return result;
+            }
+        }
+        return null;
+    }
+
+    /**
      * 尝试一个备用 Provider：熔断跳过、退避重试 {@link #FALLBACK_MAX_ATTEMPTS} 次；
-     * 成功则重置自身与主模型计数并返回，失败则记录该 Provider 独立熔断并返回 null。
+     * 成功则重置自身计数并返回（主模型熔断由调用方控制：429 熔断保留，偶发失败才清零）；
+     * 失败则记录该 Provider 独立熔断并返回 null。
      */
     private AiModelGateway.ChatResult tryProvider(
             ChatProvider provider,
@@ -182,7 +217,6 @@ public class ChatRouter {
         }
         try {
             AiModelGateway.ChatResult result = invokeWithRetry(action, provider.name());
-            circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
             circuitStateStore.reset(key);
             // 备用 Provider 接管计数（按 provider 归因）
             Counter.builder("devmind.model.fallback")
@@ -225,8 +259,9 @@ public class ChatRouter {
             } catch (Exception ex) {
                 last = ex;
                 log.warn("备用 Provider {} 调用失败 attempt={}: {}", name, attempt, ex.getMessage());
-                String message = ex.getMessage() == null ? "" : ex.getMessage();
-                if (message.contains("429") || message.contains("Too Many")) {
+                // 429 限流 / 超时是 Provider 当前的持续状态，短时重试大概率仍失败：
+                // 立即放弃让下一个 Provider 接管，避免每次请求在不可用的 Provider 上吃满退避。
+                if (isRateLimited(ex) || isTimeout(ex)) {
                     break;
                 }
             }
@@ -238,6 +273,15 @@ public class ChatRouter {
     private static boolean isRateLimited(Exception error) {
         String message = error.getMessage() == null ? "" : error.getMessage();
         return message.contains("429") || message.contains("Too Many");
+    }
+
+    /** 读取/连接超时：上游长时间无响应，继续重试会叠加等待，应快速放弃 */
+    private static boolean isTimeout(Exception error) {
+        String message = error.getMessage() == null ? "" : error.getMessage();
+        return message.contains("timed out")
+                || message.contains("Timeout")
+                || message.contains("Read timed out")
+                || message.contains("connect timed out");
     }
 
     private static void sleep(long millis) {

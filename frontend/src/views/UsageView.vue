@@ -6,16 +6,22 @@ import { session } from '@/stores/session';
 
 const summary = ref(null);
 const list = ref([]);
+const toolStats = ref([]);
+const workflowStats = ref([]);
 const error = ref('');
 
 async function loadUsage() {
   try {
-    const [summaryData, listData] = await Promise.all([
+    const [summaryData, listData, toolData, wfData] = await Promise.all([
       api('/api/model-usage/summary'),
-      api('/api/model-usage?limit=20')
+      api('/api/model-usage?limit=20'),
+      api('/api/usage/tools?days=7'),
+      api('/api/usage/workflows?days=7')
     ]);
     summary.value = summaryData;
     list.value = listData.items || [];
+    toolStats.value = toolData || [];
+    workflowStats.value = wfData || [];
     error.value = '';
   } catch (err) {
     error.value = err.message;
@@ -55,6 +61,47 @@ onMounted(loadUsage);
               <td>{{ item.completionTokens }}</td>
               <td>{{ item.estimatedCost }}</td>
               <td>{{ formatTime(item.createdTime) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><h2>工具调用（近 7 天）</h2></div>
+      <div v-if="!toolStats.length" class="empty small">暂无工具调用记录</div>
+      <div v-else class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>工具</th><th>类型</th><th>次数</th><th>成功</th><th>失败</th><th>平均耗时(ms)</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(s, i) in toolStats" :key="i">
+              <td><b>{{ s.tool_name }}</b></td>
+              <td>{{ s.tool_type }}</td>
+              <td>{{ s.total }}</td>
+              <td>{{ s.success_count }}</td>
+              <td>{{ s.fail_count }}</td>
+              <td>{{ s.avg_cost_ms }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><h2>工作流运行（近 7 天）</h2></div>
+      <div v-if="!workflowStats.length" class="empty small">暂无工作流运行记录</div>
+      <div v-else class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>工作流</th><th>次数</th><th>成功</th><th>失败</th><th>费用</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(s, i) in workflowStats" :key="i">
+              <td><b>{{ s.workflow_name }}</b></td>
+              <td>{{ s.total }}</td>
+              <td>{{ s.success_count }}</td>
+              <td>{{ s.fail_count }}</td>
+              <td>{{ Number(s.total_cost).toFixed(6) }}</td>
             </tr>
           </tbody>
         </table>

@@ -451,6 +451,29 @@ public class DatabaseInitializer implements ApplicationRunner {
         jdbcTemplate.execute("""
                 CREATE INDEX IF NOT EXISTS idx_workflow_run_step_run ON workflow_run_step(run_id, step_index)
                 """);
+        // 工具调用审计：Agent / 工作流每次工具调用的完整轨迹（M2-3）
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS tool_call_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id BIGINT NOT NULL DEFAULT 1,
+                    user_id BIGINT NOT NULL,
+                    tool_name VARCHAR(100) NOT NULL,
+                    tool_type VARCHAR(20) NOT NULL DEFAULT 'builtin',  -- builtin | interface
+                    source VARCHAR(20) NOT NULL DEFAULT 'agent',       -- agent | workflow
+                    workflow_run_id BIGINT,
+                    status VARCHAR(10) NOT NULL DEFAULT 'success',     -- success | fail
+                    cost_ms BIGINT NOT NULL DEFAULT 0,
+                    error VARCHAR(500),
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tool_call_log_time ON tool_call_log(created_time)
+                """);
+        jdbcTemplate.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tool_call_log_tenant_user
+                ON tool_call_log(tenant_id, user_id)
+                """);
         log.info("database initialized, embedding dimension={}", dimensions);
     }
 }

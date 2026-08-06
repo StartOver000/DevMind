@@ -6,6 +6,7 @@ import org.springframework.stereotype.Repository;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Map;
 
 /** 工作流执行记录仓储（workflow_run / workflow_run_step） */
 @Repository
@@ -106,5 +107,21 @@ public class WorkflowRunRepository {
                         "WHERE run_id = ? ORDER BY step_index",
                 this::mapStep, runId
         );
+    }
+
+    /** 按工作流聚合运行统计（M2-3 审计用量） */
+    public List<Map<String, Object>> statsByWorkflow(Long tenantId, int days) {
+        return jdbcTemplate.queryForList("""
+                SELECT w.id AS workflow_id, w.name AS workflow_name,
+                       COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE r.status = 'SUCCESS') AS success_count,
+                       COUNT(*) FILTER (WHERE r.status = 'FAILED') AS fail_count,
+                       COALESCE(SUM(r.total_cost), 0) AS total_cost
+                FROM workflow_run r
+                JOIN workflow w ON w.id = r.workflow_id
+                WHERE r.tenant_id = ? AND r.started_at >= CURRENT_TIMESTAMP - make_interval(days => ?)
+                GROUP BY w.id, w.name
+                ORDER BY total DESC
+                """, tenantId, days);
     }
 }

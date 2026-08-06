@@ -63,7 +63,7 @@ public class WorkflowExecutor {
             String input = fillTemplate(step.paramsJson(), vars);
             long start = System.currentTimeMillis();
             try {
-                String output = toolRegistry.execute(step.tool(), input, userId);
+                String output = toolRegistry.execute(step.tool(), input, userId, "workflow", runId);
                 long costMs = System.currentTimeMillis() - start;
                 runRepository.insertStep(runId, i, step.tool(), input, output, "SUCCESS", costMs, null);
                 if (step.outputVar() != null && !step.outputVar().isBlank()) {

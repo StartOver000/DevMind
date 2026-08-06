@@ -48,9 +48,9 @@ class WorkflowExecutorTest {
     void executesStepsInOrderAndPassesVarsToNextStep() {
         when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
         when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
-        when(toolRegistry.execute(eq("customer_query"), anyString(), eq(1L)))
+        when(toolRegistry.execute(eq("customer_query"), anyString(), eq(1L), eq("workflow"), eq(100L)))
                 .thenReturn("{\"clients\":[1,2]}");
-        when(toolRegistry.execute(eq("ai_generate"), anyString(), eq(1L)))
+        when(toolRegistry.execute(eq("ai_generate"), anyString(), eq(1L), eq("workflow"), eq(100L)))
                 .thenReturn("日报：2 个新客户");
         when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
 
@@ -63,7 +63,7 @@ class WorkflowExecutorTest {
         assertThat(result.status()).isEqualTo("SUCCESS");
         // 第 2 步收到第 1 步输出注入的变量（JSON 值已转义为合法 JSON）
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(toolRegistry).execute(eq("ai_generate"), inputCaptor.capture(), eq(1L));
+        verify(toolRegistry).execute(eq("ai_generate"), inputCaptor.capture(), eq(1L), eq("workflow"), eq(100L));
         String input = inputCaptor.getValue();
         assertThat(input).contains("clients");
         try {
@@ -80,7 +80,7 @@ class WorkflowExecutorTest {
     void stopsOnStepFailureAndMarksRunFailed() {
         when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
         when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
-        when(toolRegistry.execute(eq("customer_query"), anyString(), eq(1L)))
+        when(toolRegistry.execute(eq("customer_query"), anyString(), eq(1L), eq("workflow"), eq(100L)))
                 .thenThrow(new RuntimeException("接口 500"));
         when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "FAILED"));
 
@@ -93,7 +93,7 @@ class WorkflowExecutorTest {
         assertThat(result.status()).isEqualTo("FAILED");
         // 失败步骤记录 FAILED，后续步骤不执行
         verify(runRepository).insertStep(eq(100L), eq(0), eq("customer_query"), anyString(), eq(null), eq("FAILED"), anyLong(), anyString());
-        verify(toolRegistry, never()).execute(eq("ai_generate"), anyString(), eq(1L));
+        verify(toolRegistry, never()).execute(eq("ai_generate"), anyString(), eq(1L), eq("workflow"), eq(100L));
         verify(runRepository).finishRun(eq(100L), eq("FAILED"), anyString());
     }
 
@@ -113,9 +113,9 @@ class WorkflowExecutorTest {
         when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
         when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
         // 第 1 步输出是 JSON 文本
-        when(toolRegistry.execute(eq("a"), anyString(), eq(1L)))
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L)))
                 .thenReturn("{\"version\":\"3.13.2\"}");
-        when(toolRegistry.execute(eq("ai_generate"), anyString(), eq(1L)))
+        when(toolRegistry.execute(eq("ai_generate"), anyString(), eq(1L), eq("workflow"), eq(100L)))
                 .thenReturn("ok");
         when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
 
@@ -126,7 +126,7 @@ class WorkflowExecutorTest {
         executor.execute(workflow(stepsJson), 1L, "manual");
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(toolRegistry).execute(eq("ai_generate"), captor.capture(), eq(1L));
+        verify(toolRegistry).execute(eq("ai_generate"), captor.capture(), eq(1L), eq("workflow"), eq(100L));
         String input = captor.getValue();
         // 注入后的参数必须是合法 JSON（JSON 值已被转义）
         assertThat(input).startsWith("{\"prompt\":\"总结：");

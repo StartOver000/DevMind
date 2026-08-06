@@ -7,6 +7,7 @@ public record SkillRequest(
         String description,
         String applyTo,
         String content,
+        String references,   // 引用资源 JSON（可选）
         boolean enabled
 ) {
 }

@@ -523,6 +523,7 @@ public class DatabaseInitializer implements ApplicationRunner {
                     description VARCHAR(500) NOT NULL DEFAULT '',
                     apply_to VARCHAR(500) NOT NULL DEFAULT '',
                     content TEXT NOT NULL,
+                    "references" TEXT NOT NULL DEFAULT '[]',  -- 引用资源 JSON：[{"type":"workflow|kb","id":x,"name":".."}]
                     source VARCHAR(16) NOT NULL DEFAULT 'manual',  -- manual | from_workflow | from_chat
                     source_workflow_id BIGINT,
                     enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -536,7 +537,8 @@ public class DatabaseInitializer implements ApplicationRunner {
                 CREATE INDEX IF NOT EXISTS idx_skill_tenant_scope
                 ON skill(tenant_id, scope, enabled)
                 """);
-        jdbcTemplate.execute("ALTER TABLE skill ADD COLUMN IF NOT EXISTS hit_count BIGINT NOT NULL DEFAULT 0");;
+        jdbcTemplate.execute("ALTER TABLE skill ADD COLUMN IF NOT EXISTS hit_count BIGINT NOT NULL DEFAULT 0");
+        jdbcTemplate.execute("ALTER TABLE skill ADD COLUMN IF NOT EXISTS \"references\" TEXT NOT NULL DEFAULT '[]'");;
         log.info("database initialized, embedding dimension={}", dimensions);
     }
 }

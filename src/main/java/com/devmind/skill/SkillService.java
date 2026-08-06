@@ -55,7 +55,7 @@ public class SkillService {
     }
 
     public Skill create(Long userId, String scope, String name, String description,
-                        String applyTo, String content, String source, Long sourceWorkflowId) {
+                        String applyTo, String content, String references, String source, Long sourceWorkflowId) {
         if (name == null || name.isBlank()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "技能名称不能为空");
         }
@@ -70,13 +70,14 @@ public class SkillService {
         Skill skill = Skill.forInsert(
                 tenantId, scope, name.trim(), description == null ? "" : description,
                 applyTo == null ? "" : applyTo, content,
+                references == null || references.isBlank() ? "[]" : references,
                 source == null ? "manual" : source, sourceWorkflowId, userId
         );
         return repository.insert(skill);
     }
 
     public Skill update(Long userId, Long id, String scope, String name, String description,
-                        String applyTo, String content, boolean enabled) {
+                        String applyTo, String content, String references, boolean enabled) {
         Long tenantId = userService.tenantIdOf(userId);
         Skill existing = repository.findById(tenantId, id);
         if (existing == null) {
@@ -85,7 +86,7 @@ public class SkillService {
         requireManageable(existing, userId);
         if (name != null && !name.isBlank()) {
             existing = new Skill(existing.id(), existing.tenantId(), existing.scope(), name.trim(),
-                    existing.description(), existing.applyTo(), existing.content(), existing.source(),
+                    existing.description(), existing.applyTo(), existing.content(), existing.references(), existing.source(),
                     existing.sourceWorkflowId(), existing.enabled(), existing.hitCount(), existing.createdBy(), existing.createdTime());
         }
         if (description != null) {
@@ -97,9 +98,12 @@ public class SkillService {
         if (content != null && !content.isBlank()) {
             existing = withField(existing, "content", content);
         }
+        if (references != null) {
+            existing = withField(existing, "references", references);
+        }
         String newScope = scope == null ? existing.scope() : scope;
         Skill updated = new Skill(existing.id(), existing.tenantId(), newScope, existing.name(),
-                existing.description(), existing.applyTo(), existing.content(), existing.source(),
+                existing.description(), existing.applyTo(), existing.content(), existing.references(), existing.source(),
                 existing.sourceWorkflowId(), enabled, existing.hitCount(), existing.createdBy(), existing.createdTime());
         repository.update(updated);
         return repository.findById(tenantId, id);
@@ -108,13 +112,16 @@ public class SkillService {
     private Skill withField(Skill skill, String field, String value) {
         return switch (field) {
             case "description" -> new Skill(skill.id(), skill.tenantId(), skill.scope(), skill.name(),
-                    value, skill.applyTo(), skill.content(), skill.source(), skill.sourceWorkflowId(),
+                    value, skill.applyTo(), skill.content(), skill.references(), skill.source(), skill.sourceWorkflowId(),
                     skill.enabled(), skill.hitCount(), skill.createdBy(), skill.createdTime());
             case "applyTo" -> new Skill(skill.id(), skill.tenantId(), skill.scope(), skill.name(),
-                    skill.description(), value, skill.content(), skill.source(), skill.sourceWorkflowId(),
+                    skill.description(), value, skill.content(), skill.references(), skill.source(), skill.sourceWorkflowId(),
+                    skill.enabled(), skill.hitCount(), skill.createdBy(), skill.createdTime());
+            case "references" -> new Skill(skill.id(), skill.tenantId(), skill.scope(), skill.name(),
+                    skill.description(), skill.applyTo(), skill.content(), value, skill.source(), skill.sourceWorkflowId(),
                     skill.enabled(), skill.hitCount(), skill.createdBy(), skill.createdTime());
             default -> new Skill(skill.id(), skill.tenantId(), skill.scope(), skill.name(),
-                    skill.description(), skill.applyTo(), value, skill.source(), skill.sourceWorkflowId(),
+                    skill.description(), skill.applyTo(), value, skill.references(), skill.source(), skill.sourceWorkflowId(),
                     skill.enabled(), skill.hitCount(), skill.createdBy(), skill.createdTime());
         };
     }

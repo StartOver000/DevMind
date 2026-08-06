@@ -39,10 +39,10 @@ class SkillServiceTest {
     void createsSkill() {
         setUp();
         Skill created = new Skill(10L, 1L, "team", "月报规范", "desc", "月报",
-                "内容", "manual", null, true, 0L, 1L, null);
+                "内容", "[]", "manual", null, true, 0L, 1L, null);
         when(repository.insert(org.mockito.ArgumentMatchers.any())).thenReturn(created);
 
-        Skill result = service.create(1L, "team", "月报规范", "desc", "月报", "内容", null, null);
+        Skill result = service.create(1L, "team", "月报规范", "desc", "月报", "内容", null, null, null);
 
         assertThat(result.id()).isEqualTo(10L);
         assertThat(result.scope()).isEqualTo("team");
@@ -51,7 +51,7 @@ class SkillServiceTest {
     @Test
     void rejectsBlankName() {
         setUp();
-        assertThatThrownBy(() -> service.create(1L, "team", "  ", "d", "a", "内容", null, null))
+        assertThatThrownBy(() -> service.create(1L, "team", "  ", "d", "a", "内容", null, null, null))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("名称");
     }
@@ -59,7 +59,7 @@ class SkillServiceTest {
     @Test
     void rejectsBlankContent() {
         setUp();
-        assertThatThrownBy(() -> service.create(1L, "team", "名字", "d", "a", "  ", null, null))
+        assertThatThrownBy(() -> service.create(1L, "team", "名字", "d", "a", "  ", null, null, null))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("内容");
     }
@@ -148,12 +148,12 @@ class SkillServiceTest {
     void updateByInstructionRewritesContent() {
         setUp();
         Skill existing = new Skill(3L, 1L, "team", "月报规范", "d", "月报",
-                "旧规范内容", "manual", null, true, 0L, 1L, null);
+                "旧规范内容", "[]", "manual", null, true, 0L, 1L, null);
         when(repository.findById(1L, 3L)).thenReturn(existing);
         when(chatRouter.chat(anyString(), anyString()))
                 .thenReturn(new AiModelGateway.ChatResult("新规范：必须含同比环比和利润归因。", "m", 0, 0));
         Skill updated = new Skill(3L, 1L, "team", "月报规范", "d", "月报",
-                "新规范：必须含同比环比和利润归因。", "manual", null, true, 1L, 1L, null);
+                "新规范：必须含同比环比和利润归因。", "[]", "manual", null, true, 1L, 1L, null);
         when(repository.findById(1L, 3L)).thenReturn(existing, updated);
 
         SkillService.UpdateResult result = service.updateByInstruction(1L, 3L, "第 2 步改成先查利润再查费用");

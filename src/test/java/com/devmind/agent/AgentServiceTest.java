@@ -379,7 +379,7 @@ class AgentServiceTest {
         AgentTool tool = kbTool();
         com.devmind.skill.SkillService skillService = org.mockito.Mockito.mock(com.devmind.skill.SkillService.class);
         com.devmind.skill.Skill updated = new com.devmind.skill.Skill(3L, 1L, "team", "月报规范", "d",
-                "月报", "新规范：必须含利润归因。", "manual", null, true, 1L, 1L, null);
+                "月报", "新规范：必须含利润归因。", "[]", "manual", null, true, 1L, 1L, null);
         com.devmind.skill.SkillService.UpdateResult updateResult =
                 new com.devmind.skill.SkillService.UpdateResult(updated, "旧规范", "新规范：必须含利润归因。");
         when(skillService.updateByInstruction(eq(1L), eq(3L), anyString())).thenReturn(updateResult);
@@ -445,7 +445,7 @@ class AgentServiceTest {
         com.devmind.skill.SkillService skillService = org.mockito.Mockito.mock(com.devmind.skill.SkillService.class);
         com.devmind.skill.SkillMatcher matcher = org.mockito.Mockito.mock(com.devmind.skill.SkillMatcher.class);
         com.devmind.skill.Skill skill = new com.devmind.skill.Skill(2L, 1L, "team", "监控版本检查", "d",
-                "监控版本", "必须包含构建用户，且不超过 3 句话。", "manual", null, true, 0L, 1L, null);
+                "监控版本", "必须包含构建用户，且不超过 3 句话。", "[]", "manual", null, true, 0L, 1L, null);
         when(skillService.get(eq(1L), eq(2L))).thenReturn(skill);
 
         AgentService service = service(new ToolRegistry(List.of(tool)));
@@ -590,6 +590,80 @@ class AgentServiceTest {
 
         assertThat(response.answer()).isEqualTo("该记忆不存在。");
         assertThat(response.toolTrace().get(0).ok()).isFalse();
+    }
+
+    @Test
+    void runWorkflowInternalToolExecutesLinkedWorkflowAndReports() {
+        // 技能引用工作流 → 模型调 run_workflow → WorkflowService.run 执行并回填结果
+        AgentTool tool = kbTool();
+        com.devmind.workflow.WorkflowService workflowService =
+                org.mockito.Mockito.mock(com.devmind.workflow.WorkflowService.class);
+        com.devmind.workflow.WorkflowRun run = new com.devmind.workflow.WorkflowRun(
+                50L, 3L, 1L, "manual", "SUCCESS", 0.12, "t0", "t1", null);
+        when(workflowService.run(eq(3L), eq(1L))).thenReturn(run);
+
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        service.setWorkflowService(workflowService);
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("w1", AgentService.RUN_WORKFLOW_TOOL_NAME,
+                                        "{\"workflowId\":3}"))),
+                        new AiModelGateway.ChatResult("监控日报已生成。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "按规范生成监控日报", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("监控日报已生成。");
+        verify(workflowService).run(eq(3L), eq(1L));
+        assertThat(response.toolTrace()).hasSize(1);
+        assertThat(response.toolTrace().get(0).tool()).isEqualTo(AgentService.RUN_WORKFLOW_TOOL_NAME);
+        assertThat(response.toolTrace().get(0).ok()).isTrue();
+    }
+
+    @Test
+    void runWorkflowWithoutServiceReturnsErrorButContinues() {
+        // 未注入 WorkflowService 时 run_workflow 返回错误但不中断
+        AgentTool tool = kbTool();
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("w1", AgentService.RUN_WORKFLOW_TOOL_NAME,
+                                        "{\"workflowId\":3}"))),
+                        new AiModelGateway.ChatResult("工作流服务暂不可用，我直接回答。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "生成日报", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("工作流服务暂不可用，我直接回答。");
+        assertThat(response.toolTrace()).hasSize(1);
+        assertThat(response.toolTrace().get(0).ok()).isFalse();
+    }
+
+    @Test
+    void runWorkflowToolMissingIdReturnsErrorButContinues() {
+        // run_workflow 缺 workflowId → 错误回填，链路继续
+        AgentTool tool = kbTool();
+        com.devmind.workflow.WorkflowService workflowService =
+                org.mockito.Mockito.mock(com.devmind.workflow.WorkflowService.class);
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        service.setWorkflowService(workflowService);
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("w1", AgentService.RUN_WORKFLOW_TOOL_NAME, "{}"))),
+                        new AiModelGateway.ChatResult("缺少工作流 ID。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "跑流程", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("缺少工作流 ID。");
+        assertThat(response.toolTrace().get(0).ok()).isFalse();
+        verify(workflowService, never()).run(any(), any());
     }
 
     @Test

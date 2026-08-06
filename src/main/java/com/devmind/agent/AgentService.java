@@ -64,6 +64,7 @@ public class AgentService {
             - load_skill：按需加载技能完整规范。system 中【可参考技能清单】只列了名称/描述；
               当当前任务确实涉及清单中某项时，先调用 load_skill（skillId 取清单中的 ID）拿到完整规范再执行。
             - delete_memory：用户要求忘记/删除某条长期记忆（system 中【用户长期记忆】里带【记忆 ID x】的条目）时，调用本工具删除该条记忆。
+            - run_workflow：执行一个已保存的工作流。当技能规范中【可联动资源：工作流「名称」(ID x)】指明需执行工作流时，传入其 ID 执行。
             - kb_search：检索研发知识库，获取与问题相关的文档片段（含相似度分数）。
             - kb_info：查询当前用户可访问的知识库列表。
             - doc_list：查询指定知识库内的文档清单（文件名、状态、文本块数）。
@@ -87,6 +88,9 @@ public class AgentService {
             8. 若用户要求忘记/删除某条长期记忆（如"忘掉这条""删掉刚才那个偏好"，对应
                system 中【用户长期记忆】里带【记忆 ID x】的条目），调用 delete_memory
                （memoryId 取该条目的 ID），删除后告知用户。
+            9. 若命中的技能规范中带【可联动资源】标注（工作流/知识库），说明该技能关联了
+               这些资源：涉及工作流时调用 run_workflow（workflowId 取标注中的 ID）；
+               涉及知识库时调用 kb_search 并指定该知识库。联动执行后再给出最终回答。
             """;
 
     /** 会话结束后自动提取用户长期偏好的提取器提示词 */
@@ -176,6 +180,22 @@ public class AgentService {
             }
             """;
 
+    /**
+     * run_workflow：按 ID 执行工作流的内部工具（Guide-52 #3 技能引用资源联动执行）。
+     * 技能 references 中引用工作流时，模型可调用本工具执行该工作流，复用确定性编排引擎。
+     */
+    public static final String RUN_WORKFLOW_TOOL_NAME = "run_workflow";
+    private static final String RUN_WORKFLOW_TOOL_DESC = "执行一个已保存的工作流（Workflow）：当技能规范中【可联动资源：工作流「名称」(ID x)】指明需执行工作流时，传入其 ID 执行并返回运行结果。";
+    private static final String RUN_WORKFLOW_TOOL_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "workflowId": { "type": "integer", "description": "要执行的工作流 ID" }
+              },
+              "required": ["workflowId"]
+            }
+            """;
+
     private final ChatRouter chatRouter;
     private final ToolRegistry toolRegistry;
     private final AgentConversationRepository conversationRepository;
@@ -194,6 +214,8 @@ public class AgentService {
     private SkillMatcher skillMatcher;
     /** 技能服务（对话式修正 update_skill）：可选注入，测试环境不启用 */
     private com.devmind.skill.SkillService skillService;
+    /** 工作流服务（技能引用工作流联动执行 run_workflow）：可选注入 */
+    private com.devmind.workflow.WorkflowService workflowService;
     private final ObjectMapper objectMapper = new ObjectMapper();
     /** 单工具执行超时（秒） */
     private static final int TOOL_TIMEOUT_SECONDS = 20;
@@ -252,6 +274,12 @@ public class AgentService {
     @Autowired(required = false)
     public void setSkillService(com.devmind.skill.SkillService skillService) {
         this.skillService = skillService;
+    }
+
+    /** 工作流服务可选注入（技能引用工作流联动执行 run_workflow 用） */
+    @Autowired(required = false)
+    public void setWorkflowService(com.devmind.workflow.WorkflowService workflowService) {
+        this.workflowService = workflowService;
     }
 
     /** 匹配当前请求命中的技能规范（Guide-51 P1）：未注入 matcher 或未命中时返回空 */
@@ -370,6 +398,8 @@ public class AgentService {
         tools.add(new AiModelGateway.ToolSpec(LOAD_SKILL_TOOL_NAME, LOAD_SKILL_TOOL_DESC, LOAD_SKILL_TOOL_SCHEMA));
         // 注入记忆删除工具（可追溯记忆）：用户要求忘记某条记忆时特判执行
         tools.add(new AiModelGateway.ToolSpec(DELETE_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_DESC, DELETE_MEMORY_TOOL_SCHEMA));
+        // 注入工作流执行工具（技能引用资源联动）：技能 references 引用工作流时按需执行
+        tools.add(new AiModelGateway.ToolSpec(RUN_WORKFLOW_TOOL_NAME, RUN_WORKFLOW_TOOL_DESC, RUN_WORKFLOW_TOOL_SCHEMA));
 
         try {
             // 计划失败后是否还能引导模型重规划（限 1 次，避免死循环）
@@ -426,6 +456,10 @@ public class AgentService {
                     } else if (DELETE_MEMORY_TOOL_NAME.equals(tc.name())) {
                         // 对话式删除长期记忆：特判执行，结果回填
                         ToolExecOutcome outcome = executeDeleteMemory(tc, userId);
+                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
+                    } else if (RUN_WORKFLOW_TOOL_NAME.equals(tc.name())) {
+                        // 技能引用工作流联动执行：特判执行，结果回填
+                        ToolExecOutcome outcome = executeRunWorkflow(tc, userId);
                         trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
                     } else {
                         parallelCalls.add(tc);
@@ -719,6 +753,38 @@ public class AgentService {
         } catch (Exception ex) {
             String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
             return new ToolExecOutcome("{\"error\": \"记忆删除失败: " + message + "\"}", false,
+                    System.currentTimeMillis() - start);
+        }
+    }
+
+    /**
+     * 执行工作流（run_workflow 内部工具，技能引用资源联动执行）：解析 workflowId，
+     * 交给 WorkflowService.run 复用确定性编排引擎执行（顺序/并行/条件分支），返回运行结果。
+     */
+    private ToolExecOutcome executeRunWorkflow(AiModelGateway.ToolCall tc, Long userId) {
+        if (workflowService == null) {
+            return new ToolExecOutcome(
+                    "{\"error\": \"工作流服务不可用，请稍后再试\"}", false, 0);
+        }
+        long start = System.currentTimeMillis();
+        try {
+            JsonNode root = objectMapper.readTree(tc.argumentsJson() == null ? "{}" : tc.argumentsJson());
+            long workflowId = root.path("workflowId").asLong(0);
+            if (workflowId <= 0) {
+                return new ToolExecOutcome("{\"error\": \"缺少有效的 workflowId\"}", false,
+                        System.currentTimeMillis() - start);
+            }
+            com.devmind.workflow.WorkflowRun run = workflowService.run(workflowId, userId);
+            meterRegistry.counter("devmind.agent.workflow_run_total").increment();
+            String status = run == null ? "UNKNOWN" : run.status();
+            String summary = "工作流已执行完成（workflowId=" + workflowId + "，runId="
+                    + (run == null ? "-" : run.id())
+                    + "，状态=" + status + (run != null && run.error() != null ? "，错误=" + run.error() : "") + "）。"
+                    + "请基于该执行结果向用户汇报；若执行失败，说明失败原因。";
+            return new ToolExecOutcome(summary, "SUCCESS".equals(status), System.currentTimeMillis() - start);
+        } catch (Exception ex) {
+            String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+            return new ToolExecOutcome("{\"error\": \"工作流执行失败: " + message + "\"}", false,
                     System.currentTimeMillis() - start);
         }
     }

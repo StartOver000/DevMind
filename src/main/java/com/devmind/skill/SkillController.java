@@ -51,7 +51,7 @@ public class SkillController {
             @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
     ) {
         return skillService.create(userId, request.scope(), request.name(), request.description(),
-                request.applyTo(), request.content(), null, null);
+                request.applyTo(), request.content(), request.references(), null, null);
     }
 
     @PutMapping("/{id}")
@@ -61,7 +61,7 @@ public class SkillController {
             @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
     ) {
         return skillService.update(userId, id, request.scope(), request.name(), request.description(),
-                request.applyTo(), request.content(), request.enabled());
+                request.applyTo(), request.content(), request.references(), request.enabled());
     }
 
     @DeleteMapping("/{id}")

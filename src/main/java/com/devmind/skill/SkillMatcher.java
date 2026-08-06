@@ -1,5 +1,7 @@
 package com.devmind.skill;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -15,6 +17,8 @@ import java.util.List;
 public class SkillMatcher {
 
     private static final Logger log = LoggerFactory.getLogger(SkillMatcher.class);
+
+    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     /** 单次最多注入全文的技能数（关键词命中） */
     private static final int MAX_INJECT = 2;
@@ -60,7 +64,12 @@ public class SkillMatcher {
                         if (content.length() > MAX_CONTENT_CHARS) {
                             content = content.substring(0, MAX_CONTENT_CHARS);
                         }
-                        injectFull.add("【技能 ID " + skill.id() + "：" + skill.name() + "】\n" + content);
+                        String refs = formatReferences(skill.references());
+                        String inject = "【技能 ID " + skill.id() + "：" + skill.name() + "】\n" + content;
+                        if (!refs.isEmpty()) {
+                            inject += "\n\n" + refs;
+                        }
+                        injectFull.add(inject);
                         repository.incrementHit(tenantId, skill.id());
                         continue;
                     }
@@ -101,6 +110,42 @@ public class SkillMatcher {
             repository.incrementHit(tenantId, skillId);
         } catch (Exception ex) {
             log.warn("技能命中统计失败: {}", ex.getMessage());
+        }
+    }
+
+    /**
+     * 把技能的 references（引用资源 JSON）格式化为可读联动说明，供模型按需执行。
+     * 例：{"type":"workflow","id":3,"name":"监控日报"} → 【可联动资源：工作流 监控日报(ID 3)，如需执行调用 run_workflow】
+     * 例：{"type":"kb","id":2,"name":"MySQL知识库"} → 【可联动资源：知识库 MySQL知识库(ID 2)，如需检索调用 kb_search 并指定该库】
+     * 解析失败/空引用返回空串（不中断注入）。
+     */
+    private String formatReferences(String referencesJson) {
+        if (referencesJson == null || referencesJson.isBlank() || "[]".equals(referencesJson.trim())) {
+            return "";
+        }
+        try {
+            JsonNode root = objectMapper.readTree(referencesJson);
+            if (!root.isArray() || root.isEmpty()) {
+                return "";
+            }
+            List<String> parts = new ArrayList<>();
+            for (JsonNode ref : root) {
+                String type = ref.path("type").asText("");
+                long id = ref.path("id").asLong(0);
+                String name = ref.path("name").asText("");
+                if (type.isBlank() || id <= 0) {
+                    continue;
+                }
+                if ("workflow".equals(type)) {
+                    parts.add("【可联动资源：工作流「" + name + "」(ID " + id + ")，如需执行请调用 run_workflow】");
+                } else if ("kb".equals(type)) {
+                    parts.add("【可联动资源：知识库「" + name + "」(ID " + id + ")，如需检索请调用 kb_search 并指定该知识库】");
+                }
+            }
+            return String.join("\n", parts);
+        } catch (Exception ex) {
+            log.warn("技能 references 解析失败: {}", ex.getMessage());
+            return "";
         }
     }
 }

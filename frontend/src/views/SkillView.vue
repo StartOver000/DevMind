@@ -10,6 +10,10 @@ const scopeFilter = ref('all');
 const form = ref(null); // 编辑中的技能
 const saving = ref(false);
 
+// 引用资源候选（工作流 / 知识库）
+const workflows = ref([]);
+const kbs = ref([]);
+
 async function load() {
   loading.value = true;
   try {
@@ -21,6 +25,33 @@ async function load() {
   }
 }
 
+async function loadCandidates() {
+  try {
+    const [wf, kb] = await Promise.all([
+      api('/api/workflows'),
+      api('/api/knowledge-bases')
+    ]);
+    workflows.value = Array.isArray(wf) ? wf : [];
+    const kbList = (kb && kb.items) ? kb.items : (Array.isArray(kb) ? kb : []);
+    kbs.value = kbList.filter((k) => k.status !== 'DELETED');
+  } catch (err) {
+    // 引用资源候选加载失败不阻塞技能管理
+    workflows.value = [];
+    kbs.value = [];
+  }
+}
+
+// 解析技能 references（JSON 文本）为 {type,id,name} 数组
+function parseReferences(raw) {
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+
 function openCreate() {
   form.value = {
     id: null,
@@ -29,12 +60,31 @@ function openCreate() {
     description: '',
     applyTo: '',
     content: '',
+    references: [],
     enabled: true
   };
 }
 
 function openEdit(s) {
-  form.value = { ...s };
+  form.value = {
+    ...s,
+    references: parseReferences(s.references)
+  };
+}
+
+function toggleRef(type, id, name, checked) {
+  if (!form.value) return;
+  const arr = form.value.references;
+  const idx = arr.findIndex((r) => r.type === type && r.id === id);
+  if (checked) {
+    if (idx === -1) arr.push({ type, id, name });
+  } else if (idx !== -1) {
+    arr.splice(idx, 1);
+  }
+}
+
+function refSelected(type, id) {
+  return form.value && form.value.references.some((r) => r.type === type && r.id === id);
 }
 
 async function save() {
@@ -48,6 +98,7 @@ async function save() {
       description: form.value.description || '',
       applyTo: form.value.applyTo || '',
       content: form.value.content,
+      references: JSON.stringify(form.value.references || []),
       enabled: form.value.enabled
     });
     if (form.value.id) {
@@ -87,7 +138,10 @@ async function removeSkill(s) {
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  loadCandidates();
+});
 </script>
 
 <template>
@@ -116,6 +170,12 @@ onMounted(load);
           </div>
           <div v-if="s.description" class="desc">{{ s.description }}</div>
           <div class="apply">触发：<span>{{ s.applyTo || '—' }}</span></div>
+          <div v-if="parseReferences(s.references).length" class="refs">
+            引用资源：
+            <span v-for="r in parseReferences(s.references)" :key="r.type + r.id" class="ref-tag" :class="r.type">
+              {{ r.type === 'workflow' ? '工作流' : '知识库' }}：{{ r.name || ('ID ' + r.id) }}
+            </span>
+          </div>
           <pre class="content">{{ s.content }}</pre>
           <div class="actions">
             <button class="small" @click="openEdit(s)">编辑</button>
@@ -146,6 +206,24 @@ onMounted(load);
       <label>技能内容（Agent 遵循的规范）
         <textarea v-model="form.content" rows="6" placeholder="生成月度经营分析报告时，必须遵守：1. 结构…；2. 必须引用数据来源…"></textarea>
       </label>
+      <div class="ref-editor">
+        <label>引用资源（可选）<span class="ref-hint">命中技能时，Agent 可联动执行引用的工作流 / 检索引用的知识库</span></label>
+        <div v-if="workflows.length" class="ref-group">
+          <span class="ref-group-title">工作流（命中后可执行）</span>
+          <label v-for="w in workflows" :key="'wf' + w.id" class="ref-option">
+            <input type="checkbox" :checked="refSelected('workflow', w.id)" @change="toggleRef('workflow', w.id, w.name, $event.target.checked)">
+            {{ w.name }}
+          </label>
+        </div>
+        <div v-if="kbs.length" class="ref-group">
+          <span class="ref-group-title">知识库（命中后可检索）</span>
+          <label v-for="k in kbs" :key="'kb' + k.id" class="ref-option">
+            <input type="checkbox" :checked="refSelected('kb', k.id)" @change="toggleRef('kb', k.id, k.name, $event.target.checked)">
+            {{ k.name }}
+          </label>
+        </div>
+        <div v-if="!workflows.length && !kbs.length" class="ref-empty">暂无可引用资源（先创建工作流或知识库）</div>
+      </div>
       <div class="actions">
         <button class="primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
         <button @click="form = null">取消</button>
@@ -217,6 +295,63 @@ onMounted(load);
 .desc { color: var(--muted); font-size: 13px; }
 
 .apply { font-size: 12px; color: var(--muted); }
+
+.refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  align-items: center;
+}
+
+.ref-tag {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+.ref-tag.workflow { background: #ede7f6; color: #4527a0; }
+.ref-tag.kb { background: #e0f2f1; color: #00695c; }
+
+.ref-editor {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.ref-hint {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 6px;
+}
+
+.ref-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+}
+
+.ref-group-title {
+  font-size: 12px;
+  color: var(--muted);
+  width: 100%;
+}
+
+.ref-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.ref-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
 
 .apply span { color: inherit; }
 

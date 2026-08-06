@@ -22,7 +22,7 @@ public class SkillRepository {
     }
 
     private static final String COLUMNS = """
-            id, tenant_id, scope, name, description, apply_to, content, source,
+            id, tenant_id, scope, name, description, apply_to, content, "references", source,
             source_workflow_id, enabled, hit_count, created_by, created_time::text
             """;
 
@@ -35,6 +35,7 @@ public class SkillRepository {
                 rs.getString("description"),
                 rs.getString("apply_to"),
                 rs.getString("content"),
+                rs.getString("references"),
                 rs.getString("source"),
                 (Long) rs.getObject("source_workflow_id"),
                 rs.getBoolean("enabled"),
@@ -89,8 +90,8 @@ public class SkillRepository {
         jdbcTemplate.update(con -> {
             PreparedStatement ps = con.prepareStatement("""
                     INSERT INTO skill (tenant_id, scope, name, description, apply_to, content,
-                                       source, source_workflow_id, enabled, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       "references", source, source_workflow_id, enabled, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, new String[]{"id"});
             ps.setLong(1, skill.tenantId());
             ps.setString(2, skill.scope());
@@ -98,20 +99,21 @@ public class SkillRepository {
             ps.setString(4, skill.description() == null ? "" : skill.description());
             ps.setString(5, skill.applyTo() == null ? "" : skill.applyTo());
             ps.setString(6, skill.content());
-            ps.setString(7, skill.source() == null ? "manual" : skill.source());
+            ps.setString(7, skill.references() == null || skill.references().isBlank() ? "[]" : skill.references());
+            ps.setString(8, skill.source() == null ? "manual" : skill.source());
             if (skill.sourceWorkflowId() != null) {
-                ps.setLong(8, skill.sourceWorkflowId());
+                ps.setLong(9, skill.sourceWorkflowId());
             } else {
-                ps.setNull(8, java.sql.Types.BIGINT);
+                ps.setNull(9, java.sql.Types.BIGINT);
             }
-            ps.setBoolean(9, skill.enabled());
-            ps.setLong(10, skill.createdBy());
+            ps.setBoolean(10, skill.enabled());
+            ps.setLong(11, skill.createdBy());
             return ps;
         }, keyHolder);
         Long id = keyHolder.getKey() == null ? null : keyHolder.getKey().longValue();
         return new Skill(
                 id, skill.tenantId(), skill.scope(), skill.name(), skill.description(),
-                skill.applyTo(), skill.content(), skill.source(), skill.sourceWorkflowId(),
+                skill.applyTo(), skill.content(), skill.references(), skill.source(), skill.sourceWorkflowId(),
                 skill.enabled(), 0L, skill.createdBy(), null
         );
     }
@@ -119,10 +121,12 @@ public class SkillRepository {
     public void update(Skill skill) {
         jdbcTemplate.update("""
                 UPDATE skill SET scope = ?, name = ?, description = ?, apply_to = ?,
-                                  content = ?, enabled = ?, updated_time = CURRENT_TIMESTAMP
+                                  content = ?, "references" = ?, enabled = ?, updated_time = CURRENT_TIMESTAMP
                 WHERE id = ? AND tenant_id = ?
                 """, skill.scope(), skill.name(), skill.description(),
-                skill.applyTo(), skill.content(), skill.enabled(), skill.id(), skill.tenantId());
+                skill.applyTo(), skill.content(),
+                skill.references() == null || skill.references().isBlank() ? "[]" : skill.references(),
+                skill.enabled(), skill.id(), skill.tenantId());
     }
 
     /** 仅更新技能内容（对话式修正，保留名称/触发词/统计） */

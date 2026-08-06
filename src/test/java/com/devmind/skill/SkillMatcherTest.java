@@ -13,14 +13,62 @@ import static org.mockito.Mockito.when;
 class SkillMatcherTest {
 
     private Skill skill(Long id, String scope, String name, String applyTo, String content) {
-        return new Skill(id, 1L, scope, name, "desc", applyTo, content,
+        return new Skill(id, 1L, scope, name, "desc", applyTo, content, "[]",
                 "manual", null, true, 0L, 1L, null);
     }
 
     private Skill skill(Long id, String scope, String name, String description,
                         String applyTo, String content) {
-        return new Skill(id, 1L, scope, name, description, applyTo, content,
+        return new Skill(id, 1L, scope, name, description, applyTo, content, "[]",
                 "manual", null, true, 0L, 1L, null);
+    }
+
+    private Skill skillWithRefs(Long id, String scope, String name, String description,
+                                String applyTo, String content, String references) {
+        return new Skill(id, 1L, scope, name, description, applyTo, content, references,
+                "manual", null, true, 0L, 1L, null);
+    }
+
+    @Test
+    void injectsReferencesIntoMatchedSkill() {
+        // 命中技能带引用资源（工作流 + 知识库）→ 注入文本附带可联动说明（Guide-52 #3）
+        SkillRepository repository = mock(SkillRepository.class);
+        when(repository.listEnabledForUser(1L, 1L)).thenReturn(List.of(
+                skillWithRefs(1L, "team", "监控日报规范", "监控日报生成规范", "监控|日报",
+                        "生成监控日报时必须总结版本信息。",
+                        "[{\"type\":\"workflow\",\"id\":3,\"name\":\"定时监控日报\"},{\"type\":\"kb\",\"id\":2,\"name\":\"MySQL知识库\"}]")
+        ));
+
+        SkillMatcher matcher = new SkillMatcher(repository);
+        SkillMatcher.MatchResult result = matcher.match("生成一份监控日报", 1L, 1L);
+
+        assertThat(result.injectFull()).hasSize(1);
+        String inject = result.injectFull().get(0);
+        assertThat(inject).contains("监控日报规范").contains("生成监控日报时必须总结版本信息");
+        // 引用资源以可联动说明注入（供模型 run_workflow / kb_search 联动）
+        assertThat(inject).contains("可联动资源").contains("定时监控日报")
+                .contains("run_workflow").contains("MySQL知识库").contains("kb_search");
+        verify(repository).incrementHit(1L, 1L);
+    }
+
+    @Test
+    void emptyOrInvalidReferencesProduceNoLinkage() {
+        // 引用为空 / 非 JSON / 结构缺失 → 注入不带联动说明，不报错
+        SkillRepository repository = mock(SkillRepository.class);
+        when(repository.listEnabledForUser(1L, 1L)).thenReturn(List.of(
+                skillWithRefs(1L, "team", "规范A", "d", "报告", "内容A", "[]"),
+                skillWithRefs(2L, "team", "规范B", "d", "报告", "内容B", "not-json"),
+                skillWithRefs(3L, "team", "规范C", "d", "报告", "内容C",
+                        "[{\"type\":\"unknown\",\"id\":1,\"name\":\"x\"}]")
+        ));
+
+        SkillMatcher matcher = new SkillMatcher(repository);
+        SkillMatcher.MatchResult result = matcher.match("写报告", 1L, 1L);
+
+        assertThat(result.injectFull()).hasSize(2); // 上限 2
+        for (String inject : result.injectFull()) {
+            assertThat(inject).doesNotContain("可联动资源");
+        }
     }
 
     @Test

@@ -195,7 +195,7 @@ public class WorkflowService {
         }
     }
 
-    /** 校验 steps_json：必须是数组、每步 tool 已注册且对当前用户可见 */
+    /** 校验 steps_json：必须是数组、每步 tool 已注册且对当前用户可见；支持 {"parallel":[...]} 并行组 */
     private void validateSteps(String stepsJson, Long userId) {
         if (stepsJson == null || stepsJson.isBlank()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤不能为空");
@@ -208,21 +208,31 @@ public class WorkflowService {
                 throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤必须是非空数组");
             }
             for (JsonNode node : array) {
-                String tool = node.path("tool").asText("");
-                if (tool.isBlank()) {
-                    throw new ApiException(ErrorCode.INVALID_ARGUMENT, "步骤缺少 tool 字段");
-                }
-                if (!toolRegistry.has(tool)) {
-                    throw new ApiException(ErrorCode.INVALID_ARGUMENT, "步骤引用了未登记的工具: " + tool);
-                }
-                if (!accessible.contains(tool)) {
-                    throw new ApiException(ErrorCode.FORBIDDEN, "步骤引用了未授权的工具: " + tool);
+                JsonNode parallel = node.path("parallel");
+                if (parallel.isArray() && !parallel.isEmpty()) {
+                    for (JsonNode item : parallel) {
+                        validateStepTool(item.path("tool").asText(""), accessible);
+                    }
+                } else {
+                    validateStepTool(node.path("tool").asText(""), accessible);
                 }
             }
         } catch (ApiException ex) {
             throw ex;
         } catch (Exception ex) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤 JSON 解析失败");
+        }
+    }
+
+    private void validateStepTool(String tool, Set<String> accessible) {
+        if (tool.isBlank()) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "步骤缺少 tool 字段");
+        }
+        if (!toolRegistry.has(tool)) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "步骤引用了未登记的工具: " + tool);
+        }
+        if (!accessible.contains(tool)) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "步骤引用了未授权的工具: " + tool);
         }
     }
 }

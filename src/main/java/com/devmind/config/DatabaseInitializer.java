@@ -501,6 +501,28 @@ public class DatabaseInitializer implements ApplicationRunner {
                 ON mcp_server(tenant_id, name)
                 WHERE status <> 'DELETED'
                 """);
+        // 技能（Skill）：个人/团队"做事规范"，Agent 命中场景后注入遵循（Guide-51 P1）
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS skill (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id BIGINT NOT NULL DEFAULT 1,
+                    scope VARCHAR(16) NOT NULL DEFAULT 'team',  -- personal | team
+                    name VARCHAR(100) NOT NULL,
+                    description VARCHAR(500) NOT NULL DEFAULT '',
+                    apply_to VARCHAR(500) NOT NULL DEFAULT '',
+                    content TEXT NOT NULL,
+                    source VARCHAR(16) NOT NULL DEFAULT 'manual',  -- manual | from_workflow | from_chat
+                    source_workflow_id BIGINT,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_by BIGINT NOT NULL,
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE INDEX IF NOT EXISTS idx_skill_tenant_scope
+                ON skill(tenant_id, scope, enabled)
+                """);
         log.info("database initialized, embedding dimension={}", dimensions);
     }
 }

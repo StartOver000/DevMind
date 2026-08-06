@@ -17,6 +17,7 @@ import com.devmind.modelusage.ModelUsageService;
 import com.devmind.retrieval.LocalRagAnswerer;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
+import com.devmind.skill.SkillMatcher;
 import com.devmind.tool.ToolAccessService;
 import com.devmind.user.UserService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -24,6 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -125,6 +127,8 @@ public class AgentService {
     private final ToolCallValidator toolCallValidator;
     private final ToolAccessService toolAccessService;
     private final ChatFileStore chatFileStore;
+    /** 技能匹配器（Guide-51）：可选注入，测试/无技能时不启用 */
+    private SkillMatcher skillMatcher;
     private final ObjectMapper objectMapper = new ObjectMapper();
     /** 单工具执行超时（秒） */
     private static final int TOOL_TIMEOUT_SECONDS = 20;
@@ -173,6 +177,26 @@ public class AgentService {
         toolExecutor.shutdownNow();
     }
 
+    /** 技能匹配器可选注入（避免破坏既有测试构造器；生产环境由 Spring 自动注入） */
+    @Autowired(required = false)
+    public void setSkillMatcher(SkillMatcher skillMatcher) {
+        this.skillMatcher = skillMatcher;
+    }
+
+    /** 匹配当前请求命中的技能规范（Guide-51 P1）：未注入 matcher 或未命中时返回空 */
+    private List<String> matchSkills(String question, Long userId) {
+        if (skillMatcher == null) {
+            return List.of();
+        }
+        try {
+            Long tenantId = userService.tenantIdOf(userId);
+            return skillMatcher.match(question, tenantId, userId);
+        } catch (Exception ex) {
+            log.warn("技能匹配失败: {}", ex.getMessage());
+            return List.of();
+        }
+    }
+
     public AgentChatResponse chat(AgentChatRequest request, Long userId) {
         return doChat(request, userId, null, null);
     }
@@ -218,6 +242,13 @@ public class AgentService {
 
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", SYSTEM_PROMPT));
+        // 技能注入：命中当前请求场景的团队/个人技能作为规范遵循（Guide-51 P1）
+        List<String> skillTexts = matchSkills(question, userId);
+        if (!skillTexts.isEmpty()) {
+            messages.add(Map.of("role", "system", "content",
+                    "【相关技能规范】以下是与当前任务相关的技能规范，请遵循（如与通用规则冲突以本条为准）：\n"
+                            + String.join("\n---\n", skillTexts)));
+        }
         // 长期记忆：注入用户偏好（跨会话保留）
         List<com.devmind.agent.dto.MemoryItem> memory = memoryRepository.listByUser(userId);
         if (memory != null && !memory.isEmpty()) {

@@ -190,6 +190,51 @@ async function showRuns(w) {
   }
 }
 
+// 另存为技能（Guide-51 P1）：工作流 → LLM 生成规范草稿 → 编辑确认 → 创建团队技能
+const skillDraft = ref(null);
+const skillSaving = ref(false);
+
+async function draftAsSkill(w) {
+  skillDraft.value = null;
+  try {
+    const draft = await api(`/api/skills/from-workflow/${w.id}`, { method: 'POST' });
+    skillDraft.value = {
+      scope: 'team',
+      name: draft.name,
+      description: draft.description || '',
+      applyTo: draft.applyTo || '',
+      content: draft.content,
+      sourceWorkflowId: draft.sourceWorkflowId
+    };
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function saveSkillDraft() {
+  if (!skillDraft.value.name.trim()) { showToast('请输入技能名称', true); return; }
+  if (!skillDraft.value.content.trim()) { showToast('请输入技能内容', true); return; }
+  skillSaving.value = true;
+  try {
+    await api('/api/skills', {
+      method: 'POST',
+      body: JSON.stringify({
+        scope: skillDraft.value.scope,
+        name: skillDraft.value.name.trim(),
+        description: skillDraft.value.description || '',
+        applyTo: skillDraft.value.applyTo || '',
+        content: skillDraft.value.content
+      })
+    });
+    showToast('技能已创建，Agent 遇到同类任务会自动遵循');
+    skillDraft.value = null;
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    skillSaving.value = false;
+  }
+}
+
 async function showDetail(runId) {
   try {
     runDetail.value = await api(`/api/workflows/runs/${runId}`);
@@ -252,6 +297,29 @@ onMounted(load);
         <p v-if="runResult.run.error">错误：{{ runResult.run.error }}</p>
         <pre v-if="runResult.resultText">{{ runResult.resultText }}</pre>
       </div>
+
+      <div v-if="skillDraft" class="draft">
+        <h3>存为技能（编辑后保存，Agent 遇到同类任务自动遵循）</h3>
+        <label>技能名称
+          <input v-model="skillDraft.name">
+        </label>
+        <label>适用范围
+          <select v-model="skillDraft.scope">
+            <option value="team">团队（全员生效）</option>
+            <option value="personal">个人（仅自己）</option>
+          </select>
+        </label>
+        <label>触发关键词（| 分隔）
+          <input v-model="skillDraft.applyTo" placeholder="如：月报|经营分析|月度报告">
+        </label>
+        <label>技能内容（AI 生成的规范，可编辑）
+          <textarea v-model="skillDraft.content" rows="6"></textarea>
+        </label>
+        <button class="primary" :disabled="skillSaving" @click="saveSkillDraft">
+          {{ skillSaving ? '保存中…' : '保存技能' }}
+        </button>
+        <button @click="skillDraft = null">取消</button>
+      </div>
     </div>
 
     <div class="panel">
@@ -279,6 +347,7 @@ onMounted(load);
                 <td>
                   <button class="small" :disabled="runningId === w.id || w.status !== 'ENABLED'" @click="runWorkflow(w)">{{ runningId === w.id ? '运行中…' : '运行' }}</button>
                   <button class="small" @click="showRuns(w)">记录</button>
+                  <button class="small" @click="draftAsSkill(w)">存为技能</button>
                   <button class="small danger" @click="deleteWorkflow(w)">删除</button>
                 </td>
               </tr>

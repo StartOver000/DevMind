@@ -27,6 +27,12 @@ const routes = [
     meta: { title: '流程' }
   },
   {
+    path: '/skills',
+    name: 'skills',
+    component: () => import('@/views/SkillView.vue'),
+    meta: { title: '技能' }
+  },
+  {
     path: '/sql',
     name: 'sql',
     component: () => import('@/views/SqlDiagnosisView.vue'),

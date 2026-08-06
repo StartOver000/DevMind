@@ -186,6 +186,33 @@ class AgentServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void injectsMatchedSkillIntoSystemPrompt() {
+        // 技能匹配器命中 → 规范注入 system prompt（Guide-51 P1）
+        com.devmind.skill.SkillMatcher matcher = org.mockito.Mockito.mock(com.devmind.skill.SkillMatcher.class);
+        when(matcher.match(eq("写一份月度经营分析报告"), eq(1L), eq(1L)))
+                .thenReturn(List.of("【技能：月报规范】\n生成月报必须包含同比环比。"));
+
+        AgentTool tool = kbTool();
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        service.setSkillMatcher(matcher);
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(new AiModelGateway.ChatResult("按规范生成。", "m", 0, 0));
+
+        service.chat(new AgentChatRequest(0L, "写一份月度经营分析报告", null), 1L);
+
+        ArgumentCaptor<List<Map<String, Object>>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatRouter).chatWithTools(anyString(), captor.capture(), anyList());
+        List<Map<String, Object>> messages = captor.getValue();
+        boolean found = messages.stream().anyMatch(m ->
+                "system".equals(m.get("role"))
+                        && String.valueOf(m.get("content")).contains("相关技能规范")
+                        && String.valueOf(m.get("content")).contains("同比环比"));
+        assertThat(found).isTrue();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void uploadedFileContentInjectedIntoQuestion() {
         AgentTool tool = kbTool();
         AgentService service = service(new ToolRegistry(List.of(tool)));

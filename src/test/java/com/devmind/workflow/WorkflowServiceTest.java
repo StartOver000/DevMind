@@ -1,7 +1,10 @@
 package com.devmind.workflow;
 
+import com.devmind.agent.AgentTool;
 import com.devmind.agent.ToolRegistry;
 import com.devmind.common.ApiException;
+import com.devmind.tool.ToolAccessService;
+import com.devmind.user.UserService;
 import com.devmind.workflow.dto.WorkflowCreateRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -10,13 +13,17 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -33,6 +40,12 @@ class WorkflowServiceTest {
     @Mock
     private WorkflowExecutor executor;
 
+    @Mock
+    private UserService userService;
+
+    @Mock
+    private ToolAccessService toolAccessService;
+
     private ToolRegistry registry;
     private WorkflowService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -40,7 +53,19 @@ class WorkflowServiceTest {
     @BeforeEach
     void setUp() {
         registry = new ToolRegistry(List.of());
-        service = new WorkflowService(repository, runRepository, executor, registry, objectMapper);
+        service = new WorkflowService(
+                repository, runRepository, executor, registry, objectMapper,
+                userService, toolAccessService
+        );
+        lenient().when(userService.tenantIdOf(1L)).thenReturn(1L);
+        // 默认：当前注册的工具全部对用户 1 可见
+        lenient().when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenAnswer(inv -> {
+            Set<String> names = new HashSet<>();
+            for (AgentTool tool : registry.all()) {
+                names.add(tool.name());
+            }
+            return names;
+        });
     }
 
     private WorkflowCreateRequest req(String stepsJson) {
@@ -72,6 +97,24 @@ class WorkflowServiceTest {
                 req("[{\"tool\":\"not_exist\",\"params\":{}}]"), 1L))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("未登记");
+        verify(repository, never()).insert(any());
+    }
+
+    @Test
+    void createRejectsUnauthorizedTool() {
+        // 工具已注册但用户不可见（未授权）
+        registry.register(new com.devmind.agent.AgentTool() {
+            @Override public String name() { return "internal_api"; }
+            @Override public String description() { return "内部接口"; }
+            @Override public String parametersJsonSchema() { return "{}"; }
+            @Override public String execute(String argumentsJson, Long userId) { return "{}"; }
+        });
+        when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenReturn(Set.of());
+
+        assertThatThrownBy(() -> service.create(
+                req("[{\"tool\":\"internal_api\",\"params\":{}}]"), 1L))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("未授权");
         verify(repository, never()).insert(any());
     }
 

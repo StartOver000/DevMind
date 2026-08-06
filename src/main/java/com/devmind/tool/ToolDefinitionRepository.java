@@ -54,6 +54,14 @@ public class ToolDefinitionRepository {
         );
     }
 
+    /** 全部租户的启用工具（启动时加载到全局注册表用） */
+    public List<ToolDefinition> listEnabledAll() {
+        return jdbcTemplate.query(
+                "SELECT " + COLUMNS + " FROM tool_definition WHERE status = 'READY' ORDER BY id",
+                this::map
+        );
+    }
+
     public List<ToolDefinition> listAll(Long tenantId) {
         return jdbcTemplate.query(
                 "SELECT " + COLUMNS + " FROM tool_definition WHERE tenant_id = ? AND status <> 'DELETED' ORDER BY id",

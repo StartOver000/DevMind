@@ -9,6 +9,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class UserService {
@@ -35,9 +36,26 @@ public class UserService {
         return new UserListResponse(items);
     }
 
+    /** 当前登录用户信息（含角色/租户，供前端判断权限） */
+    public Map<String, Object> me(Long userId) {
+        User user = requireUser(userId);
+        return Map.of(
+                "id", user.id(),
+                "username", user.username(),
+                "displayName", user.displayName() == null ? "" : user.displayName(),
+                "role", user.role(),
+                "tenantId", user.tenantId()
+        );
+    }
+
     public User requireUser(Long userId) {
         return repository.findById(userId)
                 .orElseThrow(() -> new ApiException(ErrorCode.USER_NOT_FOUND, "用户不存在"));
+    }
+
+    /** 用户所属租户（多租户隔离） */
+    public Long tenantIdOf(Long userId) {
+        return requireUser(userId).tenantId();
     }
 
     public boolean isAdmin(Long userId) {

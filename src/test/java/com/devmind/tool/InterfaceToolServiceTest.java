@@ -5,6 +5,7 @@ import com.devmind.common.ApiException;
 import com.devmind.security.SecretCipher;
 import com.devmind.tool.dto.ToolCreateRequest;
 import com.devmind.tool.dto.ToolResponse;
+import com.devmind.user.UserService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -33,6 +35,12 @@ class InterfaceToolServiceTest {
     @Mock
     private SecretCipher secretCipher;
 
+    @Mock
+    private UserService userService;
+
+    @Mock
+    private ToolAccessService toolAccessService;
+
     private ToolRegistry registry;
     private InterfaceToolService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -41,8 +49,12 @@ class InterfaceToolServiceTest {
     void setUp() {
         registry = new ToolRegistry(List.of());
         service = new InterfaceToolService(
-                repository, registry, RestClient.builder(), secretCipher, objectMapper
+                repository, registry, RestClient.builder(), secretCipher, objectMapper,
+                userService, toolAccessService
         );
+        // 测试用户 1 为管理员，租户 1
+        lenient().when(userService.isAdmin(1L)).thenReturn(true);
+        lenient().when(userService.tenantIdOf(1L)).thenReturn(1L);
     }
 
     private ToolCreateRequest req(String name, String url) {
@@ -140,9 +152,19 @@ class InterfaceToolServiceTest {
 
     @Test
     void runLoadsEnabledToolsOnStartup() {
-        when(repository.listEnabled(1L)).thenReturn(List.of(savedDef(1L, "t1", "http://x")));
+        when(repository.listEnabledAll()).thenReturn(List.of(savedDef(1L, "t1", "http://x")));
         service.run(null);
 
         assertThat(registry.has("t1")).isTrue();
+    }
+
+    @Test
+    void createRejectedForNonAdmin() {
+        when(userService.isAdmin(2L)).thenReturn(false);
+
+        assertThatThrownBy(() -> service.create(req("customer_query", "http://x/api"), 2L))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("管理员");
+        verify(repository, never()).insert(any());
     }
 }

@@ -48,6 +48,25 @@ public class DatabaseInitializer implements ApplicationRunner {
                 """);
         jdbcTemplate.execute("ALTER TABLE app_user ADD COLUMN IF NOT EXISTS password_hash VARCHAR(100)");
         jdbcTemplate.execute("ALTER TABLE app_user ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'USER'");
+        // 多租户：tenant（公司）作为隔离单元；app_user 挂 tenant_id（M2-2）
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS tenant (
+                    id BIGSERIAL PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL UNIQUE,
+                    description VARCHAR(500),
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                INSERT INTO tenant (name, description)
+                VALUES ('演示公司', '默认租户')
+                ON CONFLICT (name) DO NOTHING
+                """);
+        jdbcTemplate.execute("ALTER TABLE app_user ADD COLUMN IF NOT EXISTS tenant_id BIGINT NOT NULL DEFAULT 1");
+        jdbcTemplate.execute("""
+                UPDATE app_user SET tenant_id = (SELECT id FROM tenant WHERE name = '演示公司')
+                WHERE tenant_id = 1
+                """);
         Integer demoCount = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM app_user WHERE username = 'demo'",
                 Integer.class
@@ -362,6 +381,22 @@ public class DatabaseInitializer implements ApplicationRunner {
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_definition_name
                 ON tool_definition(name)
                 WHERE status <> 'DELETED'
+                """);
+        // 工具授权：管理员把动态接口工具授权给成员/团队（M2-2）
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS tool_grant (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id BIGINT NOT NULL DEFAULT 1,
+                    subject_type VARCHAR(20) NOT NULL,  -- user | team
+                    subject_id BIGINT NOT NULL,
+                    tool_id BIGINT NOT NULL,
+                    granted_by BIGINT,
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_grant_unique
+                ON tool_grant(tenant_id, subject_type, subject_id, tool_id)
                 """);
         // 工作流：业务人员编排的多步骤自动化（M1-T4）
         jdbcTemplate.execute("""

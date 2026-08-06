@@ -36,13 +36,18 @@ public class ToolController {
     }
 
     @GetMapping
-    public List<ToolResponse> list() {
-        return toolService.list();
+    public List<ToolResponse> list(
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        return toolService.list(userId);
     }
 
     @GetMapping("/{id}")
-    public ToolResponse get(@PathVariable Long id) {
-        return toolService.get(id);
+    public ToolResponse get(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        return toolService.get(id, userId);
     }
 
     @PutMapping("/{id}")
@@ -65,8 +70,11 @@ public class ToolController {
 
     /** 连通性测试：按定义实际调用一次，返回是否可连通 */
     @PostMapping("/{id}/test")
-    public Map<String, Object> test(@PathVariable Long id) {
-        boolean ok = toolService.test(id);
+    public Map<String, Object> test(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        boolean ok = toolService.test(id, userId);
         return Map.of("ok", ok, "message", ok ? "接口可连通" : "接口调用失败，请检查地址/鉴权/网络");
     }
 }

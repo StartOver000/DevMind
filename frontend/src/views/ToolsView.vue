@@ -1,9 +1,13 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
-import { api } from '@/api/client';
+import { api, getCurrentUserId } from '@/api/client';
 import { showToast } from '@/stores/toast';
 
-// 登记表单
+// 当前用户与角色
+const me = ref(null);
+const isAdmin = computed(() => me.value && me.value.role === 'ADMIN');
+
+// 登记表单（仅管理员可见）
 const form = ref({
   name: '',
   description: '',
@@ -21,6 +25,13 @@ const tools = ref([]);
 const loading = ref(false);
 const testingId = ref(null);
 
+// 授权管理（仅管理员）：选择成员 → 勾选可用工具
+const users = ref([]);
+const grantOpen = ref(false);
+const grantUser = ref(null);
+const grantedIds = ref(new Set());
+const grantBusy = ref(false);
+
 // 鉴权配置占位提示（避免模板内转义问题，放 script 计算）
 const authPlaceholder = computed(() =>
   form.value.authType === 'api_key'
@@ -36,6 +47,18 @@ async function load() {
     showToast(err.message, true);
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadMe() {
+  try {
+    me.value = await api('/api/users/me');
+    if (isAdmin.value) {
+      users.value = (await api('/api/users')).items || [];
+    }
+  } catch (err) {
+    // 后端无 /me 时静默降级：按管理员处理
+    me.value = { role: 'ADMIN', id: getCurrentUserId() };
   }
 }
 
@@ -90,12 +113,51 @@ async function deleteTool(tool) {
   }
 }
 
-onMounted(load);
+// ---------- 授权管理 ----------
+async function openGrant(user) {
+  grantUser.value = user;
+  grantOpen.value = true;
+  try {
+    const res = await api(`/api/admin/tools/grants/${user.id}`);
+    grantedIds.value = new Set(res.toolIds || []);
+  } catch (err) {
+    showToast(err.message, true);
+    grantedIds.value = new Set();
+  }
+}
+
+async function toggleGrant(tool) {
+  grantBusy.value = true;
+  try {
+    if (grantedIds.value.has(tool.id)) {
+      await api(`/api/admin/tools/${tool.id}/grants?subjectType=user&subjectId=${grantUser.value.id}`, { method: 'DELETE' });
+      grantedIds.value.delete(tool.id);
+      showToast(`已撤销 ${tool.name} 的授权`);
+    } else {
+      await api(`/api/admin/tools/${tool.id}/grants`, {
+        method: 'POST',
+        body: JSON.stringify({ subjectType: 'user', subjectId: grantUser.value.id })
+      });
+      grantedIds.value.add(tool.id);
+      showToast(`已授权 ${tool.name}`);
+    }
+    await load();
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    grantBusy.value = false;
+  }
+}
+
+onMounted(() => {
+  loadMe();
+  load();
+});
 </script>
 
 <template>
   <section class="tools-grid">
-    <div class="panel">
+    <div class="panel" v-if="isAdmin">
       <h2>登记接口（生成 AI 可调用工具）</h2>
       <label>工具名（字母/数字/下划线）
         <input v-model="form.name" placeholder="例如：customer_query">
@@ -131,11 +193,26 @@ onMounted(load);
         {{ submitting ? '登记中…' : '登记接口' }}
       </button>
     </div>
+    <div v-else class="panel hint-panel">
+      <p class="hint">你是团队成员，无法登记接口工具。下方展示的是管理员已授权给你的接口。</p>
+      <p class="hint sub">需要更多工具？联系管理员在「授权管理」中分配。</p>
+    </div>
 
     <div class="panel">
-      <h2>已登记接口工具（{{ tools.length }}）</h2>
+      <div class="list-head">
+        <h2>{{ isAdmin ? '已登记接口工具' : '我可用接口工具' }}（{{ tools.length }}）</h2>
+        <div v-if="isAdmin" class="grant-entry">
+          <span>授权管理：</span>
+          <select v-if="users.length" v-model="grantUser" @change="openGrant(grantUser)">
+            <option :value="null" disabled>选择成员…</option>
+            <option v-for="u in users" :key="u.id" :value="u">{{ u.displayName || u.username }}</option>
+          </select>
+        </div>
+      </div>
       <div v-if="loading" class="empty">加载中…</div>
-      <div v-else-if="!tools.length" class="empty">还没有登记接口。左侧登记一个内部接口，AI 就能调用它干活。</div>
+      <div v-else-if="!tools.length" class="empty">
+        {{ isAdmin ? '还没有登记接口。左侧登记一个内部接口，AI 就能调用它干活。' : '管理员还没有授权接口给你。' }}
+      </div>
       <div v-else class="table-wrap">
         <table>
           <thead>
@@ -150,7 +227,7 @@ onMounted(load);
               <td>{{ t.authType }}</td>
               <td>
                 <button class="small" :disabled="testingId === t.id" @click="testTool(t.id)">{{ testingId === t.id ? '测试中…' : '连通测试' }}</button>
-                <button class="small danger" @click="deleteTool(t)">删除</button>
+                <button v-if="isAdmin" class="small danger" @click="deleteTool(t)">删除</button>
               </td>
             </tr>
           </tbody>
@@ -158,6 +235,32 @@ onMounted(load);
       </div>
     </div>
   </section>
+
+  <!-- 授权弹窗：管理员给成员分配可用工具 -->
+  <div v-if="grantOpen && grantUser" class="modal-mask" @click.self="grantOpen = false">
+    <div class="modal">
+      <h3>为 {{ grantUser.displayName || grantUser.username }} 分配工具</h3>
+      <p class="modal-desc">勾选后该成员即可在对话、工作流中使用这些接口工具。</p>
+      <div v-if="!tools.length" class="empty">暂无已登记工具</div>
+      <div v-else class="grant-list">
+        <label v-for="t in tools" :key="t.id" class="grant-item">
+          <input
+            type="checkbox"
+            :checked="grantedIds.has(t.id)"
+            :disabled="grantBusy"
+            @change="toggleGrant(t)"
+          >
+          <span>
+            <b>{{ t.name }}</b>
+            <small>{{ t.description || t.endpointUrl }}</small>
+          </span>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="small" @click="grantOpen = false">关闭</button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -189,6 +292,99 @@ td.desc {
 button.danger {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+.hint-panel {
+  align-content: start;
+  padding: 24px;
+  border: 1px dashed var(--border, #ccc);
+  border-radius: 10px;
+}
+.hint {
+  margin: 0;
+  color: var(--muted, #888);
+  line-height: 1.6;
+}
+.hint.sub {
+  font-size: 13px;
+}
+
+.list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.grant-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted, #888);
+}
+
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 12px;
+  padding: 20px;
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.modal h3 {
+  margin: 0;
+}
+.modal-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted, #888);
+}
+.grant-list {
+  overflow-y: auto;
+  display: grid;
+  gap: 6px;
+}
+.grant-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border, #eee);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.grant-item input {
+  margin-top: 3px;
+}
+.grant-item span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.grant-item small {
+  color: var(--muted, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 @media (max-width: 900px) {

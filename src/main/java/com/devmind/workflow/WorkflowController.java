@@ -51,13 +51,18 @@ public class WorkflowController {
     }
 
     @GetMapping
-    public List<Workflow> list() {
-        return workflowService.list();
+    public List<Workflow> list(
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        return workflowService.list(userId);
     }
 
     @GetMapping("/{id}")
-    public Workflow get(@PathVariable Long id) {
-        return workflowService.get(id);
+    public Workflow get(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        return workflowService.get(id, userId);
     }
 
     @PutMapping("/{id}")
@@ -90,13 +95,17 @@ public class WorkflowController {
     @GetMapping("/{id}/runs")
     public List<WorkflowRun> runs(
             @PathVariable Long id,
-            @RequestParam(defaultValue = "10") int limit
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
     ) {
-        return workflowService.runList(id, limit);
+        return workflowService.runList(id, limit, userId);
     }
 
     @GetMapping("/runs/{runId}")
-    public WorkflowRunDetail runDetail(@PathVariable Long runId) {
-        return workflowService.runDetail(runId);
+    public WorkflowRunDetail runDetail(
+            @PathVariable Long runId,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        return workflowService.runDetail(runId, userId);
     }
 }

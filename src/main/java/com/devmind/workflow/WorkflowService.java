@@ -3,6 +3,8 @@ package com.devmind.workflow;
 import com.devmind.agent.ToolRegistry;
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
+import com.devmind.tool.ToolAccessService;
+import com.devmind.user.UserService;
 import com.devmind.workflow.dto.WorkflowCreateRequest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,65 +15,74 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * 工作流管理：CRUD + 手动运行 + 运行记录查询。
  * 执行委托 {@link WorkflowExecutor}（复用 Agent 工具引擎）。
  */
 @Service
+@SuppressWarnings("null")
 public class WorkflowService {
 
     private static final Logger log = LoggerFactory.getLogger(WorkflowService.class);
-    private static final Long DEFAULT_TENANT = 1L; // M1 单租户
 
     private final WorkflowRepository repository;
     private final WorkflowRunRepository runRepository;
     private final WorkflowExecutor executor;
     private final ToolRegistry toolRegistry;
     private final ObjectMapper objectMapper;
+    private final UserService userService;
+    private final ToolAccessService toolAccessService;
 
     public WorkflowService(
             WorkflowRepository repository,
             WorkflowRunRepository runRepository,
             WorkflowExecutor executor,
             ToolRegistry toolRegistry,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            UserService userService,
+            ToolAccessService toolAccessService
     ) {
         this.repository = repository;
         this.runRepository = runRepository;
         this.executor = executor;
         this.toolRegistry = toolRegistry;
         this.objectMapper = objectMapper;
+        this.userService = userService;
+        this.toolAccessService = toolAccessService;
     }
 
-    public List<Workflow> list() {
-        return repository.listAll(DEFAULT_TENANT);
+    public List<Workflow> list(Long userId) {
+        return repository.listAll(userService.tenantIdOf(userId));
     }
 
-    public Workflow get(Long id) {
-        return requireWorkflow(id);
+    public Workflow get(Long id, Long userId) {
+        return requireWorkflow(userService.tenantIdOf(userId), id);
     }
 
     @Transactional
     public Workflow create(WorkflowCreateRequest req, Long userId) {
-        validateSteps(req.stepsJson());
+        Long tenantId = userService.tenantIdOf(userId);
+        validateSteps(req.stepsJson(), userId);
         validateTrigger(req.triggerType(), req.cronExpr());
         String trigger = req.triggerType() == null ? "manual" : req.triggerType();
         String scope = req.scope() == null ? "private" : req.scope();
         String status = req.status() == null ? "ENABLED" : req.status();
         Workflow workflow = Workflow.forInsert(
-                DEFAULT_TENANT, req.name(), req.description(), req.stepsJson(),
+                tenantId, req.name(), req.description(), req.stepsJson(),
                 trigger, req.cronExpr(), scope, status, userId
         );
         Long id = repository.insert(workflow);
-        log.info("创建工作流 {} (id={}, by user={})", req.name(), id, userId);
-        return requireWorkflow(id);
+        log.info("创建工作流 {} (id={}, tenant={}, by user={})", req.name(), id, tenantId, userId);
+        return requireWorkflow(tenantId, id);
     }
 
     @Transactional
     public Workflow update(Long id, WorkflowCreateRequest req, Long userId) {
-        Workflow existing = requireWorkflow(id);
-        validateSteps(req.stepsJson());
+        Long tenantId = userService.tenantIdOf(userId);
+        Workflow existing = requireWorkflow(tenantId, id);
+        validateSteps(req.stepsJson(), userId);
         validateTrigger(req.triggerType(), req.cronExpr());
         Workflow updated = new Workflow(
                 id, existing.tenantId(), req.name(), req.description(), req.stepsJson(),
@@ -80,20 +91,22 @@ public class WorkflowService {
                 req.status() == null ? existing.status() : req.status(),
                 existing.createdBy(), existing.createdTime()
         );
-        repository.update(DEFAULT_TENANT, updated);
+        repository.update(tenantId, updated);
         log.info("更新工作流 {} (id={}, by user={})", req.name(), id, userId);
-        return requireWorkflow(id);
+        return requireWorkflow(tenantId, id);
     }
 
     public void delete(Long id, Long userId) {
-        requireWorkflow(id);
-        repository.softDelete(DEFAULT_TENANT, id);
+        Long tenantId = userService.tenantIdOf(userId);
+        requireWorkflow(tenantId, id);
+        repository.softDelete(tenantId, id);
         log.info("删除工作流 (id={}, by user={})", id, userId);
     }
 
     /** 手动运行：同步执行，返回本次运行记录 */
     public WorkflowRun run(Long id, Long userId) {
-        Workflow workflow = requireWorkflow(id);
+        Long tenantId = userService.tenantIdOf(userId);
+        Workflow workflow = requireWorkflow(tenantId, id);
         if (!"ENABLED".equals(workflow.status())) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流已停用");
         }
@@ -101,14 +114,16 @@ public class WorkflowService {
         return executor.execute(workflow, userId, "manual");
     }
 
-    public List<WorkflowRun> runList(Long workflowId, int limit) {
-        requireWorkflow(workflowId);
-        return runRepository.listRuns(DEFAULT_TENANT, workflowId, Math.min(limit, 50));
+    public List<WorkflowRun> runList(Long workflowId, int limit, Long userId) {
+        Long tenantId = userService.tenantIdOf(userId);
+        requireWorkflow(tenantId, workflowId);
+        return runRepository.listRuns(tenantId, workflowId, Math.min(limit, 50));
     }
 
     /** 运行详情：run + 步骤明细 */
-    public WorkflowRunDetail runDetail(Long runId) {
-        WorkflowRun run = runRepository.findRun(DEFAULT_TENANT, runId);
+    public WorkflowRunDetail runDetail(Long runId, Long userId) {
+        Long tenantId = userService.tenantIdOf(userId);
+        WorkflowRun run = runRepository.findRun(tenantId, runId);
         if (run == null) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "运行记录不存在: " + runId);
         }
@@ -118,8 +133,8 @@ public class WorkflowService {
     public record WorkflowRunDetail(WorkflowRun run, List<WorkflowRunStep> steps) {
     }
 
-    private Workflow requireWorkflow(Long id) {
-        Workflow workflow = repository.findById(DEFAULT_TENANT, id);
+    private Workflow requireWorkflow(Long tenantId, Long id) {
+        Workflow workflow = repository.findById(tenantId, id);
         if (workflow == null) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流不存在: " + id);
         }
@@ -140,11 +155,13 @@ public class WorkflowService {
         }
     }
 
-    /** 校验 steps_json：必须是数组、每步 tool 已注册且不为空 */
-    private void validateSteps(String stepsJson) {
+    /** 校验 steps_json：必须是数组、每步 tool 已注册且对当前用户可见 */
+    private void validateSteps(String stepsJson, Long userId) {
         if (stepsJson == null || stepsJson.isBlank()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤不能为空");
         }
+        Long tenantId = userService.tenantIdOf(userId);
+        Set<String> accessible = toolAccessService.accessibleToolNames(tenantId, userId);
         try {
             JsonNode array = objectMapper.readTree(stepsJson);
             if (!array.isArray() || array.isEmpty()) {
@@ -157,6 +174,9 @@ public class WorkflowService {
                 }
                 if (!toolRegistry.has(tool)) {
                     throw new ApiException(ErrorCode.INVALID_ARGUMENT, "步骤引用了未登记的工具: " + tool);
+                }
+                if (!accessible.contains(tool)) {
+                    throw new ApiException(ErrorCode.FORBIDDEN, "步骤引用了未授权的工具: " + tool);
                 }
             }
         } catch (ApiException ex) {

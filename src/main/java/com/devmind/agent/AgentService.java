@@ -17,6 +17,7 @@ import com.devmind.modelusage.ModelUsageService;
 import com.devmind.retrieval.LocalRagAnswerer;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
+import com.devmind.tool.ToolAccessService;
 import com.devmind.user.UserService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,6 +30,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -121,6 +123,7 @@ public class AgentService {
     private final DevMindProperties properties;
     private final MeterRegistry meterRegistry;
     private final ToolCallValidator toolCallValidator;
+    private final ToolAccessService toolAccessService;
     private final ObjectMapper objectMapper = new ObjectMapper();
     /** 单工具执行超时（秒） */
     private static final int TOOL_TIMEOUT_SECONDS = 20;
@@ -144,7 +147,8 @@ public class AgentService {
             KnowledgeBaseService knowledgeBaseService,
             DevMindProperties properties,
             MeterRegistry meterRegistry,
-            ToolCallValidator toolCallValidator
+            ToolCallValidator toolCallValidator,
+            ToolAccessService toolAccessService
     ) {
         this.chatRouter = chatRouter;
         this.toolRegistry = toolRegistry;
@@ -158,6 +162,7 @@ public class AgentService {
         this.properties = properties;
         this.meterRegistry = meterRegistry;
         this.toolCallValidator = toolCallValidator;
+        this.toolAccessService = toolAccessService;
     }
 
     @jakarta.annotation.PreDestroy
@@ -235,7 +240,11 @@ public class AgentService {
         messages.add(Map.of("role", "user", "content", question));
 
         List<ToolTraceItem> trace = new ArrayList<>();
+        // 工具可见性：按用户授权过滤（内置工具全部可用，动态接口工具需被授权）
+        Long tenantId = userService.tenantIdOf(userId);
+        Set<String> accessible = toolAccessService.accessibleToolNames(tenantId, userId);
         List<AiModelGateway.ToolSpec> tools = new ArrayList<>(toolRegistry.all().stream()
+                .filter(tool -> accessible.contains(tool.name()))
                 .map(tool -> new AiModelGateway.ToolSpec(tool.name(), tool.description(), tool.parametersJsonSchema()))
                 .toList());
         // 注入内部计划工具（Plan-Execute）：模型多步任务时先提交计划，由本类特判执行

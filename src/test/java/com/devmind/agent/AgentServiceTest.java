@@ -13,14 +13,17 @@ import com.devmind.knowledge.dto.KnowledgeBaseListResponse;
 import com.devmind.modelusage.ModelUsageService;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
+import com.devmind.tool.ToolAccessService;
 import com.devmind.user.UserService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -31,6 +34,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -62,6 +66,9 @@ class AgentServiceTest {
     @Mock
     private KnowledgeBaseService knowledgeBaseService;
 
+    @Mock
+    private ToolAccessService toolAccessService;
+
     private DevMindProperties properties() {
         return new DevMindProperties(
                 "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
@@ -71,6 +78,15 @@ class AgentServiceTest {
     }
 
     private AgentService service(ToolRegistry registry) {
+        // 用户 1 属于租户 1，可见当前注册的全部工具
+        lenient().when(userService.tenantIdOf(eq(1L))).thenReturn(1L);
+        lenient().when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenAnswer(inv -> {
+            Set<String> names = new HashSet<>();
+            for (AgentTool t : registry.all()) {
+                names.add(t.name());
+            }
+            return names;
+        });
         return new AgentService(
                 chatRouter,
                 registry,
@@ -83,7 +99,8 @@ class AgentServiceTest {
                 knowledgeBaseService,
                 properties(),
                 new io.micrometer.core.instrument.simple.SimpleMeterRegistry(),
-                new ToolCallValidator(registry)
+                new ToolCallValidator(registry),
+                toolAccessService
         );
     }
 

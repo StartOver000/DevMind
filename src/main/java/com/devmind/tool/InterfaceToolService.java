@@ -6,6 +6,7 @@ import com.devmind.common.ErrorCode;
 import com.devmind.security.SecretCipher;
 import com.devmind.tool.dto.ToolCreateRequest;
 import com.devmind.tool.dto.ToolResponse;
+import com.devmind.user.UserService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,7 +32,6 @@ import java.util.Set;
 public class InterfaceToolService implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(InterfaceToolService.class);
-    private static final Long DEFAULT_TENANT = 1L; // M1 单租户；P1 多租户改造
     private static final Set<String> ALLOWED_METHODS = Set.of("GET", "POST", "PUT", "DELETE");
 
     private final ToolDefinitionRepository repository;
@@ -39,24 +39,30 @@ public class InterfaceToolService implements ApplicationRunner {
     private final RestClient.Builder restClientBuilder;
     private final SecretCipher secretCipher;
     private final ObjectMapper objectMapper;
+    private final UserService userService;
+    private final ToolAccessService toolAccessService;
 
     public InterfaceToolService(
             ToolDefinitionRepository repository,
             ToolRegistry toolRegistry,
             RestClient.Builder restClientBuilder,
             SecretCipher secretCipher,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            UserService userService,
+            ToolAccessService toolAccessService
     ) {
         this.repository = repository;
         this.toolRegistry = toolRegistry;
         this.restClientBuilder = restClientBuilder;
         this.secretCipher = secretCipher;
         this.objectMapper = objectMapper;
+        this.userService = userService;
+        this.toolAccessService = toolAccessService;
     }
 
     @Override
     public void run(ApplicationArguments args) {
-        List<ToolDefinition> enabled = repository.listEnabled(DEFAULT_TENANT);
+        List<ToolDefinition> enabled = repository.listEnabledAll();
         for (ToolDefinition def : enabled) {
             registerAdapter(def);
         }
@@ -65,17 +71,23 @@ public class InterfaceToolService implements ApplicationRunner {
         }
     }
 
-    public List<ToolResponse> list() {
-        return repository.listAll(DEFAULT_TENANT).stream().map(ToolResponse::from).toList();
+    /** 用户可见的接口工具（管理员=全部；成员=被授权） */
+    public List<ToolResponse> list(Long userId) {
+        Long tenantId = userService.tenantIdOf(userId);
+        return toolAccessService.accessibleDynamicTools(tenantId, userId)
+                .stream().map(ToolResponse::from).toList();
     }
 
-    public ToolResponse get(Long id) {
-        ToolDefinition def = requireTool(id);
-        return ToolResponse.from(def);
+    public ToolResponse get(Long id, Long userId) {
+        Long tenantId = userService.tenantIdOf(userId);
+        requireAccessible(tenantId, userId, id);
+        return ToolResponse.from(requireTool(tenantId, id));
     }
 
     @Transactional
     public ToolResponse create(ToolCreateRequest req, Long userId) {
+        requireAdmin(userId);
+        Long tenantId = userService.tenantIdOf(userId);
         validate(req);
         if (repository.findByName(req.name()) != null) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工具名已存在: " + req.name());
@@ -85,20 +97,22 @@ public class InterfaceToolService implements ApplicationRunner {
         }
         String authEnc = encryptAuth(req.authType(), req.authConfig());
         ToolDefinition def = ToolDefinition.forInsert(
-                DEFAULT_TENANT, req.name(), req.description(), "interface",
+                tenantId, req.name(), req.description(), "interface",
                 req.endpointUrl(), normalizeMethod(req.httpMethod()), req.requestSchemaJson(), req.responseDesc(),
                 normalizeAuthType(req.authType()), authEnc, req.maskFieldsJson(), "READY", userId
         );
         Long id = repository.insert(def);
-        ToolDefinition saved = requireTool(id);
+        ToolDefinition saved = requireTool(tenantId, id);
         registerAdapter(saved);
-        log.info("登记接口工具 {} (id={}, by user={})", saved.name(), id, userId);
+        log.info("登记接口工具 {} (id={}, tenant={}, by user={})", saved.name(), id, tenantId, userId);
         return ToolResponse.from(saved);
     }
 
     @Transactional
     public ToolResponse update(Long id, ToolCreateRequest req, Long userId) {
-        ToolDefinition existing = requireTool(id);
+        requireAdmin(userId);
+        Long tenantId = userService.tenantIdOf(userId);
+        ToolDefinition existing = requireTool(tenantId, id);
         validate(req);
         if (!existing.name().equals(req.name())) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工具名不可修改，请删除后重建");
@@ -107,40 +121,58 @@ public class InterfaceToolService implements ApplicationRunner {
                 ? existing.authConfigEncrypted()  // 未传鉴权则保留原值
                 : encryptAuth(req.authType(), req.authConfig());
         ToolDefinition updated = new ToolDefinition(
-                id, DEFAULT_TENANT, existing.name(), req.description(), "interface",
+                id, tenantId, existing.name(), req.description(), "interface",
                 req.endpointUrl(), normalizeMethod(req.httpMethod()), req.requestSchemaJson(), req.responseDesc(),
                 normalizeAuthType(req.authType()), authEnc, req.maskFieldsJson(), existing.status(), existing.createdBy(),
                 existing.createdTime()
         );
-        repository.update(DEFAULT_TENANT, updated);
+        repository.update(tenantId, updated);
         toolRegistry.unregister(existing.name());
-        ToolDefinition saved = requireTool(id);
+        ToolDefinition saved = requireTool(tenantId, id);
         registerAdapter(saved);
         log.info("更新接口工具 {} (id={}, by user={})", saved.name(), id, userId);
         return ToolResponse.from(saved);
     }
 
     public void delete(Long id, Long userId) {
-        ToolDefinition existing = requireTool(id);
-        repository.softDelete(DEFAULT_TENANT, id);
+        requireAdmin(userId);
+        Long tenantId = userService.tenantIdOf(userId);
+        ToolDefinition existing = requireTool(tenantId, id);
+        repository.softDelete(tenantId, id);
         toolRegistry.unregister(existing.name());
         log.info("删除接口工具 {} (id={}, by user={})", existing.name(), id, userId);
     }
 
     /** 连通性测试：按定义实际调用一次（空参数），返回是否可连通 */
-    public boolean test(Long id) {
-        ToolDefinition existing = requireTool(id);
+    public boolean test(Long id, Long userId) {
+        Long tenantId = userService.tenantIdOf(userId);
+        requireAccessible(tenantId, userId, id);
+        ToolDefinition existing = requireTool(tenantId, id);
         InterfaceToolAdapter adapter = new InterfaceToolAdapter(existing, restClientBuilder, secretCipher, objectMapper);
-        String result = adapter.execute("{}", null);
+        String result = adapter.execute("{} ", null);
         return !result.startsWith("{\"error\"");
     }
 
-    private ToolDefinition requireTool(Long id) {
-        ToolDefinition def = repository.findById(DEFAULT_TENANT, id);
+    private ToolDefinition requireTool(Long tenantId, Long id) {
+        ToolDefinition def = repository.findById(tenantId, id);
         if (def == null) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工具不存在: " + id);
         }
         return def;
+    }
+
+    private void requireAccessible(Long tenantId, Long userId, Long toolId) {
+        boolean accessible = toolAccessService.accessibleDynamicTools(tenantId, userId)
+                .stream().anyMatch(d -> d.id().equals(toolId));
+        if (!accessible) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "无权访问该工具");
+        }
+    }
+
+    private void requireAdmin(Long userId) {
+        if (!userService.isAdmin(userId)) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "仅管理员可执行此操作");
+        }
     }
 
     private void validate(ToolCreateRequest req) {

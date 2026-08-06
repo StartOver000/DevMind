@@ -4,6 +4,8 @@ import com.devmind.agent.ToolRegistry;
 import com.devmind.ai.AiModelGateway;
 import com.devmind.ai.ChatRouter;
 import com.devmind.common.ApiException;
+import com.devmind.tool.ToolAccessService;
+import com.devmind.user.UserService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -12,10 +14,13 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -23,6 +28,12 @@ class WorkflowGenerationServiceTest {
 
     @Mock
     private ChatRouter chatRouter;
+
+    @Mock
+    private UserService userService;
+
+    @Mock
+    private ToolAccessService toolAccessService;
 
     private ToolRegistry registry;
     private WorkflowGenerationService service;
@@ -43,7 +54,12 @@ class WorkflowGenerationServiceTest {
             @Override public String parametersJsonSchema() { return "{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"}}}"; }
             @Override public String execute(String argumentsJson, Long userId) { return "ok"; }
         });
-        service = new WorkflowGenerationService(chatRouter, registry, objectMapper);
+        service = new WorkflowGenerationService(
+                chatRouter, registry, objectMapper, userService, toolAccessService
+        );
+        lenient().when(userService.tenantIdOf(1L)).thenReturn(1L);
+        lenient().when(toolAccessService.accessibleToolNames(eq(1L), eq(1L)))
+                .thenReturn(Set.of("prom_buildinfo", "ai_generate"));
     }
 
     @Test

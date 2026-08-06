@@ -23,11 +23,12 @@ public class UserRepository {
 
     public Optional<User> findById(Long id) {
         List<User> result = jdbcTemplate.query("""
-                SELECT id, username, display_name, role, created_time
+                SELECT id, tenant_id, username, display_name, role, created_time
                 FROM app_user
                 WHERE id = ?
                 """, (rs, rowNum) -> new User(
                 rs.getLong("id"),
+                rs.getLong("tenant_id"),
                 rs.getString("username"),
                 rs.getString("display_name"),
                 rs.getString("role"),
@@ -67,11 +68,12 @@ public class UserRepository {
 
     public Optional<User> findByUsername(String username) {
         List<User> result = jdbcTemplate.query("""
-                SELECT id, username, display_name, role, created_time
+                SELECT id, tenant_id, username, display_name, role, created_time
                 FROM app_user
                 WHERE username = ?
                 """, (rs, rowNum) -> new User(
                 rs.getLong("id"),
+                rs.getLong("tenant_id"),
                 rs.getString("username"),
                 rs.getString("display_name"),
                 rs.getString("role"),
@@ -90,11 +92,12 @@ public class UserRepository {
 
     public List<User> list() {
         return jdbcTemplate.query("""
-                SELECT id, username, display_name, role, created_time
+                SELECT id, tenant_id, username, display_name, role, created_time
                 FROM app_user
                 ORDER BY id
                 """, (rs, rowNum) -> new User(
                 rs.getLong("id"),
+                rs.getLong("tenant_id"),
                 rs.getString("username"),
                 rs.getString("display_name"),
                 rs.getString("role"),

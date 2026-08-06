@@ -6,6 +6,8 @@ import com.devmind.ai.AiModelGateway;
 import com.devmind.ai.ChatRouter;
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
+import com.devmind.tool.ToolAccessService;
+import com.devmind.user.UserService;
 import com.devmind.workflow.dto.WorkflowStepDraft;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -17,6 +19,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 对话式生成工作流草案：业务人员用自然语言描述需求，
@@ -30,15 +33,21 @@ public class WorkflowGenerationService {
     private final ChatRouter chatRouter;
     private final ToolRegistry toolRegistry;
     private final ObjectMapper objectMapper;
+    private final UserService userService;
+    private final ToolAccessService toolAccessService;
 
     public WorkflowGenerationService(
             ChatRouter chatRouter,
             ToolRegistry toolRegistry,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            UserService userService,
+            ToolAccessService toolAccessService
     ) {
         this.chatRouter = chatRouter;
         this.toolRegistry = toolRegistry;
         this.objectMapper = objectMapper;
+        this.userService = userService;
+        this.toolAccessService = toolAccessService;
     }
 
     /** 生成结果：步骤（展示用）+ stepsJson（可直接提交创建工作流） */
@@ -54,12 +63,14 @@ public class WorkflowGenerationService {
         if (description == null || description.isBlank()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "请描述你的需求");
         }
-        String systemPrompt = buildSystemPrompt();
+        String systemPrompt = buildSystemPrompt(userId);
         AiModelGateway.ChatResult result = chatRouter.chat(systemPrompt, description.trim());
         if (result == null || result.content() == null || result.content().isBlank()) {
             throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型未返回工作流草案");
         }
-        List<WorkflowStepDraft> steps = parseAndValidate(result.content());
+        Long tenantId = userService.tenantIdOf(userId);
+        Set<String> accessible = toolAccessService.accessibleToolNames(tenantId, userId);
+        List<WorkflowStepDraft> steps = parseAndValidate(result.content(), accessible);
         if (steps.isEmpty()) {
             throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "未能从模型结果解析出有效步骤，请重试或换个说法");
         }
@@ -67,9 +78,14 @@ public class WorkflowGenerationService {
         return new GenerationResult(steps, toStepsJson(steps));
     }
 
-    private String buildSystemPrompt() {
+    private String buildSystemPrompt(Long userId) {
+        Long tenantId = userService.tenantIdOf(userId);
+        Set<String> accessible = toolAccessService.accessibleToolNames(tenantId, userId);
         StringBuilder tools = new StringBuilder();
         for (AgentTool tool : toolRegistry.all()) {
+            if (!accessible.contains(tool.name())) {
+                continue; // 只列出当前用户可用的工具
+            }
             tools.append("- ").append(tool.name()).append(": ").append(tool.description());
             String params = summarizeParams(tool.parametersJsonSchema());
             if (!params.isEmpty()) {
@@ -109,8 +125,8 @@ public class WorkflowGenerationService {
         }
     }
 
-    /** 容错解析模型输出（可能带 ```json 包裹/前后文字），并校验工具名合法性 */
-    private List<WorkflowStepDraft> parseAndValidate(String content) {
+    /** 容错解析模型输出（可能带 ```json 包裹/前后文字），并校验工具名合法且已授权 */
+    private List<WorkflowStepDraft> parseAndValidate(String content, Set<String> accessible) {
         String json = extractJsonArray(content);
         if (json == null) {
             log.warn("工作流草案解析失败，未找到 JSON 数组");
@@ -129,6 +145,9 @@ public class WorkflowGenerationService {
                 }
                 if (!toolRegistry.has(tool)) {
                     throw new ApiException(ErrorCode.INVALID_ARGUMENT, "模型生成了未登记的工具: " + tool);
+                }
+                if (!accessible.contains(tool)) {
+                    throw new ApiException(ErrorCode.FORBIDDEN, "模型生成了未授权的工具: " + tool);
                 }
                 JsonNode params = node.path("params");
                 String paramsJson = (params == null || params.isMissingNode() || !params.isObject())

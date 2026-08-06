@@ -303,4 +303,40 @@ class WorkflowExecutorTest {
 
         verify(toolRegistry).execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L));
     }
+
+    @Test
+    void containsConditionMatches() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenReturn("{\"data\":{\"version\":\"3.13.2\"}}");
+        when(toolRegistry.execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("B");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"tool":"a","params":{},"output_var":"info"},
+                 {"if":"{{info}} contains 'version'","then":[{"tool":"b","params":{},"output_var":"vb"}]}]
+                """;
+        executor.execute(workflow(stepsJson), 1L, "manual");
+
+        verify(toolRegistry).execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L));
+    }
+
+    @Test
+    void notContainsConditionSkips() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenReturn("{\"data\":{\"version\":\"3.13.2\"}}");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"tool":"a","params":{},"output_var":"info"},
+                 {"if":"{{info}} not contains 'error'","then":[{"tool":"b","params":{},"output_var":"vb"}]}]
+                """;
+        executor.execute(workflow(stepsJson), 1L, "manual");
+
+        // info 不含 error → not contains 为 true → b 执行
+        verify(toolRegistry).execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L));
+    }
 }

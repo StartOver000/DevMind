@@ -94,16 +94,20 @@ public class WorkflowGenerationService {
             tools.append('\n');
         }
         return """
-                你是工作流设计助手。用户用自然语言描述业务需求，你把需求转换为"有序的工作流步骤"。
+                你是工作流设计助手。用户用自然语言描述业务需求，你把需求转换为"工作流步骤"，支持顺序、条件分支和并行。
 
                 可用工具（只能使用这些）：
                 %s
                 输出要求（严格遵守）：
                 1. 只输出一个 JSON 数组，不要输出任何解释文字或代码块标记；
-                2. 数组每个元素是一个步骤对象：{"tool": "工具名", "params": {参数对象}, "output_var": "输出变量名", "goal": "本步目标"};
-                3. 步骤间传数据：上一步的 output_var 命名输出，下一步 params 中用 {{output_var}} 引用；
-                4. 需要查询/取数时先调对应接口或检索工具，最后需要生成报告/总结时用 ai_generate（prompt 中引用前面变量）；
-                5. params 中不要出现 {{...}} 以外的模板语法。
+                2. 普通步骤：{"tool": "工具名", "params": {参数对象}, "output_var": "输出变量名", "goal": "本步目标"}；
+                3. 条件分支：{"if": "条件表达式", "then": [步骤数组], "else": [步骤数组]}，then 必填、else 可省略；
+                   条件表达式用 {{变量}} 引用上一步输出，如 {{sales}} > 10000、{{status}} == 'success'；
+                4. 并行组：{"parallel": [步骤数组]}（并行步骤互相独立，不要引用彼此的输出）；
+                5. 步骤间传数据：上一步的 output_var 命名输出，下一步 params 中用 {{output_var}} 引用；
+                6. 需要查询/取数时先调对应接口或检索工具，最后需要生成报告/总结时用 ai_generate（prompt 中引用前面变量）；
+                7. params 中不要出现 {{...}} 以外的模板语法；
+                8. 分支/并行只在你判断业务确实需要时才用，简单顺序任务直接列普通步骤。
                 """.formatted(tools);
     }
 
@@ -125,7 +129,7 @@ public class WorkflowGenerationService {
         }
     }
 
-    /** 容错解析模型输出（可能带 ```json 包裹/前后文字），并校验工具名合法且已授权 */
+    /** 容错解析模型输出（可能带 ```json 包裹/前后文字），并校验工具名合法且已授权（递归支持 if/parallel） */
     private List<WorkflowStepDraft> parseAndValidate(String content, Set<String> accessible) {
         String json = extractJsonArray(content);
         if (json == null) {
@@ -139,25 +143,10 @@ public class WorkflowGenerationService {
             }
             List<WorkflowStepDraft> steps = new ArrayList<>();
             for (JsonNode node : array) {
-                String tool = node.path("tool").asText("");
-                if (tool.isBlank()) {
-                    continue;
+                WorkflowStepDraft draft = parseNode(node, accessible);
+                if (draft != null) {
+                    steps.add(draft);
                 }
-                if (!toolRegistry.has(tool)) {
-                    throw new ApiException(ErrorCode.INVALID_ARGUMENT, "模型生成了未登记的工具: " + tool);
-                }
-                if (!accessible.contains(tool)) {
-                    throw new ApiException(ErrorCode.FORBIDDEN, "模型生成了未授权的工具: " + tool);
-                }
-                JsonNode params = node.path("params");
-                String paramsJson = (params == null || params.isMissingNode() || !params.isObject())
-                        ? "{}" : objectMapper.writeValueAsString(params);
-                steps.add(new WorkflowStepDraft(
-                        tool,
-                        paramsJson,
-                        node.path("output_var").asText(""),
-                        node.path("goal").asText("")
-                ));
             }
             return steps;
         } catch (ApiException ex) {
@@ -166,6 +155,78 @@ public class WorkflowGenerationService {
             log.warn("工作流草案 JSON 解析失败: {}", ex.getMessage());
             return List.of();
         }
+    }
+
+    /** 递归解析单个节点：if 分支 / parallel 并行组 / 普通步骤 */
+    private WorkflowStepDraft parseNode(JsonNode node, Set<String> accessible) {
+        // 条件分支：{"if": "{{x}} > 100", "then": [...], "else": [...]}
+        String condition = node.path("if").asText("");
+        if (!condition.isBlank()) {
+            List<WorkflowStepDraft> thenSteps = parseBranch(node.path("then"), accessible);
+            List<WorkflowStepDraft> elseSteps = parseBranch(node.path("else"), accessible);
+            if (thenSteps.isEmpty() && elseSteps.isEmpty()) {
+                log.warn("条件分支 then/else 均为空，跳过: {}", condition);
+                return null;
+            }
+            return WorkflowStepDraft.ifNode(condition, thenSteps, elseSteps);
+        }
+        // 并行组：{"parallel": [步骤数组]}
+        JsonNode parallel = node.path("parallel");
+        if (parallel.isArray() && !parallel.isEmpty()) {
+            List<WorkflowStepDraft> steps = new ArrayList<>();
+            for (JsonNode item : parallel) {
+                WorkflowStepDraft draft = parseNode(item, accessible);
+                if (draft != null) {
+                    steps.add(draft);
+                }
+            }
+            return steps.isEmpty() ? null : WorkflowStepDraft.parallel(steps);
+        }
+        // 普通步骤
+        return parseStepNode(node, accessible);
+    }
+
+    /** 解析分支内步骤数组（then/else） */
+    private List<WorkflowStepDraft> parseBranch(JsonNode node, Set<String> accessible) {
+        if (node == null || !node.isArray() || node.isEmpty()) {
+            return List.of();
+        }
+        List<WorkflowStepDraft> steps = new ArrayList<>();
+        for (JsonNode item : node) {
+            WorkflowStepDraft draft = parseNode(item, accessible);
+            if (draft != null) {
+                steps.add(draft);
+            }
+        }
+        return steps;
+    }
+
+    /** 解析普通步骤：校验工具名合法且已授权 */
+    private WorkflowStepDraft parseStepNode(JsonNode node, Set<String> accessible) {
+        String tool = node.path("tool").asText("");
+        if (tool.isBlank()) {
+            return null;
+        }
+        if (!toolRegistry.has(tool)) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "模型生成了未登记的工具: " + tool);
+        }
+        if (!accessible.contains(tool)) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "模型生成了未授权的工具: " + tool);
+        }
+        JsonNode params = node.path("params");
+        String paramsJson;
+        try {
+            paramsJson = (params == null || params.isMissingNode() || !params.isObject())
+                    ? "{}" : objectMapper.writeValueAsString(params);
+        } catch (Exception ex) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "步骤参数解析失败: " + tool);
+        }
+        return WorkflowStepDraft.step(
+                tool,
+                paramsJson,
+                node.path("output_var").asText(""),
+                node.path("goal").asText("")
+        );
     }
 
     /** 提取内容中最外层 JSON 数组（容忍 markdown 代码块与前后文字） */
@@ -185,26 +246,56 @@ public class WorkflowGenerationService {
         return text.substring(start, end + 1);
     }
 
-    /** 把步骤草案序列化为可直接提交创建工作流的 stepsJson（tool/params/output_var/goal） */
+    /** 把步骤草案递归序列化为可直接提交创建工作流的 stepsJson（step/if/parallel） */
     private String toStepsJson(List<WorkflowStepDraft> steps) {
         try {
             ArrayNode array = objectMapper.createArrayNode();
             for (WorkflowStepDraft step : steps) {
-                ObjectNode node = array.addObject();
-                node.put("tool", step.tool());
-                if (step.paramsJson() != null && !step.paramsJson().isBlank()) {
-                    node.set("params", objectMapper.readTree(step.paramsJson()));
-                } else {
-                    node.putObject("params");
-                }
-                node.put("output_var", step.outputVar());
-                if (step.goal() != null && !step.goal().isBlank()) {
-                    node.put("goal", step.goal());
-                }
+                array.add(toNode(step));
             }
             return objectMapper.writeValueAsString(array);
         } catch (Exception ex) {
             throw new ApiException(ErrorCode.INTERNAL_ERROR, "工作流草案序列化失败");
         }
+    }
+
+    private JsonNode toNode(WorkflowStepDraft draft) {
+        ObjectNode node = objectMapper.createObjectNode();
+        if ("if".equals(draft.kind())) {
+            node.put("if", draft.condition());
+            ArrayNode thenArray = node.putArray("then");
+            for (WorkflowStepDraft s : draft.thenBranch()) {
+                thenArray.add(toNode(s));
+            }
+            if (draft.elseBranch() != null && !draft.elseBranch().isEmpty()) {
+                ArrayNode elseArray = node.putArray("else");
+                for (WorkflowStepDraft s : draft.elseBranch()) {
+                    elseArray.add(toNode(s));
+                }
+            }
+            return node;
+        }
+        if ("parallel".equals(draft.kind())) {
+            ArrayNode parallelArray = node.putArray("parallel");
+            for (WorkflowStepDraft s : draft.parallelSteps()) {
+                parallelArray.add(toNode(s));
+            }
+            return node;
+        }
+        node.put("tool", draft.tool());
+        if (draft.paramsJson() != null && !draft.paramsJson().isBlank()) {
+            try {
+                node.set("params", objectMapper.readTree(draft.paramsJson()));
+            } catch (Exception ex) {
+                node.putObject("params");
+            }
+        } else {
+            node.putObject("params");
+        }
+        node.put("output_var", draft.outputVar());
+        if (draft.goal() != null && !draft.goal().isBlank()) {
+            node.put("goal", draft.goal());
+        }
+        return node;
     }
 }

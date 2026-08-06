@@ -1,7 +1,43 @@
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, h } from 'vue';
 import { api } from '@/api/client';
 import { showToast } from '@/stores/toast';
+
+// 递归渲染工作流草案节点（step / if / parallel）
+const DraftNode = {
+  props: { node: Object, index: [Number, String] },
+  setup(props) {
+    return () => {
+      const n = props.node;
+      if (n.kind === 'if') {
+        const thenKids = (n.thenBranch || []).map((s, i) => h(DraftNode, { key: 't' + i, node: s, index: i }));
+        const elseKids = (n.elseBranch || []).map((s, i) => h(DraftNode, { key: 'e' + i, node: s, index: i }));
+        return h('div', { class: 'draft-branch' }, [
+          h('div', { class: 'branch-head' }, [`🔀 如果 ${n.condition || ''}`]),
+          h('div', { class: 'branch-body' }, [h('div', { class: 'branch-label' }, '满足时'), ...thenKids]),
+          (n.elseBranch && n.elseBranch.length)
+            ? h('div', { class: 'branch-body' }, [h('div', { class: 'branch-label' }, '否则'), ...elseKids])
+            : null
+        ]);
+      }
+      if (n.kind === 'parallel') {
+        const kids = (n.parallelSteps || []).map((s, i) => h(DraftNode, { key: i, node: s, index: i }));
+        return h('div', { class: 'draft-branch' }, [
+          h('div', { class: 'branch-head' }, ['⚡ 并行执行']),
+          h('div', { class: 'branch-body' }, kids)
+        ]);
+      }
+      return h('div', { class: 'draft-step' }, [
+        h('span', { class: 'no' }, String((props.index === undefined ? '' : Number(props.index) + 1))),
+        h('div', { class: 'body' }, [
+          h('div', [h('b', n.tool || ''), n.goal ? h('span', { class: 'goal' }, ['—— ' + n.goal]) : null]),
+          (n.paramsJson && n.paramsJson !== '{}') ? h('div', { class: 'params' }, n.paramsJson) : null,
+          n.outputVar ? h('div', { class: 'out' }, ['→ ' + n.outputVar]) : null
+        ])
+      ]);
+    };
+  }
+};
 
 // 对话式创建
 const description = ref('');
@@ -189,14 +225,9 @@ onMounted(load);
       </button>
 
       <div v-if="draft" class="draft">
-        <h3>草案（{{ draft.steps.length }} 步）</h3>
-        <div v-for="(s, i) in draft.steps" :key="i" class="draft-step">
-          <span class="no">{{ i + 1 }}</span>
-          <div class="body">
-            <div><b>{{ s.tool }}</b><span v-if="s.goal" class="goal">—— {{ s.goal }}</span></div>
-            <div v-if="s.paramsJson && s.paramsJson !== '{}'" class="params">{{ s.paramsJson }}</div>
-            <div v-if="s.outputVar" class="out">→ {{ s.outputVar }}</div>
-          </div>
+        <h3>草案（{{ draft.steps.length }} 步，支持顺序/分支/并行）</h3>
+        <div class="draft-tree">
+          <DraftNode v-for="(s, i) in draft.steps" :key="i" :node="s" :index="i" />
         </div>
         <label>流程名称（可选）
           <input v-model="workflowName" placeholder="留空则用需求前 30 字">
@@ -361,6 +392,39 @@ onMounted(load);
   font-size: 12px;
   font-family: var(--mono, monospace);
   word-break: break-all;
+}
+
+.draft-tree {
+  display: grid;
+  gap: 8px;
+}
+
+.draft-branch {
+  display: grid;
+  gap: 6px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--alt-bg);
+}
+
+.branch-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.branch-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0 2px;
+}
+
+.branch-body {
+  display: grid;
+  gap: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
 }
 
 .run-result {

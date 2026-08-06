@@ -29,6 +29,10 @@ public class WorkflowConditionEvaluator {
         try {
             // {{var}} → SpEL 变量引用 #var（变量名需为合法标识符）
             String spel = condition.replaceAll("\\{\\{([a-zA-Z_][a-zA-Z0-9_]*)}}", "#$1");
+            // 自然语言常见写法：{{x}} contains 'y' → #x.contains('y')（SpEL 无 contains 操作符）
+            // 只处理右操作数为字符串字面量的最常见形式；not contains → 取反
+            spel = spel.replaceAll("(?i)(#?[a-zA-Z_][a-zA-Z0-9_.]*)\\s+not\\s+contains\\s+('[^']*')", "!$1.contains($2)");
+            spel = spel.replaceAll("(?i)(#?[a-zA-Z_][a-zA-Z0-9_.]*)\\s+contains\\s+('[^']*')", "$1.contains($2)");
             Expression expression = parser.parseExpression(spel);
             StandardEvaluationContext context = new StandardEvaluationContext();
             for (Map.Entry<String, Object> entry : vars.entrySet()) {

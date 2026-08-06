@@ -121,4 +121,82 @@ class WorkflowGenerationServiceTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("描述");
     }
+
+    @Test
+    void generatesIfBranchFromDescription() {
+        String json = """
+                [{"tool":"prom_buildinfo","params":{},"output_var":"info","goal":"查版本"},
+                 {"if":"{{info}} contains 'version'",
+                  "then":[{"tool":"ai_generate","params":{"prompt":"有版本：{{info}}"}}],
+                  "else":[{"tool":"ai_generate","params":{"prompt":"无版本"}}]}]
+                """;
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult(json, "m", 0, 0));
+
+        WorkflowGenerationService.GenerationResult result = service.generate(1L, "查版本，如果有版本信息就总结，否则提示无");
+
+        assertThat(result.steps()).hasSize(2);
+        assertThat(result.steps().get(1).kind()).isEqualTo("if");
+        assertThat(result.steps().get(1).condition()).isEqualTo("{{info}} contains 'version'");
+        assertThat(result.steps().get(1).thenBranch()).hasSize(1);
+        assertThat(result.steps().get(1).thenBranch().get(0).tool()).isEqualTo("ai_generate");
+        assertThat(result.steps().get(1).elseBranch()).hasSize(1);
+        // stepsJson 保留 if/then/else 结构，可直接用于创建工作流
+        assertThat(result.stepsJson()).contains("\"if\":");
+        assertThat(result.stepsJson()).contains("\"then\":");
+        assertThat(result.stepsJson()).contains("\"else\":");
+        // 序列化后的 JSON 可被工作流创建校验接受（工具合法）
+        assertThat(result.stepsJson()).contains("prom_buildinfo");
+    }
+
+    @Test
+    void generatesParallelFromDescription() {
+        String json = """
+                [{"parallel":[
+                   {"tool":"prom_buildinfo","params":{},"output_var":"info","goal":"查版本"},
+                   {"tool":"ai_generate","params":{"prompt":"独立生成"}}]}]
+                """;
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult(json, "m", 0, 0));
+
+        WorkflowGenerationService.GenerationResult result = service.generate(1L, "同时查版本并生成一段文案");
+
+        assertThat(result.steps()).hasSize(1);
+        assertThat(result.steps().get(0).kind()).isEqualTo("parallel");
+        assertThat(result.steps().get(0).parallelSteps()).hasSize(2);
+        assertThat(result.stepsJson()).contains("\"parallel\":");
+        assertThat(result.stepsJson()).contains("prom_buildinfo");
+    }
+
+    @Test
+    void ifBranchValidatesToolsInsideBranches() {
+        // then 分支里用了未登记工具 → 拒绝
+        String json = """
+                [{"tool":"prom_buildinfo","params":{},"output_var":"info"},
+                 {"if":"{{info}} != ''","then":[{"tool":"evil_api","params":{}}]}]
+                """;
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult(json, "m", 0, 0));
+
+        assertThatThrownBy(() -> service.generate(1L, "查版本并分支"))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("未登记");
+    }
+
+    @Test
+    void ifBranchWithoutElseIsAllowed() {
+        String json = """
+                [{"tool":"prom_buildinfo","params":{},"output_var":"info"},
+                 {"if":"{{info}} != ''","then":[{"tool":"ai_generate","params":{"prompt":"有信息"}}]}]
+                """;
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult(json, "m", 0, 0));
+
+        WorkflowGenerationService.GenerationResult result = service.generate(1L, "查版本，有信息就总结");
+
+        assertThat(result.steps()).hasSize(2);
+        assertThat(result.steps().get(1).kind()).isEqualTo("if");
+        assertThat(result.steps().get(1).elseBranch()).isEmpty();
+        assertThat(result.stepsJson()).doesNotContain("\"else\":");
+    }
 }

@@ -11,6 +11,19 @@ const sortFilter = ref('default');
 const form = ref(null); // 编辑中的技能
 const saving = ref(false);
 
+// 技能内容折叠展开（内容过长时默认折叠，避免列表被撑高出现微滚动）
+const expanded = ref(new Set());
+
+function toggleExpand(id) {
+  const next = new Set(expanded.value);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  expanded.value = next;
+}
+
 // 技能健康度（Guide-55 高优先级）：总数/启用/命中 + 热门 Top5 + 僵尸技能
 const stats = ref(null);
 const statsLoading = ref(false);
@@ -280,8 +293,7 @@ onMounted(() => {
 
     <div class="panel scroll-panel">
       <h2>技能（Skills）</h2>
-      <p class="hint">技能是"某类任务该怎么做"的规范。Agent 遇到匹配场景时会自动遵循。
-        团队技能全员生效；个人技能仅自己生效。可在"流程"页把跑通的工作流另存为技能。</p>
+      <p class="hint">技能是"某类任务该怎么做"的规范。团队技能全员生效，个人仅自己；也可在"流程"页把跑通的工作流另存为技能。</p>
       <div class="toolbar">
         <select v-model="scopeFilter" @change="load">
           <option value="all">全部</option>
@@ -320,7 +332,10 @@ onMounted(() => {
               {{ r.type === 'workflow' ? '工作流' : '知识库' }}：{{ r.name || ('ID ' + r.id) }}
             </span>
           </div>
-          <pre class="content">{{ s.content }}</pre>
+          <pre class="content" :class="{ folded: !expanded.has(s.id) }">{{ s.content }}</pre>
+          <button v-if="s.content && s.content.length > 120" class="link small expand-btn" @click="toggleExpand(s.id)">
+            {{ expanded.has(s.id) ? '收起内容' : '展开内容' }}
+          </button>
           <div class="actions">
             <button class="small" @click="openEdit(s)">编辑</button>
             <button class="small" @click="toggleSkill(s)">{{ s.enabled ? '停用' : '启用' }}</button>
@@ -409,23 +424,41 @@ onMounted(() => {
 
 <style scoped>
 .skill-grid {
+  /* 左右分栏：健康度窄栏 + 技能列表，共享固定视口高度，外层与内容区都不再出现多余滚动条 */
   display: grid;
+  grid-template-columns: 280px 1fr;
   gap: 16px;
-  grid-template-columns: 1fr;
   align-items: start;
+  height: calc(100vh - 96px);
 }
 
-/* 技能列表：内容多时面板内滚动，不撑高页面 */
+/* 技能健康度：固定窄栏，内容多时面板内滚动 */
+.skill-grid .health-panel {
+  height: 100%;
+  overflow-y: auto;
+  align-content: start;
+}
+
+/* 技能列表：占满剩余空间，内容多时面板内滚动，不撑高页面 */
 .skill-grid .scroll-panel {
-  height: calc(100vh - 110px);
+  height: 100%;
   overflow-y: auto;
   align-content: start;
 }
 
 @media (max-width: 900px) {
+  .skill-grid {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
   .skill-grid .scroll-panel {
     height: auto;
     max-height: 420px;
+    overflow-y: auto;
+  }
+  .skill-grid .health-panel {
+    height: auto;
+    max-height: 280px;
     overflow-y: auto;
   }
 }
@@ -439,6 +472,18 @@ onMounted(() => {
   display: flex;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+/* 修复全局 select width:100% 在 flex 工具栏里挤压按钮（文字换行撑高） */
+.toolbar select {
+  width: auto;
+  flex: none;
+}
+
+.toolbar button {
+  flex: none;
+  white-space: nowrap;
 }
 
 .skill-list {
@@ -555,6 +600,19 @@ onMounted(() => {
   margin: 0;
 }
 
+/* 内容折叠：默认限高，避免列表被长内容撑高 */
+.content.folded {
+  max-height: 48px;
+  overflow: hidden;
+}
+
+.expand-btn {
+  justify-self: start;
+  font-size: 11px;
+  padding: 2px 8px;
+  line-height: 1.4;
+}
+
 .actions {
   display: flex;
   gap: 8px;
@@ -575,30 +633,30 @@ onMounted(() => {
 .health-cards {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  gap: 6px;
 }
 
 .health-card {
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   display: grid;
   gap: 2px;
 }
 
 .health-card b {
-  font-size: 22px;
+  font-size: 20px;
 }
 
 .health-card span {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
 }
 
 .health-cols {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: 1fr;
+  gap: 10px;
 }
 
 @media (max-width: 900px) {

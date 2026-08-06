@@ -105,4 +105,41 @@ class WorkflowServiceTest {
 
         assertThat(service.run(1L, 1L).status()).isEqualTo("SUCCESS");
     }
+
+    @Test
+    void createRejectsInvalidCronForCronTrigger() {
+        registry.register(new com.devmind.agent.AgentTool() {
+            @Override public String name() { return "a"; }
+            @Override public String description() { return "x"; }
+            @Override public String parametersJsonSchema() { return "{}"; }
+            @Override public String execute(String argumentsJson, Long userId) { return "{}"; }
+        });
+        assertThatThrownBy(() -> service.create(
+                new WorkflowCreateRequest("定时流程", null,
+                        "[{\"tool\":\"a\",\"params\":{}}]", "cron", "not-a-cron", "private", "ENABLED"), 1L))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("cron");
+        verify(repository, never()).insert(any());
+    }
+
+    @Test
+    void createAcceptsValidCronForCronTrigger() {
+        registry.register(new com.devmind.agent.AgentTool() {
+            @Override public String name() { return "a"; }
+            @Override public String description() { return "x"; }
+            @Override public String parametersJsonSchema() { return "{}"; }
+            @Override public String execute(String argumentsJson, Long userId) { return "{}"; }
+        });
+        when(repository.insert(any())).thenReturn(20L);
+        when(repository.findById(1L, 20L)).thenReturn(new Workflow(
+                20L, 1L, "定时流程", null, "[{\"tool\":\"a\",\"params\":{}}]",
+                "cron", "0 0 9 * * *", "private", "ENABLED", 1L, null));
+
+        Workflow created = service.create(
+                new WorkflowCreateRequest("定时流程", null,
+                        "[{\"tool\":\"a\",\"params\":{}}]", "cron", "0 0 9 * * *", "private", "ENABLED"), 1L);
+
+        assertThat(created.id()).isEqualTo(20L);
+        assertThat(created.triggerType()).isEqualTo("cron");
+    }
 }

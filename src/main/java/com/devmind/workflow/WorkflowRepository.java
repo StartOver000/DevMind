@@ -45,6 +45,14 @@ public class WorkflowRepository {
         );
     }
 
+    /** 按触发方式列出启用的工作流（定时调度扫描用） */
+    public List<Workflow> listEnabledByTrigger(Long tenantId, String triggerType) {
+        return jdbcTemplate.query(
+                "SELECT " + COLUMNS + " FROM workflow WHERE tenant_id = ? AND trigger_type = ? AND status = 'ENABLED' ORDER BY id",
+                this::map, tenantId, triggerType
+        );
+    }
+
     public Workflow findById(Long tenantId, Long id) {
         List<Workflow> rows = jdbcTemplate.query(
                 "SELECT " + COLUMNS + " FROM workflow WHERE tenant_id = ? AND id = ? AND status <> 'DELETED'",

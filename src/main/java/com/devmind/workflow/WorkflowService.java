@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -54,6 +55,7 @@ public class WorkflowService {
     @Transactional
     public Workflow create(WorkflowCreateRequest req, Long userId) {
         validateSteps(req.stepsJson());
+        validateTrigger(req.triggerType(), req.cronExpr());
         String trigger = req.triggerType() == null ? "manual" : req.triggerType();
         String scope = req.scope() == null ? "private" : req.scope();
         String status = req.status() == null ? "ENABLED" : req.status();
@@ -70,6 +72,7 @@ public class WorkflowService {
     public Workflow update(Long id, WorkflowCreateRequest req, Long userId) {
         Workflow existing = requireWorkflow(id);
         validateSteps(req.stepsJson());
+        validateTrigger(req.triggerType(), req.cronExpr());
         Workflow updated = new Workflow(
                 id, existing.tenantId(), req.name(), req.description(), req.stepsJson(),
                 req.triggerType() == null ? existing.triggerType() : req.triggerType(),
@@ -121,6 +124,20 @@ public class WorkflowService {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流不存在: " + id);
         }
         return workflow;
+    }
+
+    /** 校验触发配置：cron 触发时 cron 表达式必填且合法 */
+    private void validateTrigger(String triggerType, String cronExpr) {
+        if ("cron".equals(triggerType)) {
+            if (cronExpr == null || cronExpr.isBlank()) {
+                throw new ApiException(ErrorCode.INVALID_ARGUMENT, "定时触发需要填写 cron 表达式（如 0 0 9 * * *）");
+            }
+            try {
+                CronExpression.parse(cronExpr.trim());
+            } catch (Exception ex) {
+                throw new ApiException(ErrorCode.INVALID_ARGUMENT, "cron 表达式无效: " + cronExpr);
+            }
+        }
     }
 
     /** 校验 steps_json：必须是数组、每步 tool 已注册且不为空 */

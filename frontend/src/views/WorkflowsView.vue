@@ -8,6 +8,8 @@ const description = ref('');
 const generating = ref(false);
 const draft = ref(null); // { steps, stepsJson }
 const workflowName = ref('');
+const triggerType = ref('manual');
+const cronExpr = ref('');
 const creating = ref(false);
 
 // 工作流列表
@@ -65,13 +67,16 @@ async function createWorkflow() {
         name,
         description: description.value.trim(),
         stepsJson: draft.value.stepsJson,
-        triggerType: 'manual'
+        triggerType: triggerType.value,
+        cronExpr: triggerType.value === 'cron' ? cronExpr.value.trim() : undefined
       })
     });
     showToast(`工作流 ${w.name} 已创建`);
     draft.value = null;
     workflowName.value = '';
     description.value = '';
+    cronExpr.value = '';
+    triggerType.value = 'manual';
     await load();
   } catch (err) {
     showToast(err.message, true);
@@ -167,6 +172,15 @@ onMounted(load);
         <label>流程名称（可选）
           <input v-model="workflowName" placeholder="留空则用需求前 30 字">
         </label>
+        <label>触发方式
+          <select v-model="triggerType">
+            <option value="manual">手动运行</option>
+            <option value="cron">定时运行</option>
+          </select>
+        </label>
+        <label v-if="triggerType === 'cron'">cron 表达式
+          <input v-model="cronExpr" placeholder="例如：0 0 9 * * *（每天 09:00）">
+        </label>
         <button class="primary" :disabled="creating" @click="createWorkflow">
           {{ creating ? '创建中…' : '确认创建流程' }}
         </button>
@@ -186,12 +200,13 @@ onMounted(load);
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>名称</th><th>描述</th><th>状态</th><th>操作</th></tr>
+              <tr><th>名称</th><th>描述</th><th>触发</th><th>状态</th><th>操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="w in workflows" :key="w.id">
                 <td><b>{{ w.name }}</b></td>
                 <td class="desc">{{ w.description || '—' }}</td>
+                <td class="trigger">{{ w.triggerType === 'cron' ? '定时 ' + (w.cronExpr || '') : '手动' }}</td>
                 <td><span class="status" :class="w.status">{{ w.status }}</span></td>
                 <td>
                   <button class="small" :disabled="runningId === w.id || w.status !== 'ENABLED'" @click="runWorkflow(w)">{{ runningId === w.id ? '运行中…' : '运行' }}</button>

@@ -157,6 +157,37 @@ main {
     min-height: 60px;
 }
 
+/* ---- 加载骨架屏（列表加载占位，替代"加载中…"文字） ---- */
+.skeleton-list {
+    display: grid;
+    gap: 10px;
+    padding: 4px 0;
+}
+
+.skeleton-row {
+    display: grid;
+    gap: 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.skeleton-block {
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--alt-bg, #f0f0f0) 25%, var(--line, #e0e0e0) 50%, var(--alt-bg, #f0f0f0) 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+.skeleton-block.lg { height: 16px; width: 40%; }
+.skeleton-block.md { height: 12px; width: 70%; }
+.skeleton-block.sm { height: 12px; width: 55%; }
+
+@keyframes skeleton-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
 .hidden {
     display: none !important;
 }

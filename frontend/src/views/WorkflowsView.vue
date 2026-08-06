@@ -89,6 +89,47 @@ const editorWorkflow = ref(null);   // 正在编辑的工作流
 const editorSteps = ref([]);        // 解析后的结构对象数组
 const savingEditor = ref(false);
 
+// 草稿可视化调整（对话生成 parallel 深度引导）：生成草稿后可编辑并行/分支再创建
+const draftEditing = ref(false);
+
+/** 打开草稿的可视化编辑器（草稿 stepsJson → 编辑器结构） */
+function openDraftEditor() {
+  if (!draft.value) return;
+  draftEditing.value = true;
+  editorSteps.value = parseStepsJson(draft.value.stepsJson);
+}
+
+/** 保存草稿编辑器：新 stepsJson 回写 draft，并把结构转回 DraftNode 树 */
+function saveDraftEditor(stepsJson) {
+  if (!draft.value) return;
+  draft.value.stepsJson = stepsJson;
+  draft.value.steps = parseStepsJson(stepsJson).map(editorNodeToDraft);
+  draftEditing.value = false;
+  showToast('草案已更新，可继续调整或创建');
+}
+
+/** 编辑器结构 → DraftNode 树结构（kind: step/parallel/if） */
+function editorNodeToDraft(node) {
+  if (node.parallel) {
+    return { kind: 'parallel', parallelSteps: (node.parallel || []).map(editorNodeToDraft) };
+  }
+  if (node.if !== undefined) {
+    return {
+      kind: 'if',
+      condition: node.if,
+      thenBranch: (node.then || []).map(editorNodeToDraft),
+      elseBranch: (node.else || []).map(editorNodeToDraft)
+    };
+  }
+  return {
+    kind: 'step',
+    tool: node.tool,
+    paramsJson: node.params && Object.keys(node.params).length ? JSON.stringify(node.params) : '{}',
+    outputVar: node.outputVar || '',
+    goal: ''
+  };
+}
+
 /** 把后端 stepsJson（数组，含 parallel/if 嵌套）解析为编辑器结构对象 */
 function parseStepsJson(json) {
   try {
@@ -388,9 +429,12 @@ onMounted(load);
           <input v-model="cronExpr" placeholder="例如：0 0 9 * * *（每天 09:00）">
         </label>
         <p v-else-if="triggerType === 'webhook'" class="hint">创建后将生成调用地址，外部系统 POST 即可触发此工作流。</p>
-        <button class="primary" :disabled="creating" @click="createWorkflow">
-          {{ creating ? '创建中…' : '确认创建流程' }}
-        </button>
+        <div class="draft-actions">
+          <button class="primary" :disabled="creating" @click="createWorkflow">
+            {{ creating ? '创建中…' : '确认创建流程' }}
+          </button>
+          <button :disabled="creating" @click="openDraftEditor">✏️ 可视化调整草稿</button>
+        </div>
       </div>
       <div v-if="runResult" class="run-result" :class="runResult.run.status.toLowerCase()">
         <h3>运行结果：{{ runResult.run.status }}</h3>
@@ -424,7 +468,13 @@ onMounted(load);
 
     <div class="panel scroll-panel">
       <h2>我的流程（{{ workflows.length }}）</h2>
-      <div v-if="loading" class="empty">加载中…</div>
+      <div v-if="loading" class="skeleton-list" aria-label="加载中">
+        <div v-for="i in 4" :key="i" class="skeleton-row">
+          <div class="skeleton-block lg"></div>
+          <div class="skeleton-block md"></div>
+          <div class="skeleton-block sm"></div>
+        </div>
+      </div>
       <div v-else-if="!workflows.length" class="empty">还没有流程。左侧描述需求，AI 帮你生成。</div>
       <template v-else>
         <div class="table-wrap">
@@ -464,6 +514,15 @@ onMounted(load);
           :disabled="savingEditor"
           @save="saveEditor"
           @cancel="editorWorkflow = null; editorSteps = []"
+        />
+
+        <!-- 草稿可视化调整（对话生成 parallel 深度引导） -->
+        <WorkflowEditor
+          v-else-if="draftEditing && draft"
+          :steps="editorSteps"
+          :key="'draft-' + draft.stepsJson.length"
+          @save="saveDraftEditor"
+          @cancel="draftEditing = false; editorSteps = []"
         />
 
         <div v-if="runsFor !== null" class="runs">
@@ -549,6 +608,14 @@ onMounted(load);
 }
 .badge-parallel { background: #ede7f6; color: #4527a0; }
 .badge-branch { background: #e0f2f1; color: #00695c; }
+
+/* 草稿操作区：确认创建 + 可视化调整 */
+.draft-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
 
 .hint {
   margin: 0;

@@ -309,7 +309,13 @@ onMounted(() => {
         <button class="small" @click="openMemoryPanel">🧠 记忆管理</button>
       </div>
 
-      <div v-if="loading" class="empty">加载中…</div>
+      <div v-if="loading" class="skeleton-list" aria-label="加载中">
+        <div v-for="i in 3" :key="i" class="skeleton-row">
+          <div class="skeleton-block lg"></div>
+          <div class="skeleton-block md"></div>
+          <div class="skeleton-block sm"></div>
+        </div>
+      </div>
       <div v-else-if="!skills.length" class="empty">
         <span v-if="sortFilter === 'hot'">还没有命中记录。技能被 Agent 使用后会自动累积命中数。</span>
         <span v-else>还没有技能。可以把跑通的工作流另存为技能，或手动创建一个。</span>

@@ -67,6 +67,17 @@ async function createTool() {
     showToast('请填写工具名和接口地址', true);
     return;
   }
+  // JSON 字段合法性校验（填写时必须是合法 JSON，避免登记了无法解析的工具）
+  for (const [key, label] of [['requestSchemaJson', '请求参数 Schema'], ['authConfig', '鉴权配置'], ['maskFieldsJson', '脱敏字段']]) {
+    const raw = (form.value[key] || '').trim();
+    if (!raw) continue;
+    try {
+      JSON.parse(raw);
+    } catch (e) {
+      showToast(`${label} 不是合法 JSON，请检查格式`, true);
+      return;
+    }
+  }
   submitting.value = true;
   try {
     const payload = {
@@ -209,7 +220,13 @@ onMounted(() => {
           </select>
         </div>
       </div>
-      <div v-if="loading" class="empty">加载中…</div>
+      <div v-if="loading" class="skeleton-list" aria-label="加载中">
+        <div v-for="i in 3" :key="i" class="skeleton-row">
+          <div class="skeleton-block lg"></div>
+          <div class="skeleton-block md"></div>
+          <div class="skeleton-block sm"></div>
+        </div>
+      </div>
       <div v-else-if="!tools.length" class="empty">
         {{ isAdmin ? '还没有登记接口。左侧登记一个内部接口，AI 就能调用它干活。' : '管理员还没有授权接口给你。' }}
       </div>

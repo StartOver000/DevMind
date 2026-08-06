@@ -31,13 +31,16 @@ class WebhookControllerTest {
     private WorkflowRepository repository;
 
     @Mock
+    private WorkflowRunRepository runRepository;
+
+    @Mock
     private WorkflowExecutor executor;
 
     private WebhookController controller;
 
     @BeforeEach
     void setUp() {
-        controller = new WebhookController(repository, executor, new ObjectMapper(), RestClient.builder());
+        controller = new WebhookController(repository, runRepository, executor, new ObjectMapper(), RestClient.builder());
     }
 
     private Workflow hookWorkflow() {
@@ -107,14 +110,20 @@ class WebhookControllerTest {
     @Test
     void asyncModeReturnsAcceptedAndExecutesInBackground() {
         when(repository.findByWebhookToken("tok")).thenReturn(hookWorkflow());
-        when(executor.execute(any(), eq(1L), eq("webhook"), any())).thenReturn(run(10L, "SUCCESS"));
+        when(repository.findWebhookToken(1L, 5L)).thenReturn("tok");
+        when(runRepository.insertRun(5L, 1L, "webhook")).thenReturn(20L);
+        when(executor.executeExistingRun(any(), eq(1L), eq("webhook"), any(), eq(20L)))
+                .thenReturn(run(20L, "SUCCESS"));
 
         Map<String, Object> res = controller.trigger("tok", true, null, "{}");
 
         assertThat(res.get("accepted")).isEqualTo(true);
         assertThat(res.get("status")).isEqualTo("ACCEPTED");
+        assertThat(res.get("runId")).isEqualTo(20L);
+        // resultUrl 供外部系统轮询
+        assertThat(String.valueOf(res.get("resultUrl"))).contains("/api/webhooks/tok/runs/20");
         // 后台线程最终执行了工作流
-        verify(executor, timeout(3000)).execute(any(), eq(1L), eq("webhook"), any());
+        verify(executor, timeout(3000)).executeExistingRun(any(), eq(1L), eq("webhook"), any(), eq(20L));
     }
 
     @Test
@@ -130,11 +139,57 @@ class WebhookControllerTest {
     @Test
     void asyncModeWithoutCallbackStillExecutes() {
         when(repository.findByWebhookToken("tok")).thenReturn(hookWorkflow());
-        when(executor.execute(any(), eq(1L), eq("webhook"), any())).thenReturn(run(10L, "SUCCESS"));
+        when(repository.findWebhookToken(1L, 5L)).thenReturn("tok");
+        when(runRepository.insertRun(5L, 1L, "webhook")).thenReturn(21L);
+        when(executor.executeExistingRun(any(), eq(1L), eq("webhook"), any(), eq(21L)))
+                .thenReturn(run(21L, "SUCCESS"));
 
         Map<String, Object> res = controller.trigger("tok", true, null, null);
 
         assertThat(res.get("accepted")).isEqualTo(true);
-        verify(executor, timeout(3000)).execute(any(), eq(1L), eq("webhook"), any());
+        assertThat(res.get("runId")).isEqualTo(21L);
+        verify(executor, timeout(3000)).executeExistingRun(any(), eq(1L), eq("webhook"), any(), eq(21L));
+    }
+
+    @Test
+    void getRunResultReturnsStatusAndStepOutputs() {
+        when(repository.findByWebhookToken("tok")).thenReturn(hookWorkflow());
+        when(runRepository.findRun(1L, 30L)).thenReturn(run(30L, "SUCCESS"));
+        when(runRepository.listSteps(30L)).thenReturn(java.util.List.of(
+                new WorkflowRunStep(1L, 30L, 1, "prom_buildinfo", "{}", "{\"version\":\"3.13.2\"}",
+                        "SUCCESS", 5L, null, "t"),
+                new WorkflowRunStep(2L, 30L, 2, "ai_generate", "{}", "{\"summary\":\"ok\"}",
+                        "SUCCESS", 3L, null, "t")
+        ));
+
+        Map<String, Object> res = controller.getRunResult("tok", 30L);
+
+        assertThat(res.get("runId")).isEqualTo(30L);
+        assertThat(res.get("status")).isEqualTo("SUCCESS");
+        @SuppressWarnings("unchecked")
+        java.util.List<Map<String, Object>> steps = (java.util.List<Map<String, Object>>) res.get("steps");
+        assertThat(steps).hasSize(2);
+        assertThat(steps.get(0).get("tool")).isEqualTo("prom_buildinfo");
+        assertThat(String.valueOf(steps.get(0).get("output"))).contains("3.13.2");
+    }
+
+    @Test
+    void getRunResultRejectsRunOfAnotherWorkflow() {
+        when(repository.findByWebhookToken("tok")).thenReturn(hookWorkflow());
+        // run.workflowId=999 ≠ hookWorkflow.id=5
+        when(runRepository.findRun(1L, 99L)).thenReturn(new WorkflowRun(99L, 999L, 1L, "webhook", "SUCCESS", 0.0, null, null, null));
+
+        assertThatThrownBy(() -> controller.getRunResult("tok", 99L))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("不属于");
+    }
+
+    @Test
+    void getRunResultRejectsInvalidToken() {
+        when(repository.findByWebhookToken("bad")).thenReturn(null);
+
+        assertThatThrownBy(() -> controller.getRunResult("bad", 1L))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("无效");
     }
 }

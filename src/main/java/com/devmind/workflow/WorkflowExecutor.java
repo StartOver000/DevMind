@@ -96,6 +96,20 @@ public class WorkflowExecutor {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤为空");
         }
         Long runId = runRepository.insertRun(workflow.id(), workflow.tenantId(), triggerType);
+        return executeExistingRun(workflow, userId, triggerType, initialVars, runId);
+    }
+
+    /**
+     * 异步/Webhook 场景：run 记录已预先插入（调用方需先拿 runId 供外部轮询），
+     * 这里只执行并收尾。跳过 hasRunning 检查与 insertRun（占位即视为进行中）。
+     */
+    public WorkflowRun executeExistingRun(Workflow workflow, Long userId, String triggerType,
+                                          Map<String, Object> initialVars, Long runId) {
+        List<StepUnit> units = parseUnits(workflow.stepsJson());
+        if (units == null || units.isEmpty()) {
+            runRepository.finishRun(runId, "FAILED", "工作流步骤为空");
+            return runRepository.findRun(workflow.tenantId(), runId);
+        }
         Map<String, Object> vars = new ConcurrentHashMap<>();
         if (initialVars != null) {
             vars.putAll(initialVars);

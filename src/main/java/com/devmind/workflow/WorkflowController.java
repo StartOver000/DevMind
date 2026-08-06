@@ -2,6 +2,7 @@ package com.devmind.workflow;
 
 import com.devmind.workflow.WorkflowService.WorkflowRunDetail;
 import com.devmind.workflow.dto.WorkflowCreateRequest;
+import com.devmind.workflow.dto.WorkflowGenerateRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,15 +18,28 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.Map;
 
-/** 工作流 API：CRUD + 手动运行 + 运行记录 */
+/** 工作流 API：CRUD + 手动运行 + 运行记录 + 对话式生成草案 */
 @RestController
 @RequestMapping("/api/workflows")
 public class WorkflowController {
 
     private final WorkflowService workflowService;
+    private final WorkflowGenerationService generationService;
 
-    public WorkflowController(WorkflowService workflowService) {
+    public WorkflowController(WorkflowService workflowService, WorkflowGenerationService generationService) {
         this.workflowService = workflowService;
+        this.generationService = generationService;
+    }
+
+    /** 对话式生成工作流草案（业务人员大白话描述 → LLM 生成步骤 + 可直接创建的 stepsJson） */
+    @PostMapping("/generate")
+    public Map<String, Object> generate(
+            @Valid @RequestBody WorkflowGenerateRequest request,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        WorkflowGenerationService.GenerationResult result =
+                generationService.generate(userId, request.description());
+        return Map.of("steps", result.steps(), "stepsJson", result.stepsJson());
     }
 
     @PostMapping

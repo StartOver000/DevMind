@@ -155,6 +155,18 @@ function parseTags(value) {
   return tags.length ? tags : undefined;
 }
 
+/** 解析 plan trace 为计划展示结构（goal + 步骤列表）；非 plan trace 返回 null */
+function parsePlanSteps(t) {
+  if (!t || t.tool !== 'plan') return null;
+  try {
+    const data = JSON.parse(t.args || '{}');
+    const steps = Array.isArray(data.steps) ? data.steps : [];
+    return { goal: data.goal || '', steps };
+  } catch (e) {
+    return null;
+  }
+}
+
 async function ensureKbs() {
   try {
     await kbsStore.load();
@@ -274,13 +286,23 @@ async function sendChat() {
           onDelta: (chunk) => {
             const m = thread.value[assistantIndex];
             if (m) {
+              m.reconnecting = false;
               m.content += chunk;
               scrollToBottom();
             }
           },
           onError: (err) => { throw err; }
         },
-        { headers: userHeaders() }
+        {
+          headers: userHeaders(),
+          retries: 2,
+          retryDelay: 1500,
+          onRetry: (attempt, total) => {
+            const m = thread.value[assistantIndex];
+            if (m) { m.content = ''; m.reconnecting = true; }
+            showToast(`连接中断，正在重连（${attempt}/${total}）…`);
+          }
+        }
       );
       // 流结束后补全 result（引用已在 meta 中设置）
       const finalMsg = thread.value[assistantIndex];
@@ -343,6 +365,7 @@ async function sendAgent() {
         onDelta: (chunk) => {
           const m = thread.value[assistantIndex];
           if (m) {
+            m.reconnecting = false;
             m.content += chunk;
             scrollToBottom();
           }
@@ -355,7 +378,18 @@ async function sendAgent() {
         },
         onError: (err) => { throw err; }
       },
-      { headers: userHeaders() }
+      {
+        headers: userHeaders(),
+        retries: 2,
+        retryDelay: 1500,
+        onRetry: (attempt, total) => {
+          // 重连会重跑 Agent：清空已收内容与轨迹，避免重复展示
+          traces.length = 0;
+          const m = thread.value[assistantIndex];
+          if (m) { m.content = ''; m.trace = []; m.reconnecting = true; }
+          showToast(`连接中断，正在重连（${attempt}/${total}）…`);
+        }
+      }
     );
     await loadAgentConversations();
   } catch (err) {
@@ -511,14 +545,28 @@ onBeforeUnmount(() => {
             <div v-if="m.trace && m.trace.length" class="tool-trace">
               <details>
                 <summary>Agent 执行轨迹（{{ m.trace.length }} 步）</summary>
-                <div v-for="(t, j) in m.trace" :key="j" class="tool-trace-item" :class="{ fail: !t.ok }">
-                  <span class="tt-icon">{{ t.ok ? '✓' : '✗' }}</span>
-                  <span class="tt-name">{{ t.tool }}</span>
-                  <span class="tt-args">{{ t.args }}</span>
-                  <span class="tt-time">{{ t.costMs }}ms</span>
+                <div v-for="(t, j) in m.trace" :key="j" class="tool-trace-item" :class="{ fail: !t.ok, plan: t.tool === 'plan' }">
+                  <template v-if="t.tool === 'plan'">
+                    <span class="tt-icon">📋</span>
+                    <span class="tt-name">计划</span>
+                    <div class="plan-steps">
+                      <div v-for="(s, si) in (parsePlanSteps(t)?.steps || [])" :key="si" class="plan-step">
+                        <span class="ps-no">{{ si + 1 }}</span>
+                        <span class="ps-tool">{{ s.tool }}</span>
+                        <span class="ps-goal">{{ s.goal }}</span>
+                      </div>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <span class="tt-icon">{{ t.ok ? '✓' : '✗' }}</span>
+                    <span class="tt-name">{{ t.tool }}</span>
+                    <span class="tt-args">{{ t.args }}</span>
+                    <span class="tt-time">{{ t.costMs }}ms</span>
+                  </template>
                 </div>
               </details>
             </div>
+            <div v-if="m.reconnecting" class="reconnecting">连接已中断，正在重连…</div>
             <template v-if="m.role === 'assistant'">
               <div v-if="i === typingIndex" class="markdown-body" v-html="renderMarkdown(displayedAnswer)"></div>
               <div v-else class="markdown-body" v-html="renderMarkdown(m.content)"></div>
@@ -996,6 +1044,70 @@ onBeforeUnmount(() => {
   margin-left: auto;
   color: var(--muted);
   flex-shrink: 0;
+}
+
+/* Plan-Execute 计划卡片 */
+.tool-trace-item.plan {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-trace-item.plan .tt-icon {
+  color: var(--accent);
+}
+
+.plan-steps {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 24px;
+}
+
+.plan-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.ps-no {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ps-tool {
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--mono, monospace);
+}
+
+.ps-goal {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* SSE 断线重连提示 */
+.reconnecting {
+  margin-top: 6px;
+  color: var(--warning, #b8860b);
+  font-size: 12px;
+  animation: blink 1.2s infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0.4; }
 }
 
 /* ---- 引用 ---- */

@@ -7,6 +7,7 @@ import com.devmind.agent.dto.ToolTraceItem;
 import com.devmind.evaluation.dto.AgentEvalItem;
 import com.devmind.evaluation.dto.AgentEvaluationResponse;
 import com.devmind.user.UserService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -17,7 +18,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Agent 评估：跑一组研发场景，量化"多工具编排成功率"。
+ * Agent 评估：跑一组研发场景，量化"多工具编排成功率"与 Plan-Execute 使用情况。
  * 判定标准：期望工具都被调用（toolMatch）且全部执行成功（toolsOk）且回答非空。
  */
 @Service
@@ -27,16 +28,19 @@ public class AgentEvaluationService {
 
     private final AgentService agentService;
     private final UserService userService;
+    private final MeterRegistry meterRegistry;
 
-    public AgentEvaluationService(AgentService agentService, UserService userService) {
+    public AgentEvaluationService(AgentService agentService, UserService userService, MeterRegistry meterRegistry) {
         this.agentService = agentService;
         this.userService = userService;
+        this.meterRegistry = meterRegistry;
     }
 
     public AgentEvaluationResponse evaluate(Long userId) {
         userService.requireUser(userId);
         List<AgentEvalItem> items = new ArrayList<>();
         int passed = 0;
+        int planUsedCount = 0;
         for (EvalCase evalCase : CASES) {
             try {
                 AgentChatResponse response = agentService.chat(
@@ -45,11 +49,18 @@ public class AgentEvaluationService {
                 );
                 Set<String> called = new LinkedHashSet<>();
                 boolean toolsOk = true;
+                boolean planUsed = false;
                 for (ToolTraceItem trace : response.toolTrace()) {
                     called.add(trace.tool());
+                    if (AgentService.PLAN_TOOL_NAME.equals(trace.tool())) {
+                        planUsed = true;
+                    }
                     if (!trace.ok()) {
                         toolsOk = false;
                     }
+                }
+                if (planUsed) {
+                    planUsedCount++;
                 }
                 boolean toolMatch = evalCase.expectedTools().stream().allMatch(called::contains);
                 boolean pass = toolMatch && toolsOk && response.answer() != null && !response.answer().isBlank();
@@ -62,16 +73,19 @@ public class AgentEvaluationService {
                         List.copyOf(called),
                         toolMatch,
                         toolsOk,
-                        response.answer() == null ? 0 : response.answer().length()
+                        response.answer() == null ? 0 : response.answer().length(),
+                        planUsed
                 ));
             } catch (Exception ex) {
                 log.warn("agent 评估用例失败: {} -> {}", evalCase.question(), ex.getMessage());
-                items.add(new AgentEvalItem(evalCase.question(), evalCase.expectedTools(), List.of(), false, false, 0));
+                items.add(new AgentEvalItem(evalCase.question(), evalCase.expectedTools(), List.of(), false, false, 0, false));
             }
         }
         int total = CASES.size();
         double passRate = total == 0 ? 0 : (double) passed / total;
-        return new AgentEvaluationResponse(total, passed, passRate, items);
+        // 重规划次数取累计计数器（含本次评估触发的）
+        double replan = meterRegistry.counter("devmind.agent.replan_total").count();
+        return new AgentEvaluationResponse(total, passed, passRate, planUsedCount, (int) replan, items);
     }
 
     private record EvalCase(String question, List<String> expectedTools) {
@@ -85,6 +99,7 @@ public class AgentEvaluationService {
             new EvalCase("知识库里有索引相关的文档吗？", List.of("doc_list")),
             new EvalCase("我今天的模型用量和费用是多少？", List.of("usage_query")),
             new EvalCase("先看看知识库有什么，再帮我查一下索引优化资料", List.of("kb_info", "kb_search")),
+            new EvalCase("请先检索知识库中关于 MySQL 索引的资料，再诊断这条 SQL：SELECT id, name FROM user WHERE age > 30 ORDER BY name LIMIT 1000，最后汇总建议", List.of("kb_search", "sql_diagnose")),
             new EvalCase("你好，介绍一下你自己", List.of())
     );
 }

@@ -186,6 +186,113 @@ class AgentServiceTest {
         assertThat(response.toolTrace().get(0).ok()).isFalse();
     }
 
+    // ---------- Plan-Execute 评估用例 ----------
+
+    @Test
+    void injectsPlanToolAndExecutesMultiStepPlanSequentially() {
+        AgentTool tool = kbTool();
+        when(tool.execute(anyString(), any())).thenReturn("[{\"documentName\":\"a.md\",\"content\":\"RAG 结果\"}]");
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        // 第 1 轮：模型提交 2 步计划；第 2 轮：综合回答
+        String planArgs = """
+                {"goal":"SQL 性能诊断","steps":[
+                  {"tool":"kb_search","args":{"question":"SQL 慢查询"},"goal":"检索慢查询知识"},
+                  {"tool":"kb_search","args":{"question":"索引优化"},"goal":"检索索引优化方案"}
+                ]}""";
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("p1", AgentService.PLAN_TOOL_NAME, planArgs))),
+                        new AiModelGateway.ChatResult("根据检索结果给出优化建议。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "SQL 慢怎么办", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("根据检索结果给出优化建议。");
+        // 计划 1 条 + 步骤 2 条
+        assertThat(response.toolTrace()).hasSize(3);
+        assertThat(response.toolTrace().get(0).tool()).isEqualTo(AgentService.PLAN_TOOL_NAME);
+        assertThat(response.toolTrace().get(0).ok()).isTrue();
+        assertThat(response.toolTrace().get(1).tool()).isEqualTo("kb_search");
+        assertThat(response.toolTrace().get(2).tool()).isEqualTo("kb_search");
+        // 两步顺序执行
+        verify(tool, org.mockito.Mockito.times(2)).execute(anyString(), any());
+    }
+
+    @Test
+    void planStepFailureTriggersReplanHintOnceAndStillAnswers() {
+        AgentTool tool = kbTool();
+        when(tool.execute(anyString(), any()))
+                .thenReturn("[{\"documentName\":\"a.md\",\"content\":\"第一步成功\"}]")
+                .thenThrow(new IllegalStateException("第二步工具挂了"));
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        String planArgs = """
+                {"goal":"多步任务","steps":[
+                  {"tool":"kb_search","args":{"question":"A"},"goal":"第一步"},
+                  {"tool":"kb_search","args":{"question":"B"},"goal":"第二步"}
+                ]}""";
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("p1", AgentService.PLAN_TOOL_NAME, planArgs))),
+                        new AiModelGateway.ChatResult("部分步骤失败，我基于已有信息回答。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "多步任务", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("部分步骤失败，我基于已有信息回答。");
+        // 轨迹：plan + step1(成功) + step2(失败)
+        assertThat(response.toolTrace()).hasSize(3);
+        assertThat(response.toolTrace().get(1).ok()).isTrue();
+        assertThat(response.toolTrace().get(2).ok()).isFalse();
+        // 失败后触发了重规划提示（限 1 次），链路不中断
+        verify(tool, org.mockito.Mockito.times(2)).execute(anyString(), any());
+    }
+
+    @Test
+    void invalidPlanJsonReturnsErrorAndContinuesWithoutExecutingSteps() {
+        AgentTool tool = kbTool();
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        // 模型提交的 plan 参数 steps 为空数组 → 解析失败，回填错误，不执行任何步骤
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("p1", AgentService.PLAN_TOOL_NAME, "{\"goal\":\"x\",\"steps\":[]}"))),
+                        new AiModelGateway.ChatResult("计划无效，我直接回答。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "任务", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("计划无效，我直接回答。");
+        verify(tool, never()).execute(anyString(), any());
+        assertThat(response.toolTrace()).isEmpty();
+    }
+
+    @Test
+    void normalToolPathStillWorksWhenPlanIsNotUsed() {
+        AgentTool tool = kbTool();
+        when(tool.execute(anyString(), any())).thenReturn("[{\"documentName\":\"a.md\",\"content\":\"结果\"}]");
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("c1", "kb_search", "{}"))),
+                        new AiModelGateway.ChatResult("单步回答", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "单步", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("单步回答");
+        assertThat(response.toolTrace()).hasSize(1);
+        assertThat(response.toolTrace().get(0).tool()).isEqualTo("kb_search");
+        // 未使用计划 → 不产生 plan 轨迹、不触发重规划
+        assertThat(response.toolTrace().stream().noneMatch(t -> t.tool().equals(AgentService.PLAN_TOOL_NAME))).isTrue();
+    }
+
     @Test
     void degradesToLocalRagWhenModelFails() {
         AgentService service = service(new ToolRegistry(List.of(kbTool())));

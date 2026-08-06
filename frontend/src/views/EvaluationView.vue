@@ -11,6 +11,27 @@ const evalRerankMode = ref('heuristic');
 const result = ref(null);
 const loading = ref(false);
 
+// Agent 评估（Plan-Execute）
+const agentResult = ref(null);
+const agentLoading = ref(false);
+
+async function runAgentEvaluation() {
+  agentLoading.value = true;
+  agentResult.value = null;
+  try {
+    agentResult.value = await api('/api/agent-evaluations', { method: 'POST' });
+  } catch (err) {
+    agentResult.value = { error: err.message };
+    showToast(err.message, true);
+  } finally {
+    agentLoading.value = false;
+  }
+}
+
+function pct(v) {
+  return ((v || 0) * 100).toFixed(1) + '%';
+}
+
 function parseTags(value) {
   if (!value) return undefined;
   const tags = value.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
@@ -66,7 +87,44 @@ onMounted(ensureKbs);
 </script>
 
 <template>
-  <section class="eval-grid">
+  <section class="eval-stack">
+    <!-- Agent 评估（Plan-Execute） -->
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Agent 评估（Plan-Execute）</h2>
+        <button class="primary" :disabled="agentLoading" @click="runAgentEvaluation">
+          {{ agentLoading ? '评估中（需调用真实模型，较慢）…' : '运行 Agent 评估' }}
+        </button>
+      </div>
+      <div v-if="agentResult && !agentResult.error" class="agent-summary">
+        <div class="stat"><b>{{ agentResult.total }}</b><span>用例总数</span></div>
+        <div class="stat"><b>{{ agentResult.passed }}</b><span>通过</span></div>
+        <div class="stat"><b>{{ pct(agentResult.passRate) }}</b><span>通过率</span></div>
+        <div class="stat"><b>{{ agentResult.planUsedCount }}</b><span>使用计划</span></div>
+        <div class="stat"><b>{{ agentResult.replanCount }}</b><span>累计重规划</span></div>
+      </div>
+      <div v-else-if="agentResult && agentResult.error" class="empty">{{ agentResult.error }}</div>
+      <div v-else class="empty">运行 Agent 评估：真实模型跑一组多工具/多步任务，统计编排成功率与计划使用情况。</div>
+      <div v-if="agentResult && agentResult.items && agentResult.items.length" class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>问题</th><th>期望工具</th><th>实际调用</th><th>工具匹配</th><th>全部成功</th><th>使用计划</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(item, i) in agentResult.items" :key="i">
+              <td class="q">{{ item.question }}</td>
+              <td>{{ (item.expectedTools || []).join(', ') || '—' }}</td>
+              <td>{{ (item.calledTools || []).join(', ') || '—' }}</td>
+              <td :class="item.toolMatch ? 'ok' : 'bad'">{{ item.toolMatch ? '✓' : '✗' }}</td>
+              <td :class="item.toolsOk ? 'ok' : 'bad'">{{ item.toolsOk ? '✓' : '✗' }}</td>
+              <td :class="item.planUsed ? 'ok' : ''">{{ item.planUsed ? '📋' : '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="eval-grid">
     <div class="panel eval-form">
       <h2>检索评估</h2>
       <label>知识库
@@ -133,10 +191,45 @@ onMounted(ensureKbs);
         </div>
       </template>
     </div>
+    </div>
   </section>
 </template>
 
 <style scoped>
+.eval-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.agent-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.agent-summary .stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--alt-bg);
+  min-width: 88px;
+}
+
+.agent-summary .stat b {
+  font-size: 18px;
+  color: var(--accent);
+}
+
+.agent-summary .stat span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .eval-grid {
   display: grid;
   gap: 16px;
@@ -151,6 +244,26 @@ onMounted(ensureKbs);
 
 .eval-result p {
   margin: 8px 0;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.table-wrap td.q {
+  max-width: 340px;
+}
+
+.table-wrap td.ok {
+  color: var(--ok);
+}
+
+.table-wrap td.bad {
+  color: var(--danger);
 }
 
 @media (max-width: 900px) {

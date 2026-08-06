@@ -44,12 +44,34 @@ export function handlerKey(event) {
 
 /**
  * 通过 fetch POST 建立 SSE 连接并按事件分发。
+ * 支持断线自动重连：仅对「传输中断」（网络错误 / 5xx）重试，
+ * 业务 error 事件不重试。重试会重新发起请求（后端重跑），
+ * 调用方应在 onRetry 中清空已显示内容避免重复。
  * @param {string} url 请求地址
  * @param {object} body 请求体（自动 JSON 序列化）
  * @param {object} handlers { onMeta, onDelta, onTrace, onDone, onError, onMessage }
- * @param {object} options { headers, signal }
+ * @param {object} options { headers, signal, retries, retryDelay, onRetry }
  */
 export async function streamFetch(url, body, handlers = {}, options = {}) {
+  const retries = options.retries ?? 0;
+  const retryDelay = options.retryDelay ?? 1500;
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await doFetch(url, body, handlers, options);
+    } catch (err) {
+      const retryable = err && err.retryable !== false
+        && (err.status === undefined || err.status >= 500)
+        && attempt < retries;
+      if (!retryable) throw err;
+      attempt++;
+      if (options.onRetry) options.onRetry(attempt, retries, err);
+      await new Promise((r) => setTimeout(r, retryDelay));
+    }
+  }
+}
+
+async function doFetch(url, body, handlers = {}, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
   const res = await fetch(url, {
     method: 'POST',
@@ -100,6 +122,8 @@ function dispatchBlock(block, handlers) {
   if (event === 'error') {
     const payload = parsePayload(data);
     const err = new Error((payload && payload.message) ? payload.message : '流式响应出错');
+    // 业务错误标记为不可重试
+    err.retryable = false;
     if (handlers.onError) {
       handlers.onError(err);
       return;

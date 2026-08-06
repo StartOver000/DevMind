@@ -27,7 +27,8 @@ class AgentEvaluationServiceTest {
     private UserService userService;
 
     private AgentEvaluationService service() {
-        return new AgentEvaluationService(agentService, userService);
+        return new AgentEvaluationService(agentService, userService,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
     }
 
     @Test
@@ -61,10 +62,10 @@ class AgentEvaluationServiceTest {
 
         AgentEvaluationResponse response = service().evaluate(1L);
 
-        assertThat(response.total()).isEqualTo(8);
-        // 通过：SQL(1)、深分页(2)、有哪些内容(4)、先看看(5)、自我介绍(8) = 5 条（新增 doc_list/usage_query 场景 mock 未返回对应工具，不通过）
+        assertThat(response.total()).isEqualTo(9);
+        // 通过：SQL(1)、深分页(2)、有哪些内容(4)、先看看(5)、自我介绍(9) = 5 条（其余场景 mock 未返回对应工具，不通过）
         assertThat(response.passed()).isEqualTo(5);
-        assertThat(response.passRate()).isEqualTo(5.0 / 8.0);
+        assertThat(response.passRate()).isEqualTo(5.0 / 9.0);
         // 第 3 条（分析 SQL 并找方案）期望两个工具但只调一个 → 不通过
         assertThat(response.items().get(2).toolMatch()).isFalse();
     }

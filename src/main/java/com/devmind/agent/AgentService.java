@@ -18,6 +18,8 @@ import com.devmind.retrieval.LocalRagAnswerer;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
 import com.devmind.user.UserService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -75,6 +77,35 @@ public class AgentService {
             3. 没有可提取的内容时输出空。
             """;
 
+    /**
+     * Plan-Execute：模型为多步任务提交计划的内部工具名（不注册到 ToolRegistry，由本类特判处理）。
+     * 模型多步任务（如：先检索知识库 → 再诊断 SQL → 再汇总）时调用 plan 提交有序步骤；单步任务无需使用。
+     */
+    public static final String PLAN_TOOL_NAME = "plan";
+    private static final String PLAN_TOOL_DESC = "为多步任务制定执行计划：当任务需要多个步骤（如先检索再诊断再总结）时，按执行顺序提交 steps；每个 step 调用一个工具并说明目标。单步任务无需使用本工具。";
+    private static final String PLAN_TOOL_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "goal": { "type": "string", "description": "任务目标" },
+                "steps": {
+                  "type": "array",
+                  "description": "有序执行步骤，每步调用一个工具",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "tool": { "type": "string", "description": "要调用的工具名，如 kb_search" },
+                      "args": { "type": "object", "description": "工具参数" },
+                      "goal": { "type": "string", "description": "本步骤目标" }
+                    },
+                    "required": ["tool", "goal"]
+                  }
+                }
+              },
+              "required": ["goal", "steps"]
+            }
+            """;
+
     private final ChatRouter chatRouter;
     private final ToolRegistry toolRegistry;
     private final AgentConversationRepository conversationRepository;
@@ -87,8 +118,13 @@ public class AgentService {
     private final DevMindProperties properties;
     private final MeterRegistry meterRegistry;
     private final ToolCallValidator toolCallValidator;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     /** 单工具执行超时（秒） */
     private static final int TOOL_TIMEOUT_SECONDS = 20;
+
+    /** 计划中的一个执行步骤 */
+    private record PlanStep(String tool, String argsJson, String goal) {
+    }
     /** 工具执行线程池（配合超时熔断） */
     private final java.util.concurrent.ExecutorService toolExecutor =
             java.util.concurrent.Executors.newCachedThreadPool();
@@ -184,11 +220,15 @@ public class AgentService {
         messages.add(Map.of("role", "user", "content", question));
 
         List<ToolTraceItem> trace = new ArrayList<>();
-        List<AiModelGateway.ToolSpec> tools = toolRegistry.all().stream()
+        List<AiModelGateway.ToolSpec> tools = new ArrayList<>(toolRegistry.all().stream()
                 .map(tool -> new AiModelGateway.ToolSpec(tool.name(), tool.description(), tool.parametersJsonSchema()))
-                .toList();
+                .toList());
+        // 注入内部计划工具（Plan-Execute）：模型多步任务时先提交计划，由本类特判执行
+        tools.add(new AiModelGateway.ToolSpec(PLAN_TOOL_NAME, PLAN_TOOL_DESC, PLAN_TOOL_SCHEMA));
 
         try {
+            // 计划失败后是否还能引导模型重规划（限 1 次，避免死循环）
+            boolean replanAllowed = true;
             for (int round = 0; round <= MAX_TOOL_ROUNDS; round++) {
                 AiModelGateway.ChatResult result = chatRouter.chatWithTools(SYSTEM_PROMPT, messages, tools);
                 recordUsage(userId, result, question);
@@ -211,52 +251,28 @@ public class AgentService {
                         ))
                         .toList());
                 messages.add(assistantMsg);
-                // 逐个执行工具：执行前校验（工具名/参数 JSON），非法回填错误不中断；合法则带超时执行
+                // 逐个执行：plan 走计划执行器，其余走工具执行（校验+超时）
+                boolean hasPlan = false;
+                boolean planAllOk = true;
                 for (AiModelGateway.ToolCall tc : toolCalls) {
-                    long start = System.currentTimeMillis();
-                    String output;
-                    boolean ok;
-                    ToolCallValidator.Validation validation = toolCallValidator.validate(tc.name(), tc.argumentsJson());
-                    if (!validation.valid()) {
-                        meterRegistry.counter("devmind.agent.tool_invalid", "reason", "invalid").increment();
-                        log.warn("agent 工具调用校验失败: {}", validation.error());
-                        output = "{\"error\": \"工具调用无效: " + validation.error() + "\"}";
-                        ok = false;
-                    } else {
-                        try {
-                            java.util.concurrent.Future<String> future = toolExecutor.submit(() ->
-                                    toolRegistry.execute(validation.toolName(), validation.argumentsJson(), userId));
-                            output = future.get(TOOL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
-                            ok = true;
-                        } catch (java.util.concurrent.TimeoutException ex) {
-                            meterRegistry.counter("devmind.agent.tool_timeout").increment();
-                            log.warn("agent 工具 {} 执行超时（{}s）", tc.name(), TOOL_TIMEOUT_SECONDS);
-                            output = "{\"error\": \"工具执行超时\"}";
-                            ok = false;
-                        } catch (Exception ex) {
-                            log.warn("agent 工具 {} 执行失败: {}", tc.name(), ex.getMessage());
-                            output = "{\"error\": \"工具执行失败: " + ex.getMessage() + "\"}";
-                            ok = false;
+                    if (PLAN_TOOL_NAME.equals(tc.name())) {
+                        hasPlan = true;
+                        if (!executePlan(tc, userId, messages, trace, onTrace, conversationId)) {
+                            planAllOk = false;
                         }
+                    } else {
+                        trace.add(executeToolCall(tc, userId, messages, conversationId, onTrace));
                     }
-                    output = truncate(output, MAX_TOOL_RESULT_CHARS);
+                }
+                // 计划中有步骤失败：提示模型重新规划（仅一次），下一轮模型可提交新计划或直接回答
+                if (hasPlan && !planAllOk && replanAllowed) {
+                    meterRegistry.counter("devmind.agent.replan_total").increment();
+                    log.warn("agent 计划执行有步骤失败，提示模型重新规划");
                     messages.add(Map.of(
-                            "role", "tool",
-                            "tool_call_id", tc.id(),
-                            "content", output
+                            "role", "system",
+                            "content", "【提示】上一步计划中有步骤执行失败（见工具返回的错误信息）。请重新规划一个更合理的计划，或直接基于已有信息回答。"
                     ));
-                    long costMs = System.currentTimeMillis() - start;
-                    ToolTraceItem item = new ToolTraceItem(
-                            tc.name(),
-                            truncate(tc.argumentsJson(), 120),
-                            ok,
-                            costMs
-                    );
-                    trace.add(item);
-                    if (onTrace != null) {
-                        onTrace.accept(item);
-                    }
-                    persistTrace(conversationId, tc.name(), truncate(tc.argumentsJson(), 200), ok, costMs);
+                    replanAllowed = false;
                 }
             }
             throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "Agent 工具调用轮数超限");
@@ -265,6 +281,140 @@ public class AgentService {
             AgentChatResponse fallback = fallbackToLocalRag(conversationId, question, userId, trace);
             saveMessages(conversationId, question, fallback.answer());
             return fallback;
+        }
+    }
+
+    /**
+     * 执行单个工具调用：先校验（工具名/参数 JSON），非法回填错误不中断；合法则带超时执行；
+     * 结果回填到 messages，返回轨迹项。
+     */
+    private ToolTraceItem executeToolCall(
+            AiModelGateway.ToolCall tc,
+            Long userId,
+            List<Map<String, Object>> messages,
+            Long conversationId,
+            Consumer<ToolTraceItem> onTrace
+    ) {
+        long start = System.currentTimeMillis();
+        String output;
+        boolean ok;
+        ToolCallValidator.Validation validation = toolCallValidator.validate(tc.name(), tc.argumentsJson());
+        if (!validation.valid()) {
+            meterRegistry.counter("devmind.agent.tool_invalid", "reason", "invalid").increment();
+            log.warn("agent 工具调用校验失败: {}", validation.error());
+            output = "{\"error\": \"工具调用无效: " + validation.error() + "\"}";
+            ok = false;
+        } else {
+            try {
+                java.util.concurrent.Future<String> future = toolExecutor.submit(() ->
+                        toolRegistry.execute(validation.toolName(), validation.argumentsJson(), userId));
+                output = future.get(TOOL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+                ok = true;
+            } catch (java.util.concurrent.TimeoutException ex) {
+                meterRegistry.counter("devmind.agent.tool_timeout").increment();
+                log.warn("agent 工具 {} 执行超时（{}s）", tc.name(), TOOL_TIMEOUT_SECONDS);
+                output = "{\"error\": \"工具执行超时\"}";
+                ok = false;
+            } catch (Exception ex) {
+                log.warn("agent 工具 {} 执行失败: {}", tc.name(), ex.getMessage());
+                output = "{\"error\": \"工具执行失败: " + ex.getMessage() + "\"}";
+                ok = false;
+            }
+        }
+        output = truncate(output, MAX_TOOL_RESULT_CHARS);
+        messages.add(Map.of(
+                "role", "tool",
+                "tool_call_id", tc.id(),
+                "content", output
+        ));
+        long costMs = System.currentTimeMillis() - start;
+        ToolTraceItem item = new ToolTraceItem(
+                tc.name(),
+                truncate(tc.argumentsJson(), 120),
+                ok,
+                costMs
+        );
+        if (onTrace != null) {
+            onTrace.accept(item);
+        }
+        persistTrace(conversationId, tc.name(), truncate(tc.argumentsJson(), 200), ok, costMs);
+        return item;
+    }
+
+    /**
+     * Plan-Execute 计划执行器：解析 plan 参数 → 逐 step 执行（复用 {@link #executeToolCall}）→
+     * 每个 step 结果回填 messages，失败不中断（供模型重规划）。返回是否全部成功。
+     */
+    private boolean executePlan(
+            AiModelGateway.ToolCall planCall,
+            Long userId,
+            List<Map<String, Object>> messages,
+            List<ToolTraceItem> trace,
+            Consumer<ToolTraceItem> onTrace,
+            Long conversationId
+    ) {
+        List<PlanStep> steps = parsePlan(planCall.argumentsJson());
+        if (steps == null) {
+            messages.add(Map.of(
+                    "role", "tool",
+                    "tool_call_id", planCall.id(),
+                    "content", "{\"error\": \"计划解析失败，请直接回答或逐个调用工具\"}"
+            ));
+            return false;
+        }
+        // 计划本身也计入轨迹，便于前端可视化
+        ToolTraceItem planItem = new ToolTraceItem(
+                PLAN_TOOL_NAME,
+                truncate(planCall.argumentsJson(), 200),
+                true,
+                0
+        );
+        trace.add(planItem);
+        if (onTrace != null) {
+            onTrace.accept(planItem);
+        }
+        boolean allOk = true;
+        int idx = 1;
+        for (PlanStep step : steps) {
+            AiModelGateway.ToolCall stepCall = new AiModelGateway.ToolCall(
+                    planCall.id() + "-s" + idx++,
+                    step.tool(),
+                    step.argsJson() == null ? "{}" : step.argsJson()
+            );
+            ToolTraceItem item = executeToolCall(stepCall, userId, messages, conversationId, onTrace);
+            trace.add(item);
+            if (!item.ok()) {
+                allOk = false;
+            }
+        }
+        meterRegistry.counter("devmind.agent.plan", "result", allOk ? "success" : "partial").increment();
+        return allOk;
+    }
+
+    /** 解析 plan 工具参数为有序步骤列表；无法解析（非数组/为空/工具名为空）返回 null */
+    private List<PlanStep> parsePlan(String argumentsJson) {
+        try {
+            JsonNode root = objectMapper.readTree(argumentsJson == null ? "{}" : argumentsJson);
+            JsonNode steps = root.path("steps");
+            if (!steps.isArray() || steps.isEmpty()) {
+                return null;
+            }
+            List<PlanStep> result = new ArrayList<>();
+            for (JsonNode step : steps) {
+                String tool = step.path("tool").asText("");
+                if (tool.isBlank()) {
+                    continue;
+                }
+                String goal = step.path("goal").asText("");
+                JsonNode args = step.path("args");
+                String argsJson = (args == null || args.isMissingNode() || args.isNull())
+                        ? "{}" : objectMapper.writeValueAsString(args);
+                result.add(new PlanStep(tool, argsJson, goal));
+            }
+            return result.isEmpty() ? null : result;
+        } catch (Exception ex) {
+            log.warn("agent 计划解析失败: {}", ex.getMessage());
+            return null;
         }
     }
 

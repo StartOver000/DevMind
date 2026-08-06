@@ -9,6 +9,7 @@ public record AgentEvalItem(
         List<String> calledTools,
         boolean toolMatch,
         boolean toolsOk,
-        int answerLength
+        int answerLength,
+        boolean planUsed
 ) {
 }

@@ -1,17 +1,25 @@
 package com.devmind.skill;
 
+import com.devmind.ai.AiModelGateway;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 
 /**
- * 技能匹配器（Guide-51 §5.2）：在 Agent 请求时，按关键词粗筛命中当前请求场景的
- * 团队/个人技能，返回需注入的规范文本。P1 用关键词粗筛（零成本），P3 升级为语义检索。
+ * 技能匹配器（Guide-51 §5.2）：在 Agent 请求时匹配当前请求场景的团队/个人技能。
+ * 双通道（P1 关键词 + P3 语义精排）：
+ * 1. 关键词命中（apply_to 包含问题中的词）→ 注入全文规范（确定性场景直接遵循）；
+ * 2. 其余技能 → 轻量清单（渐进披露），有 embedding 时按语义相关度排序并标记"语义相关"，
+ *    模型判断相关时调 load_skill 获取全文。
+ * 语义链路不可用（embedding 失败/超时）自动降级为纯关键词，不影响主流程。
  */
 @Component
 public class SkillMatcher {
@@ -26,11 +34,21 @@ public class SkillMatcher {
     private static final int MAX_CATALOG = 20;
     /** 单个技能内容截断（防上下文膨胀） */
     private static final int MAX_CONTENT_CHARS = 1500;
+    /** 语义相关阈值：question vs skill 文本余弦相似度 ≥ 此值标记为语义相关 */
+    private static final double SEMANTIC_THRESHOLD = 0.35;
 
     private final SkillRepository repository;
+    /** 语义精排（P3）：可选注入，无 embedding 时退化为纯关键词匹配 */
+    private AiModelGateway modelGateway;
 
     public SkillMatcher(SkillRepository repository) {
         this.repository = repository;
+    }
+
+    /** 语义精排网关（embedding）：可选注入，测试/无 AI 时为空 */
+    @Autowired(required = false)
+    public void setModelGateway(AiModelGateway modelGateway) {
+        this.modelGateway = modelGateway;
     }
 
     /** 匹配结果：关键词命中的注入全文 + 其余技能轻量清单（渐进披露） */
@@ -42,21 +60,20 @@ public class SkillMatcher {
     }
 
     /**
-     * 匹配当前请求（Guide-51 P1 + P3 渐进披露）：
+     * 匹配当前请求（Guide-51 P1 + P3 语义精排）：
      * 1. 关键词命中（apply_to 包含问题中的词）→ 注入全文规范（确定性场景直接遵循）；
-     * 2. 其余技能 → 只注入轻量清单（ID+名称+描述），模型判断相关时调 load_skill 获取全文。
+     * 2. 其余技能 → 轻量清单（ID+名称+描述），有 embedding 时按语义相关度排序并标记。
      * 命中全文自增 hit_count（发现僵尸/热门技能）。
      */
     public MatchResult match(String question, Long tenantId, Long userId) {
         List<String> injectFull = new ArrayList<>();
-        List<String> catalog = new ArrayList<>();
+        List<Skill> remaining = new ArrayList<>();
         if (question == null || question.isBlank()) {
-            return new MatchResult(injectFull, catalog);
+            return new MatchResult(injectFull, new ArrayList<>());
         }
         try {
             List<Skill> skills = repository.listEnabledForUser(tenantId, userId);
             String q = question.toLowerCase();
-            int catalogCount = 0;
             for (Skill skill : skills) {
                 if (matches(skill, q)) {
                     if (injectFull.size() < MAX_INJECT) {
@@ -75,18 +92,118 @@ public class SkillMatcher {
                     }
                     // 已到全文上限：其余命中技能降级进清单（模型可 load_skill 加载）
                 }
-                if (catalogCount < MAX_CATALOG) {
-                    // 未命中关键词（或命中但全文已满）：只给名称+描述，供模型按需加载全文
-                    String desc = skill.description() == null || skill.description().isBlank()
-                            ? skill.name() : skill.description();
-                    catalog.add("【技能 ID " + skill.id() + "】" + skill.name() + "：" + desc);
-                    catalogCount++;
-                }
+                remaining.add(skill);
             }
         } catch (Exception ex) {
             log.warn("技能匹配失败，跳过注入: {}", ex.getMessage());
         }
+        List<String> catalog = buildCatalog(question, remaining);
         return new MatchResult(injectFull, catalog);
+    }
+
+    /**
+     * 构建渐进披露清单：有 embedding 时按 question vs 技能文本（name+apply_to+description）
+     * 余弦相似度降序，≥ 阈值标记"语义相关"；embedding 不可用/失败时按原顺序（不标记）。
+     */
+    private List<String> buildCatalog(String question, List<Skill> remaining) {
+        List<String> catalog = new ArrayList<>();
+        if (remaining.isEmpty()) {
+            return catalog;
+        }
+        List<Skill> ordered = remaining;
+        Map<Long, Double> scores = new java.util.HashMap<>();
+        try {
+            if (modelGateway != null && question != null && !question.isBlank()) {
+                ordered = semanticRank(question, remaining, scores);
+            }
+        } catch (Exception ex) {
+            // 语义链路不可用：降级为原顺序（关键词匹配仍生效，不影响主流程）
+            log.warn("技能语义精排失败，降级为关键词匹配: {}", ex.getMessage());
+            ordered = remaining;
+        }
+        int catalogCount = 0;
+        for (Skill skill : ordered) {
+            if (catalogCount >= MAX_CATALOG) {
+                break;
+            }
+            String desc = skill.description() == null || skill.description().isBlank()
+                    ? skill.name() : skill.description();
+            String entry = "【技能 ID " + skill.id() + "】" + skill.name() + "：" + desc;
+            // 语义相关标记（P3）：助模型优先 load_skill 判断
+            Double score = scores.get(skill.id());
+            if (score != null && score >= SEMANTIC_THRESHOLD) {
+                entry += "（语义相关 " + String.format("%.0f", score * 100) + "%）";
+            }
+            catalog.add(entry);
+            catalogCount++;
+        }
+        if (!scores.isEmpty()) {
+            // 可观测：语义精排结果（问题 → 各技能相似度），便于评估匹配质量（Guide-51 P3）
+            log.info("技能语义精排: question={}, scores={}", question,
+                    scores.entrySet().stream()
+                            .map(e -> e.getKey() + "=" + String.format("%.2f", e.getValue()))
+                            .collect(java.util.stream.Collectors.joining(", ")));
+        }
+        return catalog;
+    }
+
+    /**
+     * 语义精排：一次 embed 调用计算 question + 每个技能文本的向量，返回按相似度降序的技能列表。
+     * 技能文本 = name + apply_to + description（紧凑、聚焦触发场景）。
+     */
+    private List<Skill> semanticRank(String question, List<Skill> skills, Map<Long, Double> scores) {
+        List<String> texts = new ArrayList<>();
+        texts.add(question);
+        for (Skill s : skills) {
+            texts.add(skillText(s));
+        }
+        List<List<Double>> vectors = modelGateway.embed(texts);
+        if (vectors == null || vectors.size() != texts.size()) {
+            throw new IllegalStateException("embedding 返回数量不匹配");
+        }
+        double[] qv = toArray(vectors.get(0));
+        for (int i = 0; i < skills.size(); i++) {
+            double score = cosine(qv, toArray(vectors.get(i + 1)));
+            scores.put(skills.get(i).id(), score);
+        }
+        return skills.stream()
+                .sorted(Comparator.comparingDouble(
+                        (Skill s) -> scores.getOrDefault(s.id(), 0.0)).reversed())
+                .toList();
+    }
+
+    /** 技能语义文本：name + apply_to + description（拼接，供语义比较） */
+    private String skillText(Skill skill) {
+        StringBuilder sb = new StringBuilder();
+        if (skill.name() != null) sb.append(skill.name()).append(' ');
+        if (skill.applyTo() != null) sb.append(skill.applyTo()).append(' ');
+        if (skill.description() != null) sb.append(skill.description());
+        return sb.toString().trim();
+    }
+
+    private double[] toArray(List<Double> vector) {
+        double[] arr = new double[vector.size()];
+        for (int i = 0; i < vector.size(); i++) {
+            arr[i] = vector.get(i) == null ? 0.0 : vector.get(i);
+        }
+        return arr;
+    }
+
+    /** 余弦相似度（向量应为归一化或原始均可，余弦本身归一化） */
+    private double cosine(double[] a, double[] b) {
+        if (a.length != b.length) {
+            throw new IllegalStateException("向量维度不一致");
+        }
+        double dot = 0, na = 0, nb = 0;
+        for (int i = 0; i < a.length; i++) {
+            dot += a[i] * b[i];
+            na += a[i] * a[i];
+            nb += b[i] * b[i];
+        }
+        if (na == 0 || nb == 0) {
+            return 0.0;
+        }
+        return dot / (Math.sqrt(na) * Math.sqrt(nb));
     }
 
     /** apply_to 用 | 分隔多个关键词/场景；任一命中即匹配；空 apply_to 不匹配 */

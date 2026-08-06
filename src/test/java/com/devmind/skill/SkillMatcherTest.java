@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -182,5 +183,76 @@ class SkillMatcherTest {
         matcher.recordLoad(1L, 5L);
 
         verify(repository).incrementHit(1L, 5L);
+    }
+
+    @Test
+    void semanticRanksCatalogAndMarksRelatedSkills() {
+        // P3 语义精排：embedding 可用时，清单按相似度降序 + 语义相关标记
+        SkillRepository repository = mock(SkillRepository.class);
+        when(repository.listEnabledForUser(1L, 1L)).thenReturn(List.of(
+                skill(1L, "team", "监控版本检查", "查询监控版本并总结", "版本|buildinfo", "内容A"),
+                skill(2L, "team", "离职交接规范", "离职流程指引", "离职|交接", "内容B"),
+                skill(3L, "team", "月度经营报告", "经营分析月报", "经营|月报", "内容C")
+        ));
+        // mock embedding：question 与技能3（月度经营报告）方向一致（高相似），技能2（离职交接）低
+        com.devmind.ai.AiModelGateway gateway = mock(com.devmind.ai.AiModelGateway.class);
+        when(gateway.embed(anyList())).thenReturn(List.of(
+                List.of(1.0, 0.0),           // question 向量
+                List.of(0.0, 1.0),           // 技能2（离职交接，正交 → 0）
+                List.of(0.8, 0.6)            // 技能3（月度经营，部分相似 → cos≈0.8）
+        ));
+
+        SkillMatcher matcher = new SkillMatcher(repository);
+        matcher.setModelGateway(gateway);
+        SkillMatcher.MatchResult result = matcher.match("帮我查一下监控版本", 1L, 1L);
+
+        // 技能1 关键词"版本"命中注入全文；技能2/3 进清单
+        assertThat(result.injectFull()).hasSize(1);
+        assertThat(result.injectFull().get(0)).contains("监控版本检查");
+        // 清单按相似度降序：技能3(0.8) 在 技能2(0) 前，且技能3 标记语义相关
+        assertThat(result.catalog()).hasSize(2);
+        assertThat(result.catalog().get(0)).contains("月度经营报告").contains("语义相关");
+        assertThat(result.catalog().get(1)).contains("离职交接规范").doesNotContain("语义相关");
+        verify(gateway).embed(anyList());
+    }
+
+    @Test
+    void semanticRankingFallsBackToKeywordOnlyWhenEmbeddingFails() {
+        // embedding 抛异常 → 降级为原顺序 + 无标记，不影响注入
+        SkillRepository repository = mock(SkillRepository.class);
+        when(repository.listEnabledForUser(1L, 1L)).thenReturn(List.of(
+                skill(1L, "team", "监控版本检查", "d", "版本|buildinfo", "内容A"),
+                skill(2L, "team", "月度经营报告", "d", "经营|月报", "内容C")
+        ));
+        com.devmind.ai.AiModelGateway gateway = mock(com.devmind.ai.AiModelGateway.class);
+        when(gateway.embed(anyList())).thenThrow(new IllegalStateException("embedding 服务不可用"));
+
+        SkillMatcher matcher = new SkillMatcher(repository);
+        matcher.setModelGateway(gateway);
+        SkillMatcher.MatchResult result = matcher.match("帮我查一下监控版本", 1L, 1L);
+
+        // 关键词命中技能1 注入全文
+        assertThat(result.injectFull()).hasSize(1);
+        assertThat(result.injectFull().get(0)).contains("监控版本检查");
+        // 技能2 进清单，无语义标记（降级）
+        assertThat(result.catalog()).hasSize(1);
+        assertThat(result.catalog().get(0)).contains("月度经营报告").doesNotContain("语义相关");
+    }
+
+    @Test
+    void semanticRankingSkipsWhenNoGateway() {
+        // 无 gateway（默认）→ 纯关键词匹配，清单原顺序无标记
+        SkillRepository repository = mock(SkillRepository.class);
+        when(repository.listEnabledForUser(1L, 1L)).thenReturn(List.of(
+                skill(1L, "team", "监控版本检查", "d", "版本|buildinfo", "内容A"),
+                skill(2L, "team", "月度经营报告", "d", "经营|月报", "内容C")
+        ));
+
+        SkillMatcher matcher = new SkillMatcher(repository);
+        SkillMatcher.MatchResult result = matcher.match("帮我查一下监控版本", 1L, 1L);
+
+        assertThat(result.injectFull()).hasSize(1);
+        assertThat(result.catalog()).hasSize(1);
+        assertThat(result.catalog().get(0)).doesNotContain("语义相关");
     }
 }

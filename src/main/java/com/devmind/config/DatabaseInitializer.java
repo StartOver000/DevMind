@@ -480,6 +480,27 @@ public class DatabaseInitializer implements ApplicationRunner {
                 CREATE INDEX IF NOT EXISTS idx_tool_call_log_tenant_user
                 ON tool_call_log(tenant_id, user_id)
                 """);
+        // MCP 服务器登记：接入外部 MCP 服务器，其 tools 作为可用工具（M4 MCP 接入层）
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS mcp_server (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id BIGINT NOT NULL DEFAULT 1,
+                    name VARCHAR(100) NOT NULL,
+                    transport_type VARCHAR(20) NOT NULL DEFAULT 'stdio',  -- stdio | http
+                    command VARCHAR(200),
+                    args_json TEXT,
+                    url VARCHAR(500),
+                    status VARCHAR(20) NOT NULL DEFAULT 'ENABLED',
+                    created_by BIGINT,
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_server_name
+                ON mcp_server(tenant_id, name)
+                WHERE status <> 'DELETED'
+                """);
         log.info("database initialized, embedding dimension={}", dimensions);
     }
 }

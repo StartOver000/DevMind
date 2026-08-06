@@ -122,8 +122,9 @@ public class SkillService {
     /**
      * 对话式修正技能（Guide-51 对话闭环）：基于技能现有内容 + 用户的修改指令，
      * 调用 LLM 生成新的规范内容并更新。供 Agent 的 update_skill 内部工具调用。
+     * 返回修改前/后内容，供 Agent 向用户展示对比（确认闭环）。
      */
-    public Skill updateByInstruction(Long userId, Long id, String instruction) {
+    public UpdateResult updateByInstruction(Long userId, Long id, String instruction) {
         if (instruction == null || instruction.isBlank()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "修改指令不能为空");
         }
@@ -150,10 +151,16 @@ public class SkillService {
                 "你是一个技能修正助手，根据用户意见修改技能规范。",
                 prompt
         );
+        String oldContent = existing.content();
         String content = extractSkillContent(result);
         repository.updateContent(tenantId, id, content);
         log.info("对话式修正技能成功 (skill={}, user={})", id, userId);
-        return repository.findById(tenantId, id);
+        Skill updated = repository.findById(tenantId, id);
+        return new UpdateResult(updated, oldContent, content);
+    }
+
+    /** 技能修正结果：含修改前后内容（供 Agent 向用户展示对比） */
+    public record UpdateResult(Skill skill, String oldContent, String newContent) {
     }
 
     /** 技能命中统计（Agent 注入时自增） */

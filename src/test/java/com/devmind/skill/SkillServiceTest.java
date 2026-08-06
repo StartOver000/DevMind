@@ -156,9 +156,11 @@ class SkillServiceTest {
                 "新规范：必须含同比环比和利润归因。", "manual", null, true, 1L, 1L, null);
         when(repository.findById(1L, 3L)).thenReturn(existing, updated);
 
-        Skill result = service.updateByInstruction(1L, 3L, "第 2 步改成先查利润再查费用");
+        SkillService.UpdateResult result = service.updateByInstruction(1L, 3L, "第 2 步改成先查利润再查费用");
 
-        assertThat(result.content()).contains("利润归因");
+        assertThat(result.skill().content()).contains("利润归因");
+        assertThat(result.oldContent()).contains("旧规范");
+        assertThat(result.newContent()).contains("利润归因");
         verify(repository).updateContent(1L, 3L, "新规范：必须含同比环比和利润归因。");
     }
 

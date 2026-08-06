@@ -76,7 +76,8 @@ public class AgentService {
             5. 已执行过工具的轮次：基于工具返回结果直接总结，不要重复调用相同工具。
             6. 若当前任务参考了技能规范（system 中带【技能 ID x：名称】），且用户指出该规范有
                问题/要修改（如"这个技能不对"、"把第 2 步改成先查 A"），调用 update_skill
-               （skillId 取规范中的 ID，instruction 为用户原话），修改后告知用户已更新。
+               （skillId 取规范中的 ID，instruction 为用户原话）。修改后必须向用户展示
+               "修改前 → 修改后"对比，并询问是否符合预期；用户仍不满意则继续调整。
             """;
 
     /** 会话结束后自动提取用户长期偏好的提取器提示词 */
@@ -581,10 +582,13 @@ public class AgentService {
                 return new ToolExecOutcome("{\"error\": \"缺少修改指令 instruction\"}", false,
                         System.currentTimeMillis() - start);
             }
-            com.devmind.skill.Skill updated = skillService.updateByInstruction(userId, skillId, instruction);
+            com.devmind.skill.SkillService.UpdateResult updated =
+                    skillService.updateByInstruction(userId, skillId, instruction);
             meterRegistry.counter("devmind.agent.skill_update_total").increment();
-            String summary = "已更新技能【" + updated.name() + "】（ID " + updated.id() + "）。新内容："
-                    + truncate(updated.content(), MAX_TOOL_RESULT_CHARS);
+            String summary = "已更新技能【" + updated.skill().name() + "】（ID " + updated.skill().id() + "）。\n"
+                    + "【修改前】" + truncate(updated.oldContent(), MAX_TOOL_RESULT_CHARS) + "\n"
+                    + "【修改后】" + truncate(updated.newContent(), MAX_TOOL_RESULT_CHARS) + "\n"
+                    + "请向用户展示修改前后对比，并询问修改是否符合预期；若用户仍不满意，继续引导其说明要求后再次调用 update_skill。";
             return new ToolExecOutcome(summary, true, System.currentTimeMillis() - start);
         } catch (Exception ex) {
             String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();

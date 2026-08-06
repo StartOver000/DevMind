@@ -204,6 +204,32 @@ public class DocumentRepository {
         return count == null ? 0 : count;
     }
 
+    /**
+     * 按文件名模糊检索（C2）：跨知识库按名称/标题匹配文档。
+     * 返回文件名、类型、状态、块数、上传时间（不含内容，内容检索用 kb_search）。
+     */
+    public List<DocumentItem> searchByName(String keyword, int limit) {
+        String sql = """
+                SELECT d.id, d.file_name, d.file_type, d.status, d.created_time, d.metadata,
+                       (SELECT COUNT(*) FROM document_chunk c WHERE c.document_id = d.id) AS chunk_count
+                FROM document d
+                WHERE d.status <> 'DELETED'
+                  AND d.file_name ILIKE ?
+                ORDER BY d.created_time DESC
+                LIMIT ?
+                """;
+        String pattern = "%" + keyword + "%";
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new DocumentItem(
+                rs.getLong("id"),
+                rs.getString("file_name"),
+                rs.getString("file_type"),
+                rs.getString("status"),
+                rs.getInt("chunk_count"),
+                toOffset(rs.getTimestamp("created_time")),
+                extractTags(readMetadata(rs.getString("metadata")))
+        ), pattern, limit);
+    }
+
     public int countChunks(Long documentId) {
         Integer count = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM document_chunk WHERE document_id = ?",

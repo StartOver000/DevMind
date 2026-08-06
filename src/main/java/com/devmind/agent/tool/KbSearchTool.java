@@ -53,8 +53,10 @@ public class KbSearchTool implements AgentTool {
 
     @Override
     public String description() {
-        return "检索研发知识库，返回与问题最相关的文档片段（含文件名、内容、相似度分数）。"
-                + "当用户问题涉及文档资料、优化方案、原理概念时调用。参数：knowledgeBaseId(可选，知识库ID，缺省用第一个可用库), "
+        return "按语义检索研发知识库内容，返回与问题最相关的文档片段（含文件名、内容、相似度分数）。"
+                + "当用户问题需要从文档内容中找答案/依据/方案时调用（不知道具体文档名时用它最合适）。"
+                + "若用户明确提到具体文档名/标题，先用 doc_search 按文件名定位再结合本工具取内容。"
+                + "参数：knowledgeBaseId(可选，知识库ID，缺省用第一个可用库), "
                 + "question(必填，检索问题), topK(可选，返回条数，默认5)";
     }
 

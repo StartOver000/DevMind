@@ -65,6 +65,15 @@ public class WorkflowController {
         return workflowService.get(id, userId);
     }
 
+    /** webhook 触发信息（token + 调用 URL），仅 webhook 类型工作流启用 */
+    @GetMapping("/{id}/webhook")
+    public Map<String, Object> webhookInfo(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        return workflowService.webhookInfo(id, userId);
+    }
+
     @PutMapping("/{id}")
     public Workflow update(
             @PathVariable Long id,

@@ -418,6 +418,12 @@ public class DatabaseInitializer implements ApplicationRunner {
         jdbcTemplate.execute("""
                 CREATE INDEX IF NOT EXISTS idx_workflow_tenant ON workflow(tenant_id, status)
                 """);
+        // Webhook 触发：外部系统带 token 调用 /api/webhooks/{token} 触发工作流（M3-1）
+        jdbcTemplate.execute("ALTER TABLE workflow ADD COLUMN IF NOT EXISTS webhook_token VARCHAR(64)");
+        jdbcTemplate.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_webhook_token
+                ON workflow(webhook_token) WHERE webhook_token IS NOT NULL
+                """);
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS workflow_run (
                     id BIGSERIAL PRIMARY KEY,

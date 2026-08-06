@@ -29,10 +29,39 @@ async function load() {
   loading.value = true;
   try {
     workflows.value = await api('/api/workflows');
+    await loadWebhookUrls();
   } catch (err) {
     showToast(err.message, true);
   } finally {
     loading.value = false;
+  }
+}
+
+// webhook 工作流的调用 URL（token 单独查询）
+const webhookUrls = ref({});
+const origin = location.origin;
+
+async function loadWebhookUrls() {
+  const hooks = workflows.value.filter(w => w.triggerType === 'webhook');
+  webhookUrls.value = {};
+  for (const w of hooks) {
+    try {
+      const info = await api(`/api/workflows/${w.id}/webhook`);
+      if (info.url) webhookUrls.value[w.id] = info.url;
+    } catch (err) {
+      // 忽略单条查询失败
+    }
+  }
+}
+
+async function copyWebhookUrl(id) {
+  const url = webhookUrls.value[id];
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(location.origin + url);
+    showToast('Webhook 地址已复制');
+  } catch (err) {
+    showToast('复制失败，请手动复制：' + url, true);
   }
 }
 
@@ -176,11 +205,13 @@ onMounted(load);
           <select v-model="triggerType">
             <option value="manual">手动运行</option>
             <option value="cron">定时运行</option>
+            <option value="webhook">Webhook 调用</option>
           </select>
         </label>
         <label v-if="triggerType === 'cron'">cron 表达式
           <input v-model="cronExpr" placeholder="例如：0 0 9 * * *（每天 09:00）">
         </label>
+        <p v-else-if="triggerType === 'webhook'" class="hint">创建后将生成调用地址，外部系统 POST 即可触发此工作流。</p>
         <button class="primary" :disabled="creating" @click="createWorkflow">
           {{ creating ? '创建中…' : '确认创建流程' }}
         </button>
@@ -206,7 +237,13 @@ onMounted(load);
               <tr v-for="w in workflows" :key="w.id">
                 <td><b>{{ w.name }}</b></td>
                 <td class="desc">{{ w.description || '—' }}</td>
-                <td class="trigger">{{ w.triggerType === 'cron' ? '定时 ' + (w.cronExpr || '') : '手动' }}</td>
+                <td class="trigger">
+                {{ w.triggerType === 'cron' ? '定时 ' + (w.cronExpr || '') : (w.triggerType === 'webhook' ? 'Webhook' : '手动') }}
+                <span v-if="w.triggerType === 'webhook' && webhookUrls[w.id]" class="webhook-url" :title="origin + webhookUrls[w.id]">
+                  {{ webhookUrls[w.id] }}
+                  <button class="small" @click.stop="copyWebhookUrl(w.id)">复制</button>
+                </span>
+              </td>
                 <td><span class="status" :class="w.status">{{ w.status }}</span></td>
                 <td>
                   <button class="small" :disabled="runningId === w.id || w.status !== 'ENABLED'" @click="runWorkflow(w)">{{ runningId === w.id ? '运行中…' : '运行' }}</button>
@@ -274,6 +311,21 @@ onMounted(load);
   padding-top: 12px;
   display: grid;
   gap: 8px;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted, #888);
+}
+
+.webhook-url {
+  display: block;
+  font-size: 11px;
+  color: var(--muted, #888);
+  font-family: var(--mono, monospace);
+  word-break: break-all;
+  margin-top: 2px;
 }
 
 .draft-step {

@@ -61,6 +61,38 @@ public class WorkflowRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 按 webhook token 查工作流（外部调用触发用，token 全局唯一） */
+    public Workflow findByWebhookToken(String token) {
+        List<Workflow> rows = jdbcTemplate.query(
+                "SELECT " + COLUMNS + " FROM workflow WHERE webhook_token = ? AND status <> 'DELETED'",
+                this::map, token
+        );
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public String findWebhookToken(Long tenantId, Long id) {
+        List<String> rows = jdbcTemplate.query(
+                "SELECT webhook_token FROM workflow WHERE tenant_id = ? AND id = ?",
+                (rs, i) -> rs.getString(1),
+                tenantId, id
+        );
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public void saveWebhookToken(Long tenantId, Long id, String token) {
+        jdbcTemplate.update(
+                "UPDATE workflow SET webhook_token = ?, updated_time = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ?",
+                token, id, tenantId
+        );
+    }
+
+    public void clearWebhookToken(Long tenantId, Long id) {
+        jdbcTemplate.update(
+                "UPDATE workflow SET webhook_token = NULL, updated_time = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ?",
+                id, tenantId
+        );
+    }
+
     public Long insert(Workflow w) {
         return jdbcTemplate.queryForObject(
                 """

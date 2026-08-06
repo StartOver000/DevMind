@@ -48,6 +48,13 @@ public class WorkflowExecutor {
      * @return 执行结果（含状态与错误）
      */
     public WorkflowRun execute(Workflow workflow, Long userId, String triggerType) {
+        return execute(workflow, userId, triggerType, null);
+    }
+
+    /**
+     * 执行工作流，支持注入初始变量（webhook 触发时把请求体注入为 {{var}}）。
+     */
+    public WorkflowRun execute(Workflow workflow, Long userId, String triggerType, Map<String, Object> initialVars) {
         if (runRepository.hasRunning(workflow.tenantId(), workflow.id())) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流正在执行中，请稍后再试");
         }
@@ -57,6 +64,9 @@ public class WorkflowExecutor {
         }
         Long runId = runRepository.insertRun(workflow.id(), workflow.tenantId(), triggerType);
         Map<String, Object> vars = new LinkedHashMap<>();
+        if (initialVars != null) {
+            vars.putAll(initialVars);
+        }
         String failure = null;
         for (int i = 0; i < steps.size(); i++) {
             WorkflowStep step = steps.get(i);

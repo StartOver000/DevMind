@@ -185,4 +185,67 @@ class WorkflowServiceTest {
         assertThat(created.id()).isEqualTo(20L);
         assertThat(created.triggerType()).isEqualTo("cron");
     }
+
+    @Test
+    void createWebhookWorkflowGeneratesToken() {
+        registry.register(new com.devmind.agent.AgentTool() {
+            @Override public String name() { return "a"; }
+            @Override public String description() { return "x"; }
+            @Override public String parametersJsonSchema() { return "{}"; }
+            @Override public String execute(String argumentsJson, Long userId) { return "{}"; }
+        });
+        when(repository.insert(any())).thenReturn(30L);
+        when(repository.findById(1L, 30L)).thenReturn(new Workflow(
+                30L, 1L, "hook流程", null, "[{\"tool\":\"a\",\"params\":{}}]",
+                "webhook", null, "private", "ENABLED", 1L, null));
+        when(repository.findWebhookToken(1L, 30L)).thenReturn(null);
+
+        service.create(new WorkflowCreateRequest("hook流程", null,
+                "[{\"tool\":\"a\",\"params\":{}}]", "webhook", null, "private", "ENABLED"), 1L);
+
+        verify(repository).saveWebhookToken(eq(1L), eq(30L), anyString());
+    }
+
+    @Test
+    void createWebhookKeepsExistingToken() {
+        registry.register(new com.devmind.agent.AgentTool() {
+            @Override public String name() { return "a"; }
+            @Override public String description() { return "x"; }
+            @Override public String parametersJsonSchema() { return "{}"; }
+            @Override public String execute(String argumentsJson, Long userId) { return "{}"; }
+        });
+        when(repository.insert(any())).thenReturn(30L);
+        when(repository.findById(1L, 30L)).thenReturn(new Workflow(
+                30L, 1L, "hook流程", null, "[{\"tool\":\"a\",\"params\":{}}]",
+                "webhook", null, "private", "ENABLED", 1L, null));
+        when(repository.findWebhookToken(1L, 30L)).thenReturn("existing-token");
+
+        service.create(new WorkflowCreateRequest("hook流程", null,
+                "[{\"tool\":\"a\",\"params\":{}}]", "webhook", null, "private", "ENABLED"), 1L);
+
+        verify(repository, never()).saveWebhookToken(anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    void webhookInfoReturnsUrlForWebhookWorkflow() {
+        when(repository.findById(1L, 5L)).thenReturn(new Workflow(
+                5L, 1L, "hook流程", null, "[]", "webhook", null, "private", "ENABLED", 1L, null));
+        when(repository.findWebhookToken(1L, 5L)).thenReturn("abc123");
+
+        java.util.Map<String, Object> info = service.webhookInfo(5L, 1L);
+
+        assertThat(info.get("enabled")).isEqualTo(true);
+        assertThat(info.get("url")).isEqualTo("/api/webhooks/abc123");
+    }
+
+    @Test
+    void webhookInfoEmptyForManualWorkflow() {
+        when(repository.findById(1L, 5L)).thenReturn(new Workflow(
+                5L, 1L, "手动流程", null, "[]", "manual", null, "private", "ENABLED", 1L, null));
+
+        java.util.Map<String, Object> info = service.webhookInfo(5L, 1L);
+
+        assertThat(info.get("enabled")).isEqualTo(false);
+        assertThat(info.get("url")).isEqualTo("");
+    }
 }

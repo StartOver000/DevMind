@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -74,6 +75,7 @@ public class WorkflowService {
                 trigger, req.cronExpr(), scope, status, userId
         );
         Long id = repository.insert(workflow);
+        ensureWebhookToken(tenantId, id, trigger);
         log.info("创建工作流 {} (id={}, tenant={}, by user={})", req.name(), id, tenantId, userId);
         return requireWorkflow(tenantId, id);
     }
@@ -92,6 +94,7 @@ public class WorkflowService {
                 existing.createdBy(), existing.createdTime()
         );
         repository.update(tenantId, updated);
+        ensureWebhookToken(tenantId, id, updated.triggerType());
         log.info("更新工作流 {} (id={}, by user={})", req.name(), id, userId);
         return requireWorkflow(tenantId, id);
     }
@@ -131,6 +134,43 @@ public class WorkflowService {
     }
 
     public record WorkflowRunDetail(WorkflowRun run, List<WorkflowRunStep> steps) {
+    }
+
+    /** 工作流 webhook 触发信息（创建者/同租户可见）：token 与调用 URL */
+    public Map<String, Object> webhookInfo(Long workflowId, Long userId) {
+        Long tenantId = userService.tenantIdOf(userId);
+        Workflow workflow = requireWorkflow(tenantId, workflowId);
+        String token = repository.findWebhookToken(tenantId, workflowId);
+        boolean enabled = "webhook".equals(workflow.triggerType());
+        return Map.of(
+                "enabled", enabled,
+                "token", token == null ? "" : token,
+                "url", enabled && token != null && !token.isBlank() ? "/api/webhooks/" + token : ""
+        );
+    }
+
+    /** webhook 触发的工作流：生成/保留调用 token */
+    private void ensureWebhookToken(Long tenantId, Long workflowId, String triggerType) {
+        if (!"webhook".equals(triggerType)) {
+            return;
+        }
+        String existing = repository.findWebhookToken(tenantId, workflowId);
+        if (existing == null || existing.isBlank()) {
+            repository.saveWebhookToken(tenantId, workflowId, newWebhookToken());
+        }
+    }
+
+    private static final java.security.SecureRandom WEBHOOK_RANDOM = new java.security.SecureRandom();
+
+    /** 生成 32 位 hex 随机 token（外部调用凭据） */
+    private String newWebhookToken() {
+        byte[] bytes = new byte[16];
+        WEBHOOK_RANDOM.nextBytes(bytes);
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
     private Workflow requireWorkflow(Long tenantId, Long id) {

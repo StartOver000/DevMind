@@ -60,6 +60,7 @@ public class AgentService {
 
             可调用工具：
             - plan：多步任务的执行计划（≥3 个独立步骤时提交 plan，含 goal 与有序 steps，每步一个工具）。
+            - update_skill：用户指出某条技能规范不对/需要调整时，调用本工具修改技能内容。
             - kb_search：检索研发知识库，获取与问题相关的文档片段（含相似度分数）。
             - kb_info：查询当前用户可访问的知识库列表。
             - doc_list：查询指定知识库内的文档清单（文件名、状态、文本块数）。
@@ -73,6 +74,9 @@ public class AgentService {
             3. 工具结果不足以回答时，明确说明，可换关键词再次检索。
             4. 最终回答需引用来源文件名，格式 [来源: 文件名]。
             5. 已执行过工具的轮次：基于工具返回结果直接总结，不要重复调用相同工具。
+            6. 若当前任务参考了技能规范（system 中带【技能 ID x：名称】），且用户指出该规范有
+               问题/要修改（如"这个技能不对"、"把第 2 步改成先查 A"），调用 update_skill
+               （skillId 取规范中的 ID，instruction 为用户原话），修改后告知用户已更新。
             """;
 
     /** 会话结束后自动提取用户长期偏好的提取器提示词 */
@@ -113,6 +117,23 @@ public class AgentService {
             }
             """;
 
+    /**
+     * update_skill：对话式修正技能的内部工具（不注册 ToolRegistry，由本类特判处理）。
+     * 用户指出某条技能规范需要调整时，模型调用本工具提交 skillId 与修改指令。
+     */
+    public static final String UPDATE_SKILL_TOOL_NAME = "update_skill";
+    private static final String UPDATE_SKILL_TOOL_DESC = "修正一条技能规范：当用户指出某条技能（system 中带【技能 ID x：名称】）有问题/需要调整时，传入该技能的 ID 和用户的修改要求，本工具会更新技能内容。";
+    private static final String UPDATE_SKILL_TOOL_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "skillId": { "type": "integer", "description": "要修改的技能 ID" },
+                "instruction": { "type": "string", "description": "用户的修改意见/要求（原话即可）" }
+              },
+              "required": ["skillId", "instruction"]
+            }
+            """;
+
     private final ChatRouter chatRouter;
     private final ToolRegistry toolRegistry;
     private final AgentConversationRepository conversationRepository;
@@ -129,6 +150,8 @@ public class AgentService {
     private final ChatFileStore chatFileStore;
     /** 技能匹配器（Guide-51）：可选注入，测试/无技能时不启用 */
     private SkillMatcher skillMatcher;
+    /** 技能服务（对话式修正 update_skill）：可选注入，测试环境不启用 */
+    private com.devmind.skill.SkillService skillService;
     private final ObjectMapper objectMapper = new ObjectMapper();
     /** 单工具执行超时（秒） */
     private static final int TOOL_TIMEOUT_SECONDS = 20;
@@ -181,6 +204,12 @@ public class AgentService {
     @Autowired(required = false)
     public void setSkillMatcher(SkillMatcher skillMatcher) {
         this.skillMatcher = skillMatcher;
+    }
+
+    /** 技能服务可选注入（对话式修正 update_skill 用） */
+    @Autowired(required = false)
+    public void setSkillService(com.devmind.skill.SkillService skillService) {
+        this.skillService = skillService;
     }
 
     /** 匹配当前请求命中的技能规范（Guide-51 P1）：未注入 matcher 或未命中时返回空 */
@@ -285,6 +314,8 @@ public class AgentService {
                 .toList());
         // 注入内部计划工具（Plan-Execute）：模型多步任务时先提交计划，由本类特判执行
         tools.add(new AiModelGateway.ToolSpec(PLAN_TOOL_NAME, PLAN_TOOL_DESC, PLAN_TOOL_SCHEMA));
+        // 注入技能修正工具（对话式调整）：模型发现用户要改技能时特判执行
+        tools.add(new AiModelGateway.ToolSpec(UPDATE_SKILL_TOOL_NAME, UPDATE_SKILL_TOOL_DESC, UPDATE_SKILL_TOOL_SCHEMA));
 
         try {
             // 计划失败后是否还能引导模型重规划（限 1 次，避免死循环）
@@ -330,6 +361,10 @@ public class AgentService {
                         if (!executePlan(tc, userId, messages, trace, onTrace, conversationId)) {
                             planAllOk = false;
                         }
+                    } else if (UPDATE_SKILL_TOOL_NAME.equals(tc.name())) {
+                        // 对话式修正技能：特判执行，结果回填
+                        ToolExecOutcome outcome = executeUpdateSkill(tc, userId);
+                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
                     } else {
                         parallelCalls.add(tc);
                         futures.put(tc, toolExecutor.submit(() -> executeToolCore(tc, userId)));
@@ -522,6 +557,40 @@ public class AgentService {
         }
         meterRegistry.counter("devmind.agent.plan", "result", allOk ? "success" : "partial").increment();
         return allOk;
+    }
+
+    /**
+     * 对话式修正技能（update_skill 内部工具）：解析 skillId + instruction，
+     * 交给 SkillService 用 LLM 重写技能内容。返回执行结果（供模型告知用户）。
+     */
+    private ToolExecOutcome executeUpdateSkill(AiModelGateway.ToolCall tc, Long userId) {
+        if (skillService == null) {
+            return new ToolExecOutcome(
+                    "{\"error\": \"技能服务不可用，请稍后再试\"}", false, 0);
+        }
+        long start = System.currentTimeMillis();
+        try {
+            JsonNode root = objectMapper.readTree(tc.argumentsJson() == null ? "{}" : tc.argumentsJson());
+            long skillId = root.path("skillId").asLong(0);
+            String instruction = root.path("instruction").asText("").trim();
+            if (skillId <= 0) {
+                return new ToolExecOutcome("{\"error\": \"缺少有效的 skillId\"}", false,
+                        System.currentTimeMillis() - start);
+            }
+            if (instruction.isEmpty()) {
+                return new ToolExecOutcome("{\"error\": \"缺少修改指令 instruction\"}", false,
+                        System.currentTimeMillis() - start);
+            }
+            com.devmind.skill.Skill updated = skillService.updateByInstruction(userId, skillId, instruction);
+            meterRegistry.counter("devmind.agent.skill_update_total").increment();
+            String summary = "已更新技能【" + updated.name() + "】（ID " + updated.id() + "）。新内容："
+                    + truncate(updated.content(), MAX_TOOL_RESULT_CHARS);
+            return new ToolExecOutcome(summary, true, System.currentTimeMillis() - start);
+        } catch (Exception ex) {
+            String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+            return new ToolExecOutcome("{\"error\": \"技能更新失败: " + message + "\"}", false,
+                    System.currentTimeMillis() - start);
+        }
     }
 
     /** 解析 plan 工具参数为有序步骤列表；无法解析（非数组/为空/工具名为空）返回 null */

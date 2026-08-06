@@ -514,6 +514,7 @@ public class DatabaseInitializer implements ApplicationRunner {
                     source VARCHAR(16) NOT NULL DEFAULT 'manual',  -- manual | from_workflow | from_chat
                     source_workflow_id BIGINT,
                     enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    hit_count BIGINT NOT NULL DEFAULT 0,
                     created_by BIGINT NOT NULL,
                     created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -523,6 +524,7 @@ public class DatabaseInitializer implements ApplicationRunner {
                 CREATE INDEX IF NOT EXISTS idx_skill_tenant_scope
                 ON skill(tenant_id, scope, enabled)
                 """);
+        jdbcTemplate.execute("ALTER TABLE skill ADD COLUMN IF NOT EXISTS hit_count BIGINT NOT NULL DEFAULT 0");;
         log.info("database initialized, embedding dimension={}", dimensions);
     }
 }

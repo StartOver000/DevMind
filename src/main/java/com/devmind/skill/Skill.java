@@ -16,6 +16,7 @@ public record Skill(
         String source,         // manual | from_workflow | from_chat
         Long sourceWorkflowId, // 从工作流沉淀时的来源
         boolean enabled,
+        Long hitCount,         // 命中次数（Agent 注入统计）
         Long createdBy,
         String createdTime
 ) {
@@ -25,6 +26,6 @@ public record Skill(
             String applyTo, String content, String source, Long sourceWorkflowId, Long createdBy
     ) {
         return new Skill(null, tenantId, scope, name, description, applyTo,
-                content, source, sourceWorkflowId, true, createdBy, null);
+                content, source, sourceWorkflowId, true, 0L, createdBy, null);
     }
 }

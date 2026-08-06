@@ -343,6 +343,57 @@ class AgentServiceTest {
     }
 
     @Test
+    void updateSkillInternalToolRewritesSkillAndReports() {
+        // 用户指出技能不对 → 模型调用 update_skill → SkillService 重写内容 → 模型告知已更新
+        AgentTool tool = kbTool();
+        com.devmind.skill.SkillService skillService = org.mockito.Mockito.mock(com.devmind.skill.SkillService.class);
+        com.devmind.skill.Skill updated = new com.devmind.skill.Skill(3L, 1L, "team", "月报规范", "d",
+                "月报", "新规范：必须含利润归因。", "manual", null, true, 1L, 1L, null);
+        when(skillService.updateByInstruction(eq(1L), eq(3L), anyString())).thenReturn(updated);
+
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        service.setSkillService(skillService);
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        String updateArgs = "{\"skillId\":3,\"instruction\":\"把第 2 步改成先查利润再查费用\"}";
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("u1", AgentService.UPDATE_SKILL_TOOL_NAME, updateArgs))),
+                        new AiModelGateway.ChatResult("已按你的要求更新技能「月报规范」。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "这个月报技能不对，第2步应该先查利润", null), 1L);
+
+        assertThat(response.answer()).contains("月报规范");
+        verify(skillService).updateByInstruction(eq(1L), eq(3L), anyString());
+        // 轨迹含 update_skill 且成功
+        assertThat(response.toolTrace()).hasSize(1);
+        assertThat(response.toolTrace().get(0).tool()).isEqualTo(AgentService.UPDATE_SKILL_TOOL_NAME);
+        assertThat(response.toolTrace().get(0).ok()).isTrue();
+    }
+
+    @Test
+    void updateSkillWithoutServiceReturnsErrorButContinues() {
+        // 未注入 SkillService（如测试默认）时，update_skill 返回错误但不中断链路
+        AgentTool tool = kbTool();
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("u1", AgentService.UPDATE_SKILL_TOOL_NAME,
+                                        "{\"skillId\":3,\"instruction\":\"改一下\"}"))),
+                        new AiModelGateway.ChatResult("技能服务暂不可用，请稍后再试。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "改技能", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("技能服务暂不可用，请稍后再试。");
+        assertThat(response.toolTrace()).hasSize(1);
+        assertThat(response.toolTrace().get(0).ok()).isFalse();
+    }
+
+    @Test
     void normalToolPathStillWorksWhenPlanIsNotUsed() {
         AgentTool tool = kbTool();
         when(tool.execute(anyString(), any())).thenReturn("[{\"documentName\":\"a.md\",\"content\":\"结果\"}]");

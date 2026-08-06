@@ -23,7 +23,7 @@ public class SkillRepository {
 
     private static final String COLUMNS = """
             id, tenant_id, scope, name, description, apply_to, content, source,
-            source_workflow_id, enabled, created_by, created_time::text
+            source_workflow_id, enabled, hit_count, created_by, created_time::text
             """;
 
     private Skill map(ResultSet rs, int rowNum) throws SQLException {
@@ -38,6 +38,7 @@ public class SkillRepository {
                 rs.getString("source"),
                 (Long) rs.getObject("source_workflow_id"),
                 rs.getBoolean("enabled"),
+                rs.getLong("hit_count"),
                 (Long) rs.getObject("created_by"),
                 rs.getString("created_time")
         );
@@ -111,7 +112,7 @@ public class SkillRepository {
         return new Skill(
                 id, skill.tenantId(), skill.scope(), skill.name(), skill.description(),
                 skill.applyTo(), skill.content(), skill.source(), skill.sourceWorkflowId(),
-                skill.enabled(), skill.createdBy(), null
+                skill.enabled(), 0L, skill.createdBy(), null
         );
     }
 
@@ -122,6 +123,22 @@ public class SkillRepository {
                 WHERE id = ? AND tenant_id = ?
                 """, skill.scope(), skill.name(), skill.description(),
                 skill.applyTo(), skill.content(), skill.enabled(), skill.id(), skill.tenantId());
+    }
+
+    /** 仅更新技能内容（对话式修正，保留名称/触发词/统计） */
+    public void updateContent(Long tenantId, Long id, String content) {
+        jdbcTemplate.update("""
+                UPDATE skill SET content = ?, updated_time = CURRENT_TIMESTAMP
+                WHERE id = ? AND tenant_id = ?
+                """, content, id, tenantId);
+    }
+
+    /** 命中次数自增（Agent 注入时统计，用于发现僵尸/热门技能） */
+    public void incrementHit(Long tenantId, Long id) {
+        jdbcTemplate.update("""
+                UPDATE skill SET hit_count = hit_count + 1
+                WHERE id = ? AND tenant_id = ?
+                """, id, tenantId);
     }
 
     public void toggle(Long tenantId, Long id, boolean enabled) {

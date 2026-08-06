@@ -39,7 +39,7 @@ class SkillServiceTest {
     void createsSkill() {
         setUp();
         Skill created = new Skill(10L, 1L, "team", "月报规范", "desc", "月报",
-                "内容", "manual", null, true, 1L, null);
+                "内容", "manual", null, true, 0L, 1L, null);
         when(repository.insert(org.mockito.ArgumentMatchers.any())).thenReturn(created);
 
         Skill result = service.create(1L, "team", "月报规范", "desc", "月报", "内容", null, null);
@@ -142,5 +142,48 @@ class SkillServiceTest {
         SkillService.SkillDraft draft = service.draftFromChat(1L, longQuestion, List.of(), "回答");
 
         assertThat(draft.name().length()).isLessThanOrEqualTo(30);
+    }
+
+    @Test
+    void updateByInstructionRewritesContent() {
+        setUp();
+        Skill existing = new Skill(3L, 1L, "team", "月报规范", "d", "月报",
+                "旧规范内容", "manual", null, true, 0L, 1L, null);
+        when(repository.findById(1L, 3L)).thenReturn(existing);
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult("新规范：必须含同比环比和利润归因。", "m", 0, 0));
+        Skill updated = new Skill(3L, 1L, "team", "月报规范", "d", "月报",
+                "新规范：必须含同比环比和利润归因。", "manual", null, true, 1L, 1L, null);
+        when(repository.findById(1L, 3L)).thenReturn(existing, updated);
+
+        Skill result = service.updateByInstruction(1L, 3L, "第 2 步改成先查利润再查费用");
+
+        assertThat(result.content()).contains("利润归因");
+        verify(repository).updateContent(1L, 3L, "新规范：必须含同比环比和利润归因。");
+    }
+
+    @Test
+    void updateByInstructionRejectsBlank() {
+        setUp();
+        assertThatThrownBy(() -> service.updateByInstruction(1L, 3L, "  "))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("指令");
+    }
+
+    @Test
+    void updateByInstructionRejectsMissingSkill() {
+        setUp();
+        when(repository.findById(1L, 99L)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.updateByInstruction(1L, 99L, "改一下"))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("技能不存在");
+    }
+
+    @Test
+    void recordHitIncrements() {
+        setUp();
+        service.recordHit(1L, 3L);
+        verify(repository).incrementHit(1L, 3L);
     }
 }

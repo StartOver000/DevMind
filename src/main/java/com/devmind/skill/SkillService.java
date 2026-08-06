@@ -7,6 +7,8 @@ import com.devmind.common.ErrorCode;
 import com.devmind.user.UserService;
 import com.devmind.workflow.Workflow;
 import com.devmind.workflow.WorkflowRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -17,6 +19,8 @@ import java.util.List;
  */
 @Service
 public class SkillService {
+
+    private static final Logger log = LoggerFactory.getLogger(SkillService.class);
 
     private final SkillRepository repository;
     private final UserService userService;
@@ -82,7 +86,7 @@ public class SkillService {
         if (name != null && !name.isBlank()) {
             existing = new Skill(existing.id(), existing.tenantId(), existing.scope(), name.trim(),
                     existing.description(), existing.applyTo(), existing.content(), existing.source(),
-                    existing.sourceWorkflowId(), existing.enabled(), existing.createdBy(), existing.createdTime());
+                    existing.sourceWorkflowId(), existing.enabled(), existing.hitCount(), existing.createdBy(), existing.createdTime());
         }
         if (description != null) {
             existing = withField(existing, "description", description);
@@ -96,7 +100,7 @@ public class SkillService {
         String newScope = scope == null ? existing.scope() : scope;
         Skill updated = new Skill(existing.id(), existing.tenantId(), newScope, existing.name(),
                 existing.description(), existing.applyTo(), existing.content(), existing.source(),
-                existing.sourceWorkflowId(), enabled, existing.createdBy(), existing.createdTime());
+                existing.sourceWorkflowId(), enabled, existing.hitCount(), existing.createdBy(), existing.createdTime());
         repository.update(updated);
         return repository.findById(tenantId, id);
     }
@@ -105,14 +109,61 @@ public class SkillService {
         return switch (field) {
             case "description" -> new Skill(skill.id(), skill.tenantId(), skill.scope(), skill.name(),
                     value, skill.applyTo(), skill.content(), skill.source(), skill.sourceWorkflowId(),
-                    skill.enabled(), skill.createdBy(), skill.createdTime());
+                    skill.enabled(), skill.hitCount(), skill.createdBy(), skill.createdTime());
             case "applyTo" -> new Skill(skill.id(), skill.tenantId(), skill.scope(), skill.name(),
                     skill.description(), value, skill.content(), skill.source(), skill.sourceWorkflowId(),
-                    skill.enabled(), skill.createdBy(), skill.createdTime());
+                    skill.enabled(), skill.hitCount(), skill.createdBy(), skill.createdTime());
             default -> new Skill(skill.id(), skill.tenantId(), skill.scope(), skill.name(),
                     skill.description(), skill.applyTo(), value, skill.source(), skill.sourceWorkflowId(),
-                    skill.enabled(), skill.createdBy(), skill.createdTime());
+                    skill.enabled(), skill.hitCount(), skill.createdBy(), skill.createdTime());
         };
+    }
+
+    /**
+     * 对话式修正技能（Guide-51 对话闭环）：基于技能现有内容 + 用户的修改指令，
+     * 调用 LLM 生成新的规范内容并更新。供 Agent 的 update_skill 内部工具调用。
+     */
+    public Skill updateByInstruction(Long userId, Long id, String instruction) {
+        if (instruction == null || instruction.isBlank()) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "修改指令不能为空");
+        }
+        Long tenantId = userService.tenantIdOf(userId);
+        Skill existing = repository.findById(tenantId, id);
+        if (existing == null) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "技能不存在: " + id);
+        }
+        requireManageable(existing, userId);
+        String prompt = """
+                你是技能修正助手。用户对一份技能规范提出修改意见，请据此生成修正后的完整规范。
+                要求：
+                1. 保持原规范的风格与结构（适用场景 + 执行要点）；
+                2. 只应用用户明确要求的修改，其他部分保持不变；
+                3. 全部使用中文，不超过 400 字；
+                4. 只输出修正后的规范内容本身，不要解释或标题包裹。
+
+                技能名称：%s
+                当前规范：%s
+
+                用户的修改意见：%s
+                """.formatted(existing.name(), existing.content(), instruction.trim());
+        AiModelGateway.ChatResult result = chatRouter.chat(
+                "你是一个技能修正助手，根据用户意见修改技能规范。",
+                prompt
+        );
+        String content = extractSkillContent(result);
+        repository.updateContent(tenantId, id, content);
+        log.info("对话式修正技能成功 (skill={}, user={})", id, userId);
+        return repository.findById(tenantId, id);
+    }
+
+    /** 技能命中统计（Agent 注入时自增） */
+    public void recordHit(Long userId, Long id) {
+        try {
+            Long tenantId = userService.tenantIdOf(userId);
+            repository.incrementHit(tenantId, id);
+        } catch (Exception ex) {
+            log.warn("技能命中统计失败: {}", ex.getMessage());
+        }
     }
 
     public void toggle(Long userId, Long id, boolean enabled) {

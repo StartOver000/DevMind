@@ -30,6 +30,7 @@ public class SkillMatcher {
     /**
      * 匹配当前请求命中的技能规范文本（团队 + 本人 personal）。
      * 匹配规则：问题文本包含 apply_to 中的任一关键词（按 | 分隔）；未命中不注入。
+     * 注入文本带技能 ID（供 update_skill 定位），并自增命中统计。
      */
     public List<String> match(String question, Long tenantId, Long userId) {
         List<String> result = new ArrayList<>();
@@ -48,7 +49,8 @@ public class SkillMatcher {
                     if (content.length() > MAX_CONTENT_CHARS) {
                         content = content.substring(0, MAX_CONTENT_CHARS);
                     }
-                    result.add("【技能：" + skill.name() + "】\n" + content);
+                    result.add("【技能 ID " + skill.id() + "：" + skill.name() + "】\n" + content);
+                    repository.incrementHit(tenantId, skill.id());
                 }
             }
         } catch (Exception ex) {

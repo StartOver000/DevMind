@@ -12,7 +12,7 @@ class SkillMatcherTest {
 
     private Skill skill(Long id, String scope, String name, String applyTo, String content) {
         return new Skill(id, 1L, scope, name, "desc", applyTo, content,
-                "manual", null, true, 1L, null);
+                "manual", null, true, 0L, 1L, null);
     }
 
     @Test
@@ -27,6 +27,10 @@ class SkillMatcherTest {
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0)).contains("月报规范").contains("同比环比");
+        // 注入文本带技能 ID（供 update_skill 定位）
+        assertThat(result.get(0)).contains("技能 ID 1");
+        // 命中自增
+        org.mockito.Mockito.verify(repository).incrementHit(1L, 1L);
     }
 
     @Test

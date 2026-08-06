@@ -174,6 +174,7 @@ public class ChatRouter {
                     .tag("provider", provider.name())
                     .register(meterRegistry)
                     .increment();
+            log.info("主模型失败，备用 Provider {} 接管成功", provider.name());
             return result;
         } catch (Exception error) {
             circuitStateStore.recordFailure(key, CIRCUIT_FAILURE_THRESHOLD, isRateLimited(error), CIRCUIT_OPEN_MS);
@@ -200,7 +201,7 @@ public class ChatRouter {
         return "provider:" + name;
     }
 
-    /** Provider 调用退避重试（免费模型常有瞬时限流） */
+    /** Provider 调用退避重试（免费模型常有瞬时限流）；限流（429）为持续状态，快速放弃不重试 */
     private AiModelGateway.ChatResult invokeWithRetry(Supplier<AiModelGateway.ChatResult> action, String name) {
         Exception last = null;
         for (int attempt = 1; attempt <= FALLBACK_MAX_ATTEMPTS; attempt++) {
@@ -209,6 +210,10 @@ public class ChatRouter {
             } catch (Exception ex) {
                 last = ex;
                 log.warn("备用 Provider {} 调用失败 attempt={}: {}", name, attempt, ex.getMessage());
+                String message = ex.getMessage() == null ? "" : ex.getMessage();
+                if (message.contains("429") || message.contains("Too Many")) {
+                    break;
+                }
             }
             sleep(1000L * attempt);
         }

@@ -1,0 +1,110 @@
+package com.devmind.workflow;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.List;
+
+/** 工作流执行记录仓储（workflow_run / workflow_run_step） */
+@Repository
+public class WorkflowRunRepository {
+
+    private final JdbcTemplate jdbcTemplate;
+
+    public WorkflowRunRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    private WorkflowRun mapRun(ResultSet rs, int rowNum) throws SQLException {
+        return new WorkflowRun(
+                rs.getLong("id"),
+                rs.getLong("workflow_id"),
+                rs.getLong("tenant_id"),
+                rs.getString("trigger_type"),
+                rs.getString("status"),
+                rs.getDouble("total_cost"),
+                rs.getString("started_at"),
+                rs.getString("finished_at"),
+                rs.getString("error")
+        );
+    }
+
+    private WorkflowRunStep mapStep(ResultSet rs, int rowNum) throws SQLException {
+        return new WorkflowRunStep(
+                rs.getLong("id"),
+                rs.getLong("run_id"),
+                rs.getInt("step_index"),
+                rs.getString("tool_name"),
+                rs.getString("input_json"),
+                rs.getString("output_json"),
+                rs.getString("status"),
+                rs.getLong("cost_ms"),
+                rs.getString("error"),
+                rs.getString("created_time")
+        );
+    }
+
+    public boolean hasRunning(Long tenantId, Long workflowId) {
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM workflow_run WHERE workflow_id = ? AND tenant_id = ? AND status = 'RUNNING'",
+                Integer.class, workflowId, tenantId
+        );
+        return count != null && count > 0;
+    }
+
+    public Long insertRun(Long workflowId, Long tenantId, String triggerType) {
+        return jdbcTemplate.queryForObject(
+                "INSERT INTO workflow_run (workflow_id, tenant_id, trigger_type, status) VALUES (?, ?, ?, 'RUNNING') RETURNING id",
+                Long.class, workflowId, tenantId, triggerType
+        );
+    }
+
+    public void finishRun(Long runId, String status, String error) {
+        jdbcTemplate.update(
+                "UPDATE workflow_run SET status = ?, error = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+                status, error, runId
+        );
+    }
+
+    public void insertStep(Long runId, int index, String toolName, String inputJson, String outputJson,
+                           String status, long costMs, String error) {
+        jdbcTemplate.update(
+                """
+                INSERT INTO workflow_run_step (run_id, step_index, tool_name, input_json,
+                                               output_json, status, cost_ms, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                runId, index, toolName, inputJson, outputJson, status, costMs, error
+        );
+    }
+
+    public WorkflowRun findRun(Long tenantId, Long runId) {
+        List<WorkflowRun> rows = jdbcTemplate.query(
+                "SELECT id, workflow_id, tenant_id, trigger_type, status, total_cost, " +
+                        "started_at::text, finished_at::text, error FROM workflow_run " +
+                        "WHERE id = ? AND tenant_id = ?",
+                this::mapRun, runId, tenantId
+        );
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public List<WorkflowRun> listRuns(Long tenantId, Long workflowId, int limit) {
+        return jdbcTemplate.query(
+                "SELECT id, workflow_id, tenant_id, trigger_type, status, total_cost, " +
+                        "started_at::text, finished_at::text, error FROM workflow_run " +
+                        "WHERE workflow_id = ? AND tenant_id = ? ORDER BY id DESC LIMIT ?",
+                this::mapRun, workflowId, tenantId, limit
+        );
+    }
+
+    public List<WorkflowRunStep> listSteps(Long runId) {
+        return jdbcTemplate.query(
+                "SELECT id, run_id, step_index, tool_name, input_json, output_json, " +
+                        "status, cost_ms, error, created_time::text FROM workflow_run_step " +
+                        "WHERE run_id = ? ORDER BY step_index",
+                this::mapStep, runId
+        );
+    }
+}

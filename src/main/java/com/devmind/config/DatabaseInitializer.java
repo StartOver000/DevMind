@@ -363,6 +363,59 @@ public class DatabaseInitializer implements ApplicationRunner {
                 ON tool_definition(name)
                 WHERE status <> 'DELETED'
                 """);
+        // 工作流：业务人员编排的多步骤自动化（M1-T4）
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS workflow (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id BIGINT NOT NULL DEFAULT 1,
+                    name VARCHAR(100) NOT NULL,
+                    description VARCHAR(500),
+                    steps_json TEXT NOT NULL,
+                    trigger_type VARCHAR(20) NOT NULL DEFAULT 'manual',
+                    cron_expr VARCHAR(100),
+                    scope VARCHAR(20) NOT NULL DEFAULT 'private',
+                    status VARCHAR(20) NOT NULL DEFAULT 'ENABLED',
+                    created_by BIGINT,
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE INDEX IF NOT EXISTS idx_workflow_tenant ON workflow(tenant_id, status)
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS workflow_run (
+                    id BIGSERIAL PRIMARY KEY,
+                    workflow_id BIGINT NOT NULL,
+                    tenant_id BIGINT NOT NULL DEFAULT 1,
+                    trigger_type VARCHAR(20) NOT NULL DEFAULT 'manual',
+                    status VARCHAR(20) NOT NULL DEFAULT 'RUNNING',
+                    total_cost NUMERIC(12, 6) NOT NULL DEFAULT 0,
+                    started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    error VARCHAR(2000)
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE INDEX IF NOT EXISTS idx_workflow_run_workflow ON workflow_run(workflow_id, id)
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS workflow_run_step (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_id BIGINT NOT NULL,
+                    step_index INT NOT NULL,
+                    tool_name VARCHAR(100) NOT NULL,
+                    input_json TEXT,
+                    output_json TEXT,
+                    status VARCHAR(20) NOT NULL,
+                    cost_ms BIGINT NOT NULL DEFAULT 0,
+                    error VARCHAR(2000),
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE INDEX IF NOT EXISTS idx_workflow_run_step_run ON workflow_run_step(run_id, step_index)
+                """);
         log.info("database initialized, embedding dimension={}", dimensions);
     }
 }

@@ -294,6 +294,35 @@ class AgentServiceTest {
     }
 
     @Test
+    void executesMultipleToolCallsInParallelWithOrderedResults() {
+        AgentTool tool = kbTool();
+        when(tool.execute(anyString(), any())).thenReturn("[{\"documentName\":\"a.md\",\"content\":\"结果\"}]");
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        // 模型一轮同时返回 2 个工具调用 → 并发执行，按原顺序回填并记录轨迹
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(
+                                        new AiModelGateway.ToolCall("c1", "kb_search", "{\"question\":\"A\"}"),
+                                        new AiModelGateway.ToolCall("c2", "kb_search", "{\"question\":\"B\"}")
+                                )),
+                        new AiModelGateway.ChatResult("并行任务回答", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "并行任务", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("并行任务回答");
+        // 2 个工具都执行且轨迹按原顺序
+        assertThat(response.toolTrace()).hasSize(2);
+        assertThat(response.toolTrace().get(0).tool()).isEqualTo("kb_search");
+        assertThat(response.toolTrace().get(0).ok()).isTrue();
+        assertThat(response.toolTrace().get(1).tool()).isEqualTo("kb_search");
+        assertThat(response.toolTrace().get(1).ok()).isTrue();
+        verify(tool, org.mockito.Mockito.times(2)).execute(anyString(), any());
+    }
+
+    @Test
     void degradesToLocalRagWhenModelFails() {
         AgentService service = service(new ToolRegistry(List.of(kbTool())));
         when(conversationRepository.create(any(), anyString())).thenReturn(100L);

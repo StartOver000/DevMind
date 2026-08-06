@@ -42,8 +42,8 @@ public class AgentService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentService.class);
 
-    /** 最大工具调用轮数（防死循环） */
-    private static final int MAX_TOOL_ROUNDS = 3;
+    /** 最大工具调用轮数（防死循环；多步任务 + 重试后仍应在此内收尾） */
+    private static final int MAX_TOOL_ROUNDS = 5;
     /** 工具结果回填给模型的最大字符数 */
     private static final int MAX_TOOL_RESULT_CHARS = 2000;
     /** 每次会话结束自动提取长期记忆的最大条数 */
@@ -55,6 +55,7 @@ public class AgentService {
             你是 DevMind 研发助手 Agent。根据用户问题自主决定调用哪些工具获取信息，再给出最终回答。
 
             可调用工具：
+            - plan：多步任务的执行计划（≥3 个独立步骤时提交 plan，含 goal 与有序 steps，每步一个工具）。
             - kb_search：检索研发知识库，获取与问题相关的文档片段（含相似度分数）。
             - kb_info：查询当前用户可访问的知识库列表。
             - doc_list：查询指定知识库内的文档清单（文件名、状态、文本块数）。
@@ -63,9 +64,11 @@ public class AgentService {
 
             规则：
             1. 先调用需要的工具，拿到结果后再回答；不要编造工具结果。
-            2. 多维度问题（如 SQL 性能 + 优化方案）可依次调用多个工具。
-            3. 工具结果不足以回答时，明确说明。
+            2. 多维度问题（如 SQL 性能 + 优化方案）可依次调用多个工具；
+               需要 ≥3 个独立步骤时，先提交 plan 计划，再按步骤执行。
+            3. 工具结果不足以回答时，明确说明，可换关键词再次检索。
             4. 最终回答需引用来源文件名，格式 [来源: 文件名]。
+            5. 已执行过工具的轮次：基于工具返回结果直接总结，不要重复调用相同工具。
             """;
 
     /** 会话结束后自动提取用户长期偏好的提取器提示词 */
@@ -271,9 +274,11 @@ public class AgentService {
                         ))
                         .toList());
                 messages.add(assistantMsg);
-                // 逐个执行：plan 走计划执行器，其余走工具执行（校验+超时）
+                // 工具执行：plan 走计划执行器（顺序执行）；普通工具并发执行（结果按原顺序回填）
                 boolean hasPlan = false;
                 boolean planAllOk = true;
+                List<AiModelGateway.ToolCall> parallelCalls = new ArrayList<>();
+                Map<AiModelGateway.ToolCall, java.util.concurrent.Future<ToolExecOutcome>> futures = new LinkedHashMap<>();
                 for (AiModelGateway.ToolCall tc : toolCalls) {
                     if (PLAN_TOOL_NAME.equals(tc.name())) {
                         hasPlan = true;
@@ -281,7 +286,21 @@ public class AgentService {
                             planAllOk = false;
                         }
                     } else {
-                        trace.add(executeToolCall(tc, userId, messages, conversationId, onTrace));
+                        parallelCalls.add(tc);
+                        futures.put(tc, toolExecutor.submit(() -> executeToolCore(tc, userId)));
+                    }
+                }
+                // 并发工具：按 tool_calls 原顺序等待结果并回填，保证 tool 消息与调用一一对应
+                for (AiModelGateway.ToolCall tc : parallelCalls) {
+                    try {
+                        ToolExecOutcome outcome = futures.get(tc)
+                                .get(TOOL_TIMEOUT_SECONDS + 5L, java.util.concurrent.TimeUnit.SECONDS);
+                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
+                    } catch (Exception ex) {
+                        // 理论不可达：executeToolCore 内部已捕获所有异常并返回失败结果
+                        ToolExecOutcome outcome = new ToolExecOutcome(
+                                "{\"error\": \"工具执行异常: " + ex.getMessage() + "\"}", false, 0);
+                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
                     }
                 }
                 // 计划中有步骤失败：提示模型重新规划（仅一次），下一轮模型可提交新计划或直接回答
@@ -304,9 +323,73 @@ public class AgentService {
         }
     }
 
+    /** 工具执行结果（纯执行产物，不含消息回填，可跨线程安全传递） */
+    private record ToolExecOutcome(String output, boolean ok, long costMs) {
+    }
+
     /**
-     * 执行单个工具调用：先校验（工具名/参数 JSON），非法回填错误不中断；合法则带超时执行；
-     * 结果回填到 messages，返回轨迹项。
+     * 执行单个工具调用：先校验（工具名/参数 JSON），非法回填错误不中断；合法则带超时执行。
+     * 不碰共享状态（messages/trace），供并行执行使用。
+     */
+    private ToolExecOutcome executeToolCore(AiModelGateway.ToolCall tc, Long userId) {
+        long start = System.currentTimeMillis();
+        ToolCallValidator.Validation validation = toolCallValidator.validate(tc.name(), tc.argumentsJson());
+        if (!validation.valid()) {
+            meterRegistry.counter("devmind.agent.tool_invalid", "reason", "invalid").increment();
+            log.warn("agent 工具调用校验失败: {}", validation.error());
+            return new ToolExecOutcome("{\"error\": \"工具调用无效: " + validation.error() + "\"}",
+                    false, System.currentTimeMillis() - start);
+        }
+        try {
+            java.util.concurrent.Future<String> future = toolExecutor.submit(() ->
+                    toolRegistry.execute(validation.toolName(), validation.argumentsJson(), userId));
+            String output = future.get(TOOL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+            return new ToolExecOutcome(output, true, System.currentTimeMillis() - start);
+        } catch (java.util.concurrent.TimeoutException ex) {
+            meterRegistry.counter("devmind.agent.tool_timeout").increment();
+            log.warn("agent 工具 {} 执行超时（{}s）", tc.name(), TOOL_TIMEOUT_SECONDS);
+            return new ToolExecOutcome("{\"error\": \"工具执行超时\"}",
+                    false, System.currentTimeMillis() - start);
+        } catch (Exception ex) {
+            log.warn("agent 工具 {} 执行失败: {}", tc.name(), ex.getMessage());
+            return new ToolExecOutcome("{\"error\": \"工具执行失败: " + ex.getMessage() + "\"}",
+                    false, System.currentTimeMillis() - start);
+        }
+    }
+
+    /**
+     * 把工具执行结果回填到 messages 并记录轨迹（主线程串行调用，保证消息顺序）。
+     * 执行细节：{@link #executeToolCall}
+     */
+    private ToolTraceItem backfillTool(
+            AiModelGateway.ToolCall tc,
+            ToolExecOutcome outcome,
+            List<Map<String, Object>> messages,
+            Long conversationId,
+            Consumer<ToolTraceItem> onTrace
+    ) {
+        String output = truncate(outcome.output(), MAX_TOOL_RESULT_CHARS);
+        messages.add(Map.of(
+                "role", "tool",
+                "tool_call_id", tc.id(),
+                "content", output
+        ));
+        ToolTraceItem item = new ToolTraceItem(
+                tc.name(),
+                truncate(tc.argumentsJson(), 120),
+                outcome.ok(),
+                outcome.costMs()
+        );
+        if (onTrace != null) {
+            onTrace.accept(item);
+        }
+        persistTrace(conversationId, tc.name(), truncate(tc.argumentsJson(), 200), outcome.ok(), outcome.costMs());
+        return item;
+    }
+
+    /**
+     * 执行单个工具调用（校验+超时+回填），返回轨迹项。
+     * 供 Plan-Execute 顺序执行步骤复用；普通多工具并行路径改用 {@link #executeToolCore} + {@link #backfillTool}。
      */
     private ToolTraceItem executeToolCall(
             AiModelGateway.ToolCall tc,
@@ -315,50 +398,7 @@ public class AgentService {
             Long conversationId,
             Consumer<ToolTraceItem> onTrace
     ) {
-        long start = System.currentTimeMillis();
-        String output;
-        boolean ok;
-        ToolCallValidator.Validation validation = toolCallValidator.validate(tc.name(), tc.argumentsJson());
-        if (!validation.valid()) {
-            meterRegistry.counter("devmind.agent.tool_invalid", "reason", "invalid").increment();
-            log.warn("agent 工具调用校验失败: {}", validation.error());
-            output = "{\"error\": \"工具调用无效: " + validation.error() + "\"}";
-            ok = false;
-        } else {
-            try {
-                java.util.concurrent.Future<String> future = toolExecutor.submit(() ->
-                        toolRegistry.execute(validation.toolName(), validation.argumentsJson(), userId));
-                output = future.get(TOOL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
-                ok = true;
-            } catch (java.util.concurrent.TimeoutException ex) {
-                meterRegistry.counter("devmind.agent.tool_timeout").increment();
-                log.warn("agent 工具 {} 执行超时（{}s）", tc.name(), TOOL_TIMEOUT_SECONDS);
-                output = "{\"error\": \"工具执行超时\"}";
-                ok = false;
-            } catch (Exception ex) {
-                log.warn("agent 工具 {} 执行失败: {}", tc.name(), ex.getMessage());
-                output = "{\"error\": \"工具执行失败: " + ex.getMessage() + "\"}";
-                ok = false;
-            }
-        }
-        output = truncate(output, MAX_TOOL_RESULT_CHARS);
-        messages.add(Map.of(
-                "role", "tool",
-                "tool_call_id", tc.id(),
-                "content", output
-        ));
-        long costMs = System.currentTimeMillis() - start;
-        ToolTraceItem item = new ToolTraceItem(
-                tc.name(),
-                truncate(tc.argumentsJson(), 120),
-                ok,
-                costMs
-        );
-        if (onTrace != null) {
-            onTrace.accept(item);
-        }
-        persistTrace(conversationId, tc.name(), truncate(tc.argumentsJson(), 200), ok, costMs);
-        return item;
+        return backfillTool(tc, executeToolCore(tc, userId), messages, conversationId, onTrace);
     }
 
     /**

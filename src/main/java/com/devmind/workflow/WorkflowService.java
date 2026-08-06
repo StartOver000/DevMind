@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -50,6 +51,7 @@ public class WorkflowService {
         return requireWorkflow(id);
     }
 
+    @Transactional
     public Workflow create(WorkflowCreateRequest req, Long userId) {
         validateSteps(req.stepsJson());
         String trigger = req.triggerType() == null ? "manual" : req.triggerType();
@@ -64,6 +66,7 @@ public class WorkflowService {
         return requireWorkflow(id);
     }
 
+    @Transactional
     public Workflow update(Long id, WorkflowCreateRequest req, Long userId) {
         Workflow existing = requireWorkflow(id);
         validateSteps(req.stepsJson());

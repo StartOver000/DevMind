@@ -14,6 +14,7 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClient;
 
 import java.util.List;
@@ -73,6 +74,7 @@ public class InterfaceToolService implements ApplicationRunner {
         return ToolResponse.from(def);
     }
 
+    @Transactional
     public ToolResponse create(ToolCreateRequest req, Long userId) {
         validate(req);
         if (repository.findByName(req.name()) != null) {
@@ -94,6 +96,7 @@ public class InterfaceToolService implements ApplicationRunner {
         return ToolResponse.from(saved);
     }
 
+    @Transactional
     public ToolResponse update(Long id, ToolCreateRequest req, Long userId) {
         ToolDefinition existing = requireTool(id);
         validate(req);

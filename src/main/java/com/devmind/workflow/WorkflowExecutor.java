@@ -33,17 +33,20 @@ public class WorkflowExecutor {
     private final ToolRegistry toolRegistry;
     private final WorkflowRunRepository runRepository;
     private final ObjectMapper objectMapper;
+    private final WorkflowConditionEvaluator conditionEvaluator;
     /** 并行组执行线程池（M3-2） */
     private final ExecutorService parallelExecutor = Executors.newCachedThreadPool();
 
     public WorkflowExecutor(
             ToolRegistry toolRegistry,
             WorkflowRunRepository runRepository,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            WorkflowConditionEvaluator conditionEvaluator
     ) {
         this.toolRegistry = toolRegistry;
         this.runRepository = runRepository;
         this.objectMapper = objectMapper;
+        this.conditionEvaluator = conditionEvaluator;
     }
 
     @PreDestroy
@@ -55,8 +58,17 @@ public class WorkflowExecutor {
     public record WorkflowStep(String tool, String paramsJson, String outputVar) {
     }
 
-    /** 步骤组：单步=顺序执行；多步=并行执行 */
-    private record StepGroup(List<WorkflowStep> steps, boolean parallel) {
+    /** 执行单元：顺序步骤 / 并行组 / 条件分支（if） */
+    private sealed interface StepUnit permits SequentialUnit, ParallelUnit, IfUnit {
+    }
+
+    private record SequentialUnit(WorkflowStep step) implements StepUnit {
+    }
+
+    private record ParallelUnit(List<WorkflowStep> steps) implements StepUnit {
+    }
+
+    private record IfUnit(String condition, List<StepUnit> thenBranch, List<StepUnit> elseBranch) implements StepUnit {
     }
 
     /**
@@ -70,15 +82,15 @@ public class WorkflowExecutor {
 
     /**
      * 执行工作流，支持注入初始变量（webhook 触发时把请求体注入为 {{var}}）。
-     * 步骤组支持并行：steps_json 元素可为普通步骤对象，或 {"parallel": [{step}, ...]} 并行组。
+     * 执行单元：普通步骤对象 | {"parallel": [...]} 并行组 | {"if": "条件", "then": [...], "else": [...]} 条件分支。
      * 任一步骤失败则整次 FAILED（并行组内会等所有步骤跑完再判失败）。
      */
     public WorkflowRun execute(Workflow workflow, Long userId, String triggerType, Map<String, Object> initialVars) {
         if (runRepository.hasRunning(workflow.tenantId(), workflow.id())) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流正在执行中，请稍后再试");
         }
-        List<StepGroup> groups = parseSteps(workflow.stepsJson());
-        if (groups == null || groups.isEmpty()) {
+        List<StepUnit> units = parseUnits(workflow.stepsJson());
+        if (units == null || units.isEmpty()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤为空");
         }
         Long runId = runRepository.insertRun(workflow.id(), workflow.tenantId(), triggerType);
@@ -88,24 +100,34 @@ public class WorkflowExecutor {
         }
         AtomicInteger stepIndex = new AtomicInteger(0);
         AtomicReference<String> failure = new AtomicReference<>();
-        for (StepGroup group : groups) {
-            if (failure.get() != null) {
-                break;
-            }
-            if (group.parallel()) {
-                runParallel(group, runId, vars, userId, workflow.name(), stepIndex, failure);
-            } else {
-                runStep(group.steps().get(0), stepIndex.getAndIncrement(), runId, vars, userId, workflow.name(), failure);
-            }
-        }
+        executeUnits(units, runId, vars, userId, workflow.name(), stepIndex, failure);
         runRepository.finishRun(runId, failure.get() == null ? "SUCCESS" : "FAILED", failure.get());
         return runRepository.findRun(workflow.tenantId(), runId);
     }
 
-    /** 并行执行组内所有步骤，等待全部完成 */
-    private void runParallel(StepGroup group, Long runId, Map<String, Object> vars, Long userId,
+    /** 按顺序执行单元列表（条件分支递归） */
+    private void executeUnits(List<StepUnit> units, Long runId, Map<String, Object> vars, Long userId,
+                              String workflowName, AtomicInteger stepIndex, AtomicReference<String> failure) {
+        for (StepUnit unit : units) {
+            if (failure.get() != null) {
+                break;
+            }
+            if (unit instanceof SequentialUnit sequential) {
+                runStep(sequential.step(), stepIndex.getAndIncrement(), runId, vars, userId, workflowName, failure);
+            } else if (unit instanceof ParallelUnit parallel) {
+                runParallel(parallel.steps(), runId, vars, userId, workflowName, stepIndex, failure);
+            } else if (unit instanceof IfUnit ifUnit) {
+                boolean matched = conditionEvaluator.evaluate(ifUnit.condition(), vars);
+                log.info("工作流 {} 条件 [{}] → {}", workflowName, ifUnit.condition(), matched ? "THEN" : "ELSE");
+                executeUnits(matched ? ifUnit.thenBranch() : ifUnit.elseBranch(),
+                        runId, vars, userId, workflowName, stepIndex, failure);
+            }
+        }
+    }
+
+    /** 并行执行所有步骤，等待全部完成 */
+    private void runParallel(List<WorkflowStep> steps, Long runId, Map<String, Object> vars, Long userId,
                              String workflowName, AtomicInteger stepIndex, AtomicReference<String> failure) {
-        List<WorkflowStep> steps = group.steps();
         int[] indexes = new int[steps.size()];
         for (int i = 0; i < steps.size(); i++) {
             indexes[i] = stepIndex.getAndIncrement();
@@ -146,39 +168,72 @@ public class WorkflowExecutor {
         }
     }
 
-    /** 解析步骤：普通对象或 {"parallel": [...]} 并行组 */
-    private List<StepGroup> parseSteps(String stepsJson) {
+    /** 解析步骤数组 → 执行单元列表（支持 if 递归） */
+    private List<StepUnit> parseUnits(String stepsJson) {
         try {
             JsonNode array = objectMapper.readTree(stepsJson);
             if (!array.isArray() || array.isEmpty()) {
                 return null;
             }
-            List<StepGroup> groups = new ArrayList<>();
+            List<StepUnit> units = new ArrayList<>();
             for (JsonNode node : array) {
-                JsonNode parallel = node.path("parallel");
-                if (parallel.isArray() && !parallel.isEmpty()) {
-                    List<WorkflowStep> steps = new ArrayList<>();
-                    for (JsonNode item : parallel) {
-                        WorkflowStep step = parseStep(item);
-                        if (step != null) {
-                            steps.add(step);
-                        }
-                    }
-                    if (!steps.isEmpty()) {
-                        groups.add(new StepGroup(steps, true));
-                    }
-                } else {
-                    WorkflowStep step = parseStep(node);
-                    if (step != null) {
-                        groups.add(new StepGroup(List.of(step), false));
-                    }
+                StepUnit unit = parseUnit(node);
+                if (unit != null) {
+                    units.add(unit);
                 }
             }
-            return groups.isEmpty() ? null : groups;
+            return units.isEmpty() ? null : units;
         } catch (Exception ex) {
             log.warn("工作流步骤解析失败: {}", ex.getMessage());
             return null;
         }
+    }
+
+    /** 解析单个元素：if 分支 / parallel 并行组 / 普通步骤 */
+    private StepUnit parseUnit(JsonNode node) {
+        // 条件分支：{"if": "{{x}} > 100", "then": [...], "else": [...]}
+        String condition = node.path("if").asText("");
+        if (!condition.isBlank()) {
+            JsonNode thenNode = node.path("then");
+            JsonNode elseNode = node.path("else");
+            List<StepUnit> thenUnits = parseUnitsFromNode(thenNode);
+            List<StepUnit> elseUnits = parseUnitsFromNode(elseNode);
+            if (thenUnits == null && elseUnits == null) {
+                return null;
+            }
+            return new IfUnit(condition,
+                    thenUnits == null ? new ArrayList<>() : thenUnits,
+                    elseUnits == null ? new ArrayList<>() : elseUnits);
+        }
+        // 并行组：{"parallel": [{step}, ...]}
+        JsonNode parallel = node.path("parallel");
+        if (parallel.isArray() && !parallel.isEmpty()) {
+            List<WorkflowStep> steps = new ArrayList<>();
+            for (JsonNode item : parallel) {
+                WorkflowStep step = parseStep(item);
+                if (step != null) {
+                    steps.add(step);
+                }
+            }
+            return steps.isEmpty() ? null : new ParallelUnit(steps);
+        }
+        // 普通步骤
+        WorkflowStep step = parseStep(node);
+        return step == null ? null : new SequentialUnit(step);
+    }
+
+    private List<StepUnit> parseUnitsFromNode(JsonNode node) {
+        if (node == null || !node.isArray() || node.isEmpty()) {
+            return null;
+        }
+        List<StepUnit> units = new ArrayList<>();
+        for (JsonNode item : node) {
+            StepUnit unit = parseUnit(item);
+            if (unit != null) {
+                units.add(unit);
+            }
+        }
+        return units.isEmpty() ? null : units;
     }
 
     private WorkflowStep parseStep(JsonNode node) {

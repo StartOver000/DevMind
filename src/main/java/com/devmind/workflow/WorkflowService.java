@@ -195,7 +195,7 @@ public class WorkflowService {
         }
     }
 
-    /** 校验 steps_json：必须是数组、每步 tool 已注册且对当前用户可见；支持 {"parallel":[...]} 并行组 */
+    /** 校验 steps_json：必须是数组、每步 tool 已注册且对当前用户可见；支持 {"parallel":[...]} 与 {"if":...,"then":[...]} */
     private void validateSteps(String stepsJson, Long userId) {
         if (stepsJson == null || stepsJson.isBlank()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤不能为空");
@@ -208,20 +208,44 @@ public class WorkflowService {
                 throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤必须是非空数组");
             }
             for (JsonNode node : array) {
-                JsonNode parallel = node.path("parallel");
-                if (parallel.isArray() && !parallel.isEmpty()) {
-                    for (JsonNode item : parallel) {
-                        validateStepTool(item.path("tool").asText(""), accessible);
-                    }
-                } else {
-                    validateStepTool(node.path("tool").asText(""), accessible);
-                }
+                validateStepNode(node, accessible);
             }
         } catch (ApiException ex) {
             throw ex;
         } catch (Exception ex) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤 JSON 解析失败");
         }
+    }
+
+    /** 递归校验单个步骤节点（if/parallel/普通步骤） */
+    private void validateStepNode(JsonNode node, Set<String> accessible) {
+        // 条件分支
+        String condition = node.path("if").asText("");
+        if (!condition.isBlank()) {
+            JsonNode thenNode = node.path("then");
+            if (thenNode.isArray()) {
+                for (JsonNode item : thenNode) {
+                    validateStepNode(item, accessible);
+                }
+            }
+            JsonNode elseNode = node.path("else");
+            if (elseNode.isArray()) {
+                for (JsonNode item : elseNode) {
+                    validateStepNode(item, accessible);
+                }
+            }
+            return;
+        }
+        // 并行组
+        JsonNode parallel = node.path("parallel");
+        if (parallel.isArray() && !parallel.isEmpty()) {
+            for (JsonNode item : parallel) {
+                validateStepTool(item.path("tool").asText(""), accessible);
+            }
+            return;
+        }
+        // 普通步骤
+        validateStepTool(node.path("tool").asText(""), accessible);
     }
 
     private void validateStepTool(String tool, Set<String> accessible) {

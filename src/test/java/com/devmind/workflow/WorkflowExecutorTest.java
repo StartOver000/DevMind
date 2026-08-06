@@ -33,7 +33,8 @@ class WorkflowExecutorTest {
 
     @BeforeEach
     void setUp() {
-        executor = new WorkflowExecutor(toolRegistry, runRepository, objectMapper);
+        executor = new WorkflowExecutor(toolRegistry, runRepository, objectMapper,
+                new WorkflowConditionEvaluator());
     }
 
     private Workflow workflow(String stepsJson) {
@@ -224,5 +225,82 @@ class WorkflowExecutorTest {
         ArgumentCaptor<String> dInput = ArgumentCaptor.forClass(String.class);
         verify(toolRegistry).execute(eq("d"), dInput.capture(), eq(1L), eq("workflow"), eq(100L));
         assertThat(dInput.getValue()).contains("A").contains("B");
+    }
+
+    @Test
+    void ifBranchExecutesThenWhenConditionTrue() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("100");
+        when(toolRegistry.execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("B");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"tool":"a","params":{},"output_var":"va"},
+                 {"if":"{{va}} > 50","then":[{"tool":"b","params":{},"output_var":"vb"}],
+                  "else":[{"tool":"c","params":{},"output_var":"vc"}]}]
+                """;
+        executor.execute(workflow(stepsJson), 1L, "manual");
+
+        // then 分支执行（b），else 分支不执行（c）
+        verify(toolRegistry).execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(toolRegistry, never()).execute(eq("c"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(runRepository).insertStep(eq(100L), eq(1), eq("b"), anyString(), anyString(), eq("SUCCESS"), anyLong(), eq(null));
+    }
+
+    @Test
+    void ifBranchExecutesElseWhenConditionFalse() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("10");
+        when(toolRegistry.execute(eq("c"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("C");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"tool":"a","params":{},"output_var":"va"},
+                 {"if":"{{va}} > 50","then":[{"tool":"b","params":{},"output_var":"vb"}],
+                  "else":[{"tool":"c","params":{},"output_var":"vc"}]}]
+                """;
+        executor.execute(workflow(stepsJson), 1L, "manual");
+
+        // else 分支执行（c），then 分支不执行（b）
+        verify(toolRegistry, never()).execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(toolRegistry).execute(eq("c"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(runRepository).insertStep(eq(100L), eq(1), eq("c"), anyString(), anyString(), eq("SUCCESS"), anyLong(), eq(null));
+    }
+
+    @Test
+    void ifBranchWithoutElseSkipsWhenFalse() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("10");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"tool":"a","params":{},"output_var":"va"},
+                 {"if":"{{va}} > 50","then":[{"tool":"b","params":{},"output_var":"vb"}]}]
+                """;
+        executor.execute(workflow(stepsJson), 1L, "manual");
+
+        // 条件 false 且无 else：跳过，只有 a 执行
+        verify(toolRegistry, never()).execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(runRepository).insertStep(eq(100L), eq(0), eq("a"), anyString(), anyString(), eq("SUCCESS"), anyLong(), eq(null));
+    }
+
+    @Test
+    void stringConditionComparesValues() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("success");
+        when(toolRegistry.execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("B");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"tool":"a","params":{},"output_var":"status"},
+                 {"if":"{{status}} == 'success'","then":[{"tool":"b","params":{},"output_var":"vb"}]}]
+                """;
+        executor.execute(workflow(stepsJson), 1L, "manual");
+
+        verify(toolRegistry).execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L));
     }
 }

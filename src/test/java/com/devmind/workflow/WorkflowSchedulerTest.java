@@ -24,11 +24,14 @@ class WorkflowSchedulerTest {
     @Mock
     private WorkflowExecutor executor;
 
+    @Mock
+    private WorkflowRunRepository runRepository;
+
     private WorkflowScheduler scheduler;
 
     @BeforeEach
     void setUp() {
-        scheduler = new WorkflowScheduler(repository, executor);
+        scheduler = new WorkflowScheduler(repository, executor, runRepository);
     }
 
     private Workflow cronWorkflow(Long id, String cron, Long createdBy) {

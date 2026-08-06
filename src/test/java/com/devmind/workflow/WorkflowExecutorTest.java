@@ -339,4 +339,29 @@ class WorkflowExecutorTest {
         // info 不含 error → not contains 为 true → b 执行
         verify(toolRegistry).execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L));
     }
+
+    @Test
+    void hangingToolTimesOutAndFailsRunInsteadOfBlockingForever() throws Exception {
+        // 工具调用永久挂起（模拟底层模型/接口卡死）：30s 超时应标记 FAILED 并 finishRun，
+        // 而不是像以前那样 run 永久 RUNNING 阻塞调度。
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        // 阻塞 60s（超过 30s 超时阈值），模拟挂起
+        org.mockito.Mockito.doAnswer(inv -> {
+            Thread.sleep(60_000);
+            return "never";
+        }).when(toolRegistry).execute(eq("hang_tool"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "FAILED"));
+
+        String stepsJson = "[{\"tool\":\"hang_tool\",\"params\":{}}]";
+        long start = System.currentTimeMillis();
+        executor.execute(workflow(stepsJson), 1L, "manual");
+        long elapsed = System.currentTimeMillis() - start;
+
+        // 在 ~30s 超时后返回（而非 60s），且 run 被标记 FAILED
+        assertThat(elapsed).isLessThan(50_000);
+        verify(runRepository).insertStep(eq(100L), eq(0), eq("hang_tool"), anyString(),
+                eq(null), eq("FAILED"), anyLong(), org.mockito.ArgumentMatchers.contains("超时"));
+        verify(runRepository).finishRun(eq(100L), eq("FAILED"), org.mockito.ArgumentMatchers.any());
+    }
 }

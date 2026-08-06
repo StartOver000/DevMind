@@ -1,5 +1,6 @@
 package com.devmind.workflow;
 
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,13 +31,32 @@ public class WorkflowScheduler {
 
     private final WorkflowRepository repository;
     private final WorkflowExecutor executor;
+    private final WorkflowRunRepository runRepository;
     /** 每个工作流最近一次触发的分钟键（防重复触发） */
     private final Map<Long, String> lastTriggerMinute = new ConcurrentHashMap<>();
     private final ExecutorService executionPool = Executors.newCachedThreadPool();
 
-    public WorkflowScheduler(WorkflowRepository repository, WorkflowExecutor executor) {
+    public WorkflowScheduler(WorkflowRepository repository, WorkflowExecutor executor,
+                             WorkflowRunRepository runRepository) {
         this.repository = repository;
         this.executor = executor;
+        this.runRepository = runRepository;
+    }
+
+    /**
+     * 启动时清理历史卡死的 RUNNING run（如进程崩溃/工具挂起留下的），
+     * 避免它们永久阻塞对应工作流的后续执行。
+     */
+    @PostConstruct
+    public void cleanupStaleRuns() {
+        try {
+            int cleaned = runRepository.failStaleRuns(5);
+            if (cleaned > 0) {
+                log.warn("启动清理 {} 个滞留 RUNNING 的 workflow run（标记 FAILED）", cleaned);
+            }
+        } catch (Exception ex) {
+            log.warn("启动清理滞留 run 失败: {}", ex.getMessage());
+        }
     }
 
     @Scheduled(fixedDelayString = "30000", initialDelayString = "15000")

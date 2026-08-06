@@ -36,6 +36,8 @@ public class WorkflowExecutor {
     private final WorkflowConditionEvaluator conditionEvaluator;
     /** 并行组执行线程池（M3-2） */
     private final ExecutorService parallelExecutor = Executors.newCachedThreadPool();
+    /** 单步工具执行超时（秒）：防止底层调用挂起导致 run 永久 RUNNING（阻塞定时/后续执行） */
+    private static final long TOOL_TIMEOUT_SECONDS = 30;
 
     public WorkflowExecutor(
             ToolRegistry toolRegistry,
@@ -150,7 +152,8 @@ public class WorkflowExecutor {
         String input = fillTemplate(step.paramsJson(), vars);
         long start = System.currentTimeMillis();
         try {
-            String output = toolRegistry.execute(step.tool(), input, userId, "workflow", runId);
+            // 提交到线程池执行并带超时（防止底层调用挂起导致 run 永久 RUNNING，阻塞定时/后续执行）
+            String output = executeWithTimeout(step.tool(), input, userId, runId, start);
             long costMs = System.currentTimeMillis() - start;
             runRepository.insertStep(runId, index, step.tool(), input, output, "SUCCESS", costMs, null);
             if (step.outputVar() != null && !step.outputVar().isBlank()) {
@@ -165,6 +168,34 @@ public class WorkflowExecutor {
             if (failure.get() == null) {
                 failure.set(message);
             }
+        }
+    }
+
+    /**
+     * 带超时的工具执行：提交线程池 + Future.get(超时)。
+     * 超时（或线程被中断）时取消任务并抛异常 → 步骤标记 FAILED，run 正常结束，
+     * 不会像之前那样无限阻塞导致 run 永久 RUNNING。
+     */
+    private String executeWithTimeout(String tool, String input, Long userId, Long runId, long start) {
+        java.util.concurrent.Future<String> future = parallelExecutor.submit(() -> {
+            try {
+                return toolRegistry.execute(tool, input, userId, "workflow", runId);
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        });
+        try {
+            return future.get(TOOL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException ex) {
+            future.cancel(true);
+            throw new IllegalStateException("工具执行超时（超过 " + TOOL_TIMEOUT_SECONDS + " 秒）: " + tool);
+        } catch (java.util.concurrent.ExecutionException ex) {
+            Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+            throw cause instanceof RuntimeException r ? r : new RuntimeException(cause);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            future.cancel(true);
+            throw new IllegalStateException("工具执行被中断: " + tool);
         }
     }
 

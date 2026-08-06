@@ -69,6 +69,21 @@ public class WorkflowRunRepository {
         );
     }
 
+    /**
+     * 把启动前已滞留超过 N 分钟的 RUNNING run 标记 FAILED（进程重启后清理历史卡死）。
+     * 返回清理条数。加锁条件避免并发误杀正在执行的 run。
+     */
+    public int failStaleRuns(int staleMinutes) {
+        return jdbcTemplate.update("""
+                UPDATE workflow_run
+                SET status = 'FAILED',
+                    error = '执行滞留超过 ' || ? || ' 分钟，系统自动终止',
+                    finished_at = CURRENT_TIMESTAMP
+                WHERE status = 'RUNNING'
+                  AND started_at < CURRENT_TIMESTAMP - make_interval(mins => ?)
+                """, staleMinutes, staleMinutes);
+    }
+
     public void insertStep(Long runId, int index, String toolName, String inputJson, String outputJson,
                            String status, long costMs, String error) {
         jdbcTemplate.update(

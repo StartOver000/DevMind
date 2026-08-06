@@ -2,6 +2,7 @@
 import { ref, onMounted, h } from 'vue';
 import { api } from '@/api/client';
 import { showToast } from '@/stores/toast';
+import WorkflowEditor from '@/components/WorkflowEditor.vue';
 
 // 递归渲染工作流草案节点（step / if / parallel）
 const DraftNode = {
@@ -53,6 +54,73 @@ const workflows = ref([]);
 const loading = ref(false);
 const runningId = ref(null);
 const runResult = ref(null);
+
+// 可视化编辑（Guide-55 高优先级）
+const editorWorkflow = ref(null);   // 正在编辑的工作流
+const editorSteps = ref([]);        // 解析后的结构对象数组
+const savingEditor = ref(false);
+
+/** 把后端 stepsJson（数组，含 parallel/if 嵌套）解析为编辑器结构对象 */
+function parseStepsJson(json) {
+  try {
+    const arr = typeof json === 'string' ? JSON.parse(json) : json;
+    return (Array.isArray(arr) ? arr : []).map(nodeFromJson);
+  } catch (e) {
+    return [];
+  }
+}
+
+function nodeFromJson(node) {
+  if (node.parallel) {
+    return { parallel: (node.parallel || []).map(stepFromJson) };
+  }
+  if (node.if) {
+    return {
+      if: node.if,
+      then: (node.then || []).map(nodeFromJson),
+      else: (node.else || []).map(nodeFromJson)
+    };
+  }
+  return stepFromJson(node);
+}
+
+function stepFromJson(node) {
+  return {
+    tool: node.tool || '',
+    params: node.params || {},
+    outputVar: node.output_var || ''
+  };
+}
+
+function openEditor(w) {
+  editorWorkflow.value = w;
+  editorSteps.value = parseStepsJson(w.stepsJson);
+}
+
+async function saveEditor(stepsJson) {
+  if (!editorWorkflow.value) return;
+  savingEditor.value = true;
+  try {
+    await api(`/api/workflows/${editorWorkflow.value.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: editorWorkflow.value.name,
+        description: editorWorkflow.value.description || '',
+        stepsJson,
+        triggerType: editorWorkflow.value.triggerType,
+        cronExpr: editorWorkflow.value.cronExpr
+      })
+    });
+    showToast('工作流已更新');
+    editorWorkflow.value = null;
+    editorSteps.value = [];
+    await load();
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    savingEditor.value = false;
+  }
+}
 
 // 运行记录
 const runs = ref([]);
@@ -346,6 +414,7 @@ onMounted(load);
                 <td><span class="status" :class="w.status">{{ w.status }}</span></td>
                 <td>
                   <button class="small" :disabled="runningId === w.id || w.status !== 'ENABLED'" @click="runWorkflow(w)">{{ runningId === w.id ? '运行中…' : '运行' }}</button>
+                  <button class="small" @click="openEditor(w)">编辑</button>
                   <button class="small" @click="showRuns(w)">记录</button>
                   <button class="small" @click="draftAsSkill(w)">存为技能</button>
                   <button class="small danger" @click="deleteWorkflow(w)">删除</button>
@@ -354,6 +423,16 @@ onMounted(load);
             </tbody>
           </table>
         </div>
+
+        <!-- 可视化编辑器（Guide-55 高优先级）：树形编排 stepsJson -->
+        <WorkflowEditor
+          v-if="editorWorkflow"
+          :steps="editorSteps"
+          :key="editorWorkflow.id"
+          :disabled="savingEditor"
+          @save="saveEditor"
+          @cancel="editorWorkflow = null; editorSteps = []"
+        />
 
         <div v-if="runsFor !== null" class="runs">
           <h3>运行记录</h3>

@@ -198,7 +198,7 @@ onMounted(() => {
       <p class="hint sub">需要更多工具？联系管理员在「授权管理」中分配。</p>
     </div>
 
-    <div class="panel">
+    <div class="panel scroll-panel">
       <div class="list-head">
         <h2>{{ isAdmin ? '已登记接口工具' : '我可用接口工具' }}（{{ tools.length }}）</h2>
         <div v-if="isAdmin" class="grant-entry">
@@ -274,6 +274,21 @@ onMounted(() => {
 .tools-grid .panel {
   display: grid;
   gap: 10px;
+}
+
+/* 接口列表：内容多时面板内滚动，不撑高页面 */
+.tools-grid .scroll-panel {
+  height: calc(100vh - 110px);
+  overflow-y: auto;
+  align-content: start;
+}
+
+@media (max-width: 900px) {
+  .tools-grid .scroll-panel {
+    height: auto;
+    max-height: 420px;
+    overflow-y: auto;
+  }
 }
 
 td.url {

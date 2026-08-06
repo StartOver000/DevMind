@@ -146,7 +146,7 @@ onMounted(() => {
 
 <template>
   <section class="skill-grid">
-    <div class="panel">
+    <div class="panel scroll-panel">
       <h2>技能（Skills）</h2>
       <p class="hint">技能是"某类任务该怎么做"的规范。Agent 遇到匹配场景时会自动遵循。
         团队技能全员生效；个人技能仅自己生效。可在"流程"页把跑通的工作流另存为技能。</p>
@@ -238,6 +238,21 @@ onMounted(() => {
   gap: 16px;
   grid-template-columns: 1fr;
   align-items: start;
+}
+
+/* 技能列表：内容多时面板内滚动，不撑高页面 */
+.skill-grid .scroll-panel {
+  height: calc(100vh - 110px);
+  overflow-y: auto;
+  align-content: start;
+}
+
+@media (max-width: 900px) {
+  .skill-grid .scroll-panel {
+    height: auto;
+    max-height: 420px;
+    overflow-y: auto;
+  }
 }
 
 .skill-grid .editor {

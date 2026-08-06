@@ -71,24 +71,17 @@ public class ChatRouter {
                 .register(meterRegistry);
     }
 
-    /** 从配置构建备用 Provider 列表（第一备用：OpenRouter；第二备用：硅基流动等，配置驱动） */
+    /**
+     * 从配置构建备用 Provider 列表。
+     * 顺序即降级顺序：先国内直连（硅基流动，上线无需梯子），再海外（OpenRouter，最后兜底）。
+     */
     private List<ChatProvider> buildFallbackProviders(
             RestClient.Builder restClientBuilder,
             DevMindProperties properties,
             SecretCipher secretCipher
     ) {
         List<ChatProvider> providers = new ArrayList<>();
-        if (properties.modelFallbackBaseUrl() != null && !properties.modelFallbackBaseUrl().isBlank()) {
-            OpenAiCompatibleGateway openrouter = new OpenAiCompatibleGateway(
-                    restClientBuilder,
-                    properties.modelFallbackBaseUrl(),
-                    secretCipher.resolve(properties.modelFallbackApiKey()),
-                    properties.modelFallbackChatModel(),
-                    new ObjectMapper()
-            );
-            providers.add(new ChatProvider("openrouter", openrouter, true));
-        }
-        // 第二备用（如硅基流动免费模型）：独立熔断，进一步兜底
+        // 第一备用：硅基流动等国内直连（上线场景用户无需挂梯子）
         if (properties.modelFallback2BaseUrl() != null && !properties.modelFallback2BaseUrl().isBlank()) {
             OpenAiCompatibleGateway siliconflow = new OpenAiCompatibleGateway(
                     restClientBuilder,
@@ -98,6 +91,17 @@ public class ChatRouter {
                     new ObjectMapper()
             );
             providers.add(new ChatProvider("siliconflow", siliconflow, true));
+        }
+        // 第二备用：OpenRouter（海外，需梯子，仅作最后兜底）
+        if (properties.modelFallbackBaseUrl() != null && !properties.modelFallbackBaseUrl().isBlank()) {
+            OpenAiCompatibleGateway openrouter = new OpenAiCompatibleGateway(
+                    restClientBuilder,
+                    properties.modelFallbackBaseUrl(),
+                    secretCipher.resolve(properties.modelFallbackApiKey()),
+                    properties.modelFallbackChatModel(),
+                    new ObjectMapper()
+            );
+            providers.add(new ChatProvider("openrouter", openrouter, true));
         }
         return providers;
     }

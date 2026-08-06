@@ -19,7 +19,7 @@
     "@vue-flow/core": "^1.48.2",
     "marked": "^18.0.9",
     "vue": "^3.4.38",
-    "vue-router": "^4.4.3"
+    "vue-router": "^5.2.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

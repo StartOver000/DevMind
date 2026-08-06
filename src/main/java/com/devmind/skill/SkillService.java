@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 技能（Skill）服务（Guide-51）：CRUD + 权限 + 从工作流沉淀。
@@ -39,9 +40,15 @@ public class SkillService {
         this.chatRouter = chatRouter;
     }
 
-    public List<Skill> list(Long userId, String scope) {
+    public List<Skill> list(Long userId, String scope, String sort) {
         Long tenantId = userService.tenantIdOf(userId);
-        return repository.listVisible(tenantId, userId, scope == null ? "all" : scope);
+        return repository.listVisible(tenantId, userId, scope == null ? "all" : scope, sort, null);
+    }
+
+    /** 技能健康度统计：总数/启用数/命中总数/热门 Top5/僵尸技能（Guide-55 高优先级） */
+    public Map<String, Object> stats(Long userId) {
+        Long tenantId = userService.tenantIdOf(userId);
+        return repository.stats(tenantId, userId);
     }
 
     public Skill get(Long userId, Long id) {

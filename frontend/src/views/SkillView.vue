@@ -7,8 +7,21 @@ import { showToast } from '@/stores/toast';
 const skills = ref([]);
 const loading = ref(false);
 const scopeFilter = ref('all');
+const sortFilter = ref('default');
 const form = ref(null); // 编辑中的技能
 const saving = ref(false);
+
+// 技能健康度（Guide-55 高优先级）：总数/启用/命中 + 热门 Top5 + 僵尸技能
+const stats = ref(null);
+const statsLoading = ref(false);
+const showZombies = ref(false); // 僵尸技能面板是否展开
+
+// 记忆管理入口（Guide-55：专用记忆管理）
+const showMemoryPanel = ref(false);
+const memoryItems = ref([]);
+const memoryText = ref('');
+const memoryLoading = ref(false);
+const memorySaving = ref(false);
 
 // 引用资源候选（工作流 / 知识库）
 const workflows = ref([]);
@@ -17,11 +30,22 @@ const kbs = ref([]);
 async function load() {
   loading.value = true;
   try {
-    skills.value = await api(`/api/skills?scope=${scopeFilter.value}`);
+    skills.value = await api(`/api/skills?scope=${scopeFilter.value}&sort=${sortFilter.value}`);
   } catch (err) {
     showToast(err.message, true);
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadStats() {
+  statsLoading.value = true;
+  try {
+    stats.value = await api('/api/skills/stats');
+  } catch (err) {
+    stats.value = null;
+  } finally {
+    statsLoading.value = false;
   }
 }
 
@@ -40,6 +64,66 @@ async function loadCandidates() {
     kbs.value = [];
   }
 }
+
+// ---- 记忆管理（专用入口，Guide-55 中优先级） ----
+function memorySourceLabel(source) {
+  return source === 'manual' ? '手动' : '自动';
+}
+
+async function openMemoryPanel() {
+  showMemoryPanel.value = true;
+  await loadMemory();
+}
+
+async function loadMemory() {
+  memoryLoading.value = true;
+  try {
+    const data = await api('/api/agent/memory');
+    memoryItems.value = Array.isArray(data) ? data : [];
+  } catch (err) {
+    memoryItems.value = [];
+  } finally {
+    memoryLoading.value = false;
+  }
+}
+
+async function saveMemory() {
+  memorySaving.value = true;
+  try {
+    const added = memoryText.value.split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        const idx = l.indexOf(':');
+        if (idx === -1) return null;
+        return { key: l.slice(0, idx).trim(), value: l.slice(idx + 1).trim() };
+      })
+      .filter(Boolean);
+    const items = [
+      ...memoryItems.value.map((m) => ({ key: m.key, value: m.value })),
+      ...added
+    ];
+    await api('/api/agent/memory', { method: 'PUT', body: JSON.stringify({ items }) });
+    memoryText.value = '';
+    await loadMemory();
+    showToast('长期记忆已保存');
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    memorySaving.value = false;
+  }
+}
+
+async function deleteMemory(item) {
+  try {
+    await api(`/api/agent/memory/${item.id}`, { method: 'DELETE' });
+    memoryItems.value = memoryItems.value.filter((m) => m.id !== item.id);
+    showToast('已删除该条记忆');
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
 
 // 解析技能 references（JSON 文本）为 {type,id,name} 数组
 function parseReferences(raw) {
@@ -140,12 +224,60 @@ async function removeSkill(s) {
 
 onMounted(() => {
   load();
+  loadStats();
   loadCandidates();
 });
 </script>
 
 <template>
   <section class="skill-grid">
+    <!-- 健康度概览（Guide-55 高优先级：热门/僵尸一目了然） -->
+    <div v-if="statsLoading" class="panel health-panel">
+      <h2>技能健康度</h2>
+      <div class="empty">统计加载中…</div>
+    </div>
+    <div v-else-if="stats" class="panel health-panel">
+      <h2>技能健康度</h2>
+      <div class="health-cards">
+        <div class="health-card">
+          <b>{{ stats.total ?? 0 }}</b>
+          <span>技能总数</span>
+        </div>
+        <div class="health-card">
+          <b>{{ stats.enabled ?? 0 }}</b>
+          <span>启用中</span>
+        </div>
+        <div class="health-card">
+          <b>{{ stats.hitTotal ?? 0 }}</b>
+          <span>累计命中</span>
+        </div>
+      </div>
+      <div class="health-cols">
+        <div class="health-col">
+          <div class="health-col-title">🔥 热门技能（命中 Top）</div>
+          <div v-if="!stats.hot || !stats.hot.length" class="empty small">暂无命中记录，技能一旦被 Agent 使用就会出现在这里</div>
+          <div v-else class="hot-list">
+            <div v-for="(s, i) in stats.hot" :key="s.id" class="hot-item">
+              <span class="hot-rank" :class="'r' + (i + 1)">{{ i + 1 }}</span>
+              <span class="hot-name" :title="s.name">{{ s.name }}</span>
+              <span class="hot-count">{{ s.hitCount }} 次</span>
+            </div>
+          </div>
+        </div>
+        <div class="health-col">
+          <div class="health-col-title">🥶 僵尸技能（启用但 0 命中）</div>
+          <div v-if="!stats.zombie || !stats.zombie.length" class="empty small">没有僵尸技能 🎉</div>
+          <div v-else>
+            <div class="zombie-note">以下 {{ stats.zombie.length }} 个技能已启用但从未被 Agent 命中，可能是触发词不匹配或描述不清晰：</div>
+            <div v-for="s in stats.zombie" :key="s.id" class="zombie-item">
+              <span class="zombie-name" :title="s.name">{{ s.name }}</span>
+              <button class="link small" @click="openEdit(s)">检查</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="panel scroll-panel">
       <h2>技能（Skills）</h2>
       <p class="hint">技能是"某类任务该怎么做"的规范。Agent 遇到匹配场景时会自动遵循。
@@ -156,17 +288,29 @@ onMounted(() => {
           <option value="team">团队技能</option>
           <option value="personal">个人技能</option>
         </select>
+        <select v-model="sortFilter" @change="load">
+          <option value="default">最近创建</option>
+          <option value="hot">按命中热度</option>
+          <option value="zombie">命中最少在前</option>
+        </select>
         <button class="primary" @click="openCreate">新建技能</button>
+        <button class="small" @click="openMemoryPanel">🧠 记忆管理</button>
       </div>
 
       <div v-if="loading" class="empty">加载中…</div>
-      <div v-else-if="!skills.length" class="empty">还没有技能。可以把跑通的工作流另存为技能，或手动创建一个。</div>
+      <div v-else-if="!skills.length" class="empty">
+        <span v-if="sortFilter === 'hot'">还没有命中记录。技能被 Agent 使用后会自动累积命中数。</span>
+        <span v-else>还没有技能。可以把跑通的工作流另存为技能，或手动创建一个。</span>
+      </div>
       <div v-else class="skill-list">
         <div v-for="s in skills" :key="s.id" class="skill-card" :class="{ disabled: !s.enabled }">
           <div class="head">
             <b>{{ s.name }}</b>
             <span class="scope" :class="s.scope">{{ s.scope === 'team' ? '团队' : '个人' }}</span>
             <span class="status" :class="s.enabled ? 'on' : 'off'">{{ s.enabled ? '启用' : '停用' }}</span>
+            <span class="hit" :class="{ zero: s.hitCount === 0 }" :title="s.hitCount > 0 ? '被 Agent 命中次数' : '从未被命中，可能触发词不匹配'">
+              {{ s.hitCount > 0 ? '🔥 ' + s.hitCount : '· 0 命中' }}
+            </span>
           </div>
           <div v-if="s.description" class="desc">{{ s.description }}</div>
           <div class="apply">触发：<span>{{ s.applyTo || '—' }}</span></div>
@@ -227,6 +371,37 @@ onMounted(() => {
       <div class="actions">
         <button class="primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
         <button @click="form = null">取消</button>
+      </div>
+    </div>
+
+    <!-- 记忆管理（专用入口，Guide-55 中优先级） -->
+    <div v-if="showMemoryPanel" class="panel memory-panel">
+      <h2>🧠 长期记忆 <button class="link small close-btn" @click="showMemoryPanel = false">关闭</button></h2>
+      <p class="hint">Agent 在对话中会自动提取你的偏好（来源=自动），你也可以手动补充/删除。
+        记忆跨会话保留，会影响 Agent 的回答风格与取值习惯。</p>
+      <div v-if="memoryLoading" class="empty">加载中…</div>
+      <div v-else-if="!memoryItems.length" class="empty">暂无记忆。与 Agent 对话时它会自动记住你的偏好，也可以在这里手动添加。</div>
+      <div v-else class="memory-list">
+        <div v-for="m in memoryItems" :key="m.id" class="memory-item">
+          <div class="memory-item-main">
+            <span class="memory-item-key">{{ m.key }}</span>:
+            <span class="memory-item-value">{{ m.value }}</span>
+          </div>
+          <div class="memory-item-meta">
+            <span class="memory-source" :class="m.source === 'manual' ? 'manual' : 'auto'">{{ memorySourceLabel(m.source) }}</span>
+            <span class="memory-time">{{ m.updatedTime || m.createdTime || '' }}</span>
+            <button class="link danger small" @click="deleteMemory(m)">删除</button>
+          </div>
+        </div>
+      </div>
+      <textarea
+        v-model="memoryText"
+        rows="2"
+        placeholder="新增偏好，每行一条，格式：偏好: 内容&#10;例如：&#10;语言: 中文"
+      ></textarea>
+      <div class="memory-actions">
+        <span class="memory-hint">手动添加的记忆来源标记为「手动」</span>
+        <button class="secondary small" :disabled="memorySaving" @click="saveMemory">{{ memorySaving ? '保存中…' : '保存记忆' }}</button>
       </div>
     </div>
   </section>
@@ -390,4 +565,164 @@ onMounted(() => {
   color: var(--muted, #888);
   margin: 0;
 }
+
+/* ---- 技能健康度概览（Guide-55） ---- */
+.health-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.health-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.health-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 2px;
+}
+
+.health-card b {
+  font-size: 22px;
+}
+
+.health-card span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.health-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .health-cols { grid-template-columns: 1fr; }
+}
+
+.health-col {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.health-col-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hot-list { display: grid; gap: 6px; }
+.hot-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.hot-rank {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #eee;
+  color: #666;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.hot-rank.r1 { background: #ffd54f; color: #5d4037; }
+.hot-rank.r2 { background: #e0e0e0; color: #424242; }
+.hot-rank.r3 { background: #d7a86e; color: #fff; }
+.hot-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hot-count { font-size: 12px; color: var(--muted); flex: none; }
+
+.zombie-note {
+  font-size: 12px;
+  color: #b26a00;
+  background: #fff8e1;
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+.zombie-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 3px 0;
+}
+.zombie-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 命中徽标 */
+.hit {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #fff3e0;
+  color: #e65100;
+  margin-left: auto;
+  flex: none;
+}
+.hit.zero {
+  background: #f5f5f5;
+  color: #9e9e9e;
+}
+
+.empty.small { font-size: 12px; padding: 4px 0; }
+
+/* ---- 记忆管理面板 ---- */
+.memory-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.memory-panel h2 { display: flex; align-items: center; gap: 8px; }
+.memory-panel .close-btn { margin-left: auto; }
+
+.memory-list { display: grid; gap: 8px; }
+
+.memory-item {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.memory-item-main { font-size: 13px; word-break: break-word; }
+.memory-item-key { font-weight: 600; }
+.memory-item-value { color: var(--muted); }
+
+.memory-item-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.memory-source {
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+.memory-source.manual { background: #e8f5e9; color: #2e7d32; }
+.memory-source.auto { background: #e3f2fd; color: #1565c0; }
+
+.memory-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.memory-hint { font-size: 12px; color: var(--muted); flex: 1; }
 </style>

@@ -28,13 +28,22 @@ public class SkillController {
         this.skillService = skillService;
     }
 
-    /** 技能列表（scope=team|personal|all，默认 all，按可见性过滤） */
+    /** 技能列表（scope=team|personal|all，默认 all；sort=hot|zombie 按命中数排序，按可见性过滤） */
     @GetMapping
     public List<Skill> list(
             @RequestParam(required = false) String scope,
+            @RequestParam(required = false) String sort,
             @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
     ) {
-        return skillService.list(userId, scope);
+        return skillService.list(userId, scope, sort);
+    }
+
+    /** 技能健康度统计（Guide-55）：总数/启用数/命中总数/热门 Top5/僵尸技能 */
+    @GetMapping("/stats")
+    public Map<String, Object> stats(
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        return skillService.stats(userId);
     }
 
     @GetMapping("/{id}")

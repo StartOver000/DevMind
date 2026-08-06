@@ -49,6 +49,35 @@ const triggerType = ref('manual');
 const cronExpr = ref('');
 const creating = ref(false);
 
+/** 统计草案中的并行组/分支数量（对话生成 parallel 产品化：生成后给出结构提示） */
+function countStructure(nodes) {
+  let parallel = 0;
+  let branches = 0;
+  const walk = (list) => {
+    for (const n of list || []) {
+      if (n.kind === 'parallel') {
+        parallel++;
+        walk(n.parallelSteps);
+      } else if (n.kind === 'if') {
+        branches++;
+        walk(n.thenBranch);
+        walk(n.elseBranch);
+      }
+    }
+  };
+  walk(nodes);
+  return { parallel, branches };
+}
+
+function draftBadges() {
+  if (!draft.value || !draft.value.steps) return [];
+  const { parallel, branches } = countStructure(draft.value.steps);
+  const badges = [];
+  if (parallel > 0) badges.push({ text: `⚡ 并行组 ×${parallel}`, cls: 'badge-parallel' });
+  if (branches > 0) badges.push({ text: `🔀 条件分支 ×${branches}`, cls: 'badge-branch' });
+  return badges;
+}
+
 // 工作流列表
 const workflows = ref([]);
 const loading = ref(false);
@@ -338,7 +367,10 @@ onMounted(load);
       </button>
 
       <div v-if="draft" class="draft">
-        <h3>草案（{{ draft.steps.length }} 步，支持顺序/分支/并行）</h3>
+        <h3>
+          草案（{{ draft.steps.length }} 步，支持顺序/分支/并行）
+          <span v-for="b in draftBadges()" :key="b.text" class="draft-badge" :class="b.cls">{{ b.text }}</span>
+        </h3>
         <div class="draft-tree">
           <DraftNode v-for="(s, i) in draft.steps" :key="i" :node="s" :index="i" />
         </div>
@@ -505,6 +537,18 @@ onMounted(load);
   display: grid;
   gap: 8px;
 }
+
+/* 草案结构徽标（对话生成 parallel 产品化） */
+.draft-badge {
+  font-size: 11px;
+  font-weight: normal;
+  padding: 1px 8px;
+  border-radius: 10px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.badge-parallel { background: #ede7f6; color: #4527a0; }
+.badge-branch { background: #e0f2f1; color: #00695c; }
 
 .hint {
   margin: 0;

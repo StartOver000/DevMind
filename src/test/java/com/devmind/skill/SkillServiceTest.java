@@ -9,6 +9,7 @@ import com.devmind.workflow.WorkflowRepository;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -98,12 +99,26 @@ class SkillServiceTest {
     @Test
     void listFiltersByScope() {
         setUp();
-        when(repository.listVisible(1L, 1L, "all")).thenReturn(List.of());
+        when(repository.listVisible(1L, 1L, "all", null, null)).thenReturn(List.of());
 
-        List<Skill> result = service.list(1L, null);
+        List<Skill> result = service.list(1L, null, null);
 
         assertThat(result).isEmpty();
-        verify(repository).listVisible(1L, 1L, "all");
+        verify(repository).listVisible(1L, 1L, "all", null, null);
+    }
+
+    @Test
+    void statsReturnsHealthDashboard() {
+        setUp();
+        when(repository.stats(1L, 1L)).thenReturn(Map.of(
+                "total", 3L, "enabled", 2L, "hitTotal", 7L, "hot", List.of(), "zombie", List.of()
+        ));
+
+        Map<String, Object> result = service.stats(1L);
+
+        assertThat(result.get("total")).isEqualTo(3L);
+        assertThat(result.get("hitTotal")).isEqualTo(7L);
+        verify(repository).stats(1L, 1L);
     }
 
     @Test

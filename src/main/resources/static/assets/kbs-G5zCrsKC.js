@@ -1,0 +1,1 @@
+import{I as s,f as t}from"./index-CJIk-0xa.js";const o=s({kbs:[],loaded:!1,async load(){try{const a=await t("/api/knowledge-bases");this.kbs=a.items||[],this.loaded=!0}catch(a){throw this.kbs=[],this.loaded=!0,a}}});export{o as k};

@@ -63,6 +63,7 @@ public class AgentService {
             - update_skill：用户指出某条技能规范不对/需要调整时，调用本工具修改技能内容。
             - load_skill：按需加载技能完整规范。system 中【可参考技能清单】只列了名称/描述；
               当当前任务确实涉及清单中某项时，先调用 load_skill（skillId 取清单中的 ID）拿到完整规范再执行。
+            - delete_memory：用户要求忘记/删除某条长期记忆（system 中【用户长期记忆】里带【记忆 ID x】的条目）时，调用本工具删除该条记忆。
             - kb_search：检索研发知识库，获取与问题相关的文档片段（含相似度分数）。
             - kb_info：查询当前用户可访问的知识库列表。
             - doc_list：查询指定知识库内的文档清单（文件名、状态、文本块数）。
@@ -83,6 +84,9 @@ public class AgentService {
             7. 若 system 中只有【可参考技能清单】（未给全文），而当前任务确实与清单中某项
                技能相关（如用户明确要求按某项规范执行），必须先用 load_skill 加载其全文并遵循，
                不要凭名称猜测技能内容。
+            8. 若用户要求忘记/删除某条长期记忆（如"忘掉这条""删掉刚才那个偏好"，对应
+               system 中【用户长期记忆】里带【记忆 ID x】的条目），调用 delete_memory
+               （memoryId 取该条目的 ID），删除后告知用户。
             """;
 
     /** 会话结束后自动提取用户长期偏好的提取器提示词 */
@@ -153,6 +157,22 @@ public class AgentService {
                 "skillId": { "type": "integer", "description": "要加载的技能 ID" }
               },
               "required": ["skillId"]
+            }
+            """;
+
+    /**
+     * delete_memory：对话式删除长期记忆的内部工具（Guide-52 记忆升级，对标 Coze）。
+     * 用户要求"忘掉/删除某条记忆"时，模型调用本工具删除对应记忆条目。
+     */
+    public static final String DELETE_MEMORY_TOOL_NAME = "delete_memory";
+    private static final String DELETE_MEMORY_TOOL_DESC = "删除一条用户长期记忆：当用户要求忘记/删除某条已记录的用户偏好或记忆（system 中【用户长期记忆】里的条目）时，传入其 ID 删除该条记忆。";
+    private static final String DELETE_MEMORY_TOOL_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "memoryId": { "type": "integer", "description": "要删除的记忆条目 ID" }
+              },
+              "required": ["memoryId"]
             }
             """;
 
@@ -308,13 +328,13 @@ public class AgentService {
         if (!skillParts.isEmpty()) {
             messages.add(Map.of("role", "system", "content", String.join("\n\n", skillParts)));
         }
-        // 长期记忆：注入用户偏好（跨会话保留）
+        // 长期记忆：注入用户偏好（跨会话保留）；带 ID 供 delete_memory 定位
         List<com.devmind.agent.dto.MemoryItem> memory = memoryRepository.listByUser(userId);
         if (memory != null && !memory.isEmpty()) {
             String memoryText = memory.stream()
-                    .map(m -> m.key() + ": " + m.value())
+                    .map(m -> "【记忆 ID " + m.id() + "】" + m.key() + ": " + m.value())
                     .collect(java.util.stream.Collectors.joining("；"));
-            messages.add(Map.of("role", "system", "content", "【用户长期记忆】" + memoryText + "（回答时可参考这些用户偏好）"));
+            messages.add(Map.of("role", "system", "content", "【用户长期记忆】" + memoryText + "（回答时可参考这些用户偏好；用户要求删除某条时用 delete_memory）"));
         }
         // 多轮记忆：加载该会话最近的历史消息作为上下文
         if (conversationId != null && conversationId > 0) {
@@ -348,6 +368,8 @@ public class AgentService {
         tools.add(new AiModelGateway.ToolSpec(UPDATE_SKILL_TOOL_NAME, UPDATE_SKILL_TOOL_DESC, UPDATE_SKILL_TOOL_SCHEMA));
         // 注入技能加载工具（渐进披露）：system 只给技能清单，模型按需加载全文
         tools.add(new AiModelGateway.ToolSpec(LOAD_SKILL_TOOL_NAME, LOAD_SKILL_TOOL_DESC, LOAD_SKILL_TOOL_SCHEMA));
+        // 注入记忆删除工具（可追溯记忆）：用户要求忘记某条记忆时特判执行
+        tools.add(new AiModelGateway.ToolSpec(DELETE_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_DESC, DELETE_MEMORY_TOOL_SCHEMA));
 
         try {
             // 计划失败后是否还能引导模型重规划（限 1 次，避免死循环）
@@ -400,6 +422,10 @@ public class AgentService {
                     } else if (LOAD_SKILL_TOOL_NAME.equals(tc.name())) {
                         // 按需加载技能全文：特判执行，结果回填
                         ToolExecOutcome outcome = executeLoadSkill(tc, userId);
+                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
+                    } else if (DELETE_MEMORY_TOOL_NAME.equals(tc.name())) {
+                        // 对话式删除长期记忆：特判执行，结果回填
+                        ToolExecOutcome outcome = executeDeleteMemory(tc, userId);
                         trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
                     } else {
                         parallelCalls.add(tc);
@@ -669,7 +695,36 @@ public class AgentService {
         }
     }
 
-    /** 解析 plan 工具参数为有序步骤列表；无法解析（非数组/为空/工具名为空）返回 null */    private List<PlanStep> parsePlan(String argumentsJson) {
+    /**
+     * 对话式删除长期记忆（delete_memory 内部工具）：解析 memoryId，
+     * 删除对应用户记忆条目。返回执行结果（供模型告知用户）。
+     */
+    private ToolExecOutcome executeDeleteMemory(AiModelGateway.ToolCall tc, Long userId) {
+        long start = System.currentTimeMillis();
+        try {
+            JsonNode root = objectMapper.readTree(tc.argumentsJson() == null ? "{}" : tc.argumentsJson());
+            long memoryId = root.path("memoryId").asLong(0);
+            if (memoryId <= 0) {
+                return new ToolExecOutcome("{\"error\": \"缺少有效的 memoryId\"}", false,
+                        System.currentTimeMillis() - start);
+            }
+            int affected = memoryRepository.deleteById(userId, memoryId);
+            if (affected == 0) {
+                return new ToolExecOutcome("{\"error\": \"记忆不存在或无权删除: " + memoryId + "\"}", false,
+                        System.currentTimeMillis() - start);
+            }
+            meterRegistry.counter("devmind.agent.memory_delete_total").increment();
+            String summary = "已删除长期记忆条目（ID " + memoryId + "）。请告知用户该记忆已删除，不再需要遵循。";
+            return new ToolExecOutcome(summary, true, System.currentTimeMillis() - start);
+        } catch (Exception ex) {
+            String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+            return new ToolExecOutcome("{\"error\": \"记忆删除失败: " + message + "\"}", false,
+                    System.currentTimeMillis() - start);
+        }
+    }
+
+    /** 解析 plan 工具参数为有序步骤列表；无法解析（非数组/为空/工具名为空）返回 null */
+    private List<PlanStep> parsePlan(String argumentsJson) {
         try {
             JsonNode root = objectMapper.readTree(argumentsJson == null ? "{}" : argumentsJson);
             JsonNode steps = root.path("steps");
@@ -771,6 +826,18 @@ public class AgentService {
     public void updateMemory(MemoryUpdateRequest request, Long userId) {
         userService.requireUser(userId);
         memoryRepository.replaceAll(userId, request == null ? List.of() : request.items());
+    }
+
+    /** 删除单条长期记忆（可追溯记忆：按 id 删除；不存在时抛错提示） */
+    public void deleteMemory(Long id, Long userId) {
+        userService.requireUser(userId);
+        if (id == null || id <= 0) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "缺少有效的记忆 ID");
+        }
+        int affected = memoryRepository.deleteById(userId, id);
+        if (affected == 0) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "记忆不存在或无权删除: " + id);
+        }
     }
 
     private void saveMessages(Long conversationId, String question, String answer) {

@@ -151,4 +151,12 @@ public class AgentController {
     ) {
         agentService.updateMemory(request, userId);
     }
+
+    @DeleteMapping("/memory/{id}")
+    public void deleteMemory(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        agentService.deleteMemory(id, userId);
+    }
 }

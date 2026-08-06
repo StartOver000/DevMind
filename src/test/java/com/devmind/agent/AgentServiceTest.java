@@ -527,6 +527,72 @@ class AgentServiceTest {
     }
 
     @Test
+    void deleteMemoryInternalToolRemovesEntryAndReports() {
+        // 用户要求忘记某条记忆 → 模型调用 delete_memory → 删除该条并告知
+        AgentTool tool = kbTool();
+        when(memoryRepository.deleteById(eq(1L), eq(5L))).thenReturn(1);
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("d1", AgentService.DELETE_MEMORY_TOOL_NAME,
+                                        "{\"memoryId\":5}"))),
+                        new AiModelGateway.ChatResult("已删除该条记忆。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "忘掉刚才那个偏好", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("已删除该条记忆。");
+        verify(memoryRepository).deleteById(eq(1L), eq(5L));
+        assertThat(response.toolTrace()).hasSize(1);
+        assertThat(response.toolTrace().get(0).tool()).isEqualTo(AgentService.DELETE_MEMORY_TOOL_NAME);
+        assertThat(response.toolTrace().get(0).ok()).isTrue();
+    }
+
+    @Test
+    void deleteMemoryToolMissingIdReturnsErrorButContinues() {
+        // delete_memory 参数缺少 memoryId → 返回错误但不中断链路
+        AgentTool tool = kbTool();
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("d1", AgentService.DELETE_MEMORY_TOOL_NAME, "{}"))),
+                        new AiModelGateway.ChatResult("缺少记忆 ID，无法删除。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "删记忆", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("缺少记忆 ID，无法删除。");
+        assertThat(response.toolTrace()).hasSize(1);
+        assertThat(response.toolTrace().get(0).ok()).isFalse();
+        verify(memoryRepository, never()).deleteById(any(), any());
+    }
+
+    @Test
+    void deleteMemoryNonexistentReturnsErrorButContinues() {
+        // 记忆不存在（deleteById 返回 0）→ 错误回填，链路继续
+        AgentTool tool = kbTool();
+        when(memoryRepository.deleteById(eq(1L), eq(99L))).thenReturn(0);
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("d1", AgentService.DELETE_MEMORY_TOOL_NAME,
+                                        "{\"memoryId\":99}"))),
+                        new AiModelGateway.ChatResult("该记忆不存在。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "删记忆", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("该记忆不存在。");
+        assertThat(response.toolTrace().get(0).ok()).isFalse();
+    }
+
+    @Test
     void executesMultipleToolCallsInParallelWithOrderedResults() {
         AgentTool tool = kbTool();
         when(tool.execute(anyString(), any())).thenReturn("[{\"documentName\":\"a.md\",\"content\":\"结果\"}]");

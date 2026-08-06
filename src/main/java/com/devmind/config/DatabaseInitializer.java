@@ -274,13 +274,25 @@ public class DatabaseInitializer implements ApplicationRunner {
         jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_agent_trace_conversation ON agent_trace(conversation_id, id)");
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS agent_memory (
+                    id BIGSERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
                     memory_key VARCHAR(100) NOT NULL,
                     memory_value VARCHAR(500) NOT NULL,
+                    source VARCHAR(16) NOT NULL DEFAULT 'auto',  -- auto（自动提取）| manual（手动编辑）
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (user_id, memory_key)
+                    CONSTRAINT uq_agent_memory_user_key UNIQUE (user_id, memory_key)
                 )
                 """);
+        // 迁移：老表无 id/source/created_time（主键为 (user_id, memory_key)），补齐并保证幂等
+        jdbcTemplate.execute("ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS id BIGINT");
+        jdbcTemplate.execute("ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'auto'");
+        jdbcTemplate.execute("ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP");
+        jdbcTemplate.execute("CREATE SEQUENCE IF NOT EXISTS agent_memory_id_seq");
+        jdbcTemplate.execute("UPDATE agent_memory SET id = nextval('agent_memory_id_seq') WHERE id IS NULL");
+        jdbcTemplate.execute("ALTER TABLE agent_memory ALTER COLUMN id SET NOT NULL");
+        jdbcTemplate.execute("ALTER TABLE agent_memory ALTER COLUMN id SET DEFAULT nextval('agent_memory_id_seq')");
+        jdbcTemplate.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_memory_id ON agent_memory(id)");
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS sql_diagnosis (
                     id BIGSERIAL PRIMARY KEY,

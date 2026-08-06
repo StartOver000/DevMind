@@ -48,23 +48,27 @@ const currentReferences = computed(() => {
   return (r && r.references) ? r.references : [];
 });
 
-// 长期记忆
-const memoryText = ref('');
+// 长期记忆（可追溯条目：来源/时间戳 + 单条删除，Guide-52 记忆升级）
+const memoryItems = ref([]);   // { id, key, value, source, createdTime, updatedTime }
+const memoryText = ref('');    // 新增条目输入（每行 key: value）
 
 async function loadMemory() {
   try {
     const data = await api('/api/agent/memory');
-    memoryText.value = Array.isArray(data)
-      ? data.map((m) => `${m.key}: ${m.value}`).join('\n')
-      : '';
+    memoryItems.value = Array.isArray(data) ? data : [];
   } catch (err) {
-    memoryText.value = '';
+    memoryItems.value = [];
   }
+}
+
+function memorySourceLabel(source) {
+  return source === 'manual' ? '手动' : '自动';
 }
 
 async function saveMemory() {
   try {
-    const items = memoryText.value.split('\n')
+    // textarea 里的新增条目（key: value），追加到现有条目后整体保存
+    const added = memoryText.value.split('\n')
       .map((l) => l.trim())
       .filter(Boolean)
       .map((l) => {
@@ -73,8 +77,24 @@ async function saveMemory() {
         return { key: l.slice(0, idx).trim(), value: l.slice(idx + 1).trim() };
       })
       .filter(Boolean);
+    const items = [
+      ...memoryItems.value.map((m) => ({ key: m.key, value: m.value })),
+      ...added
+    ];
     await api('/api/agent/memory', { method: 'PUT', body: JSON.stringify({ items }) });
+    memoryText.value = '';
+    await loadMemory();
     showToast('长期记忆已保存');
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function deleteMemory(item) {
+  try {
+    await api(`/api/agent/memory/${item.id}`, { method: 'DELETE' });
+    memoryItems.value = memoryItems.value.filter((m) => m.id !== item.id);
+    showToast('已删除该条记忆');
   } catch (err) {
     showToast(err.message, true);
   }
@@ -756,15 +776,28 @@ onBeforeUnmount(() => {
           </div>
         </details>
         <details v-if="mode === 'agent'" class="rag-params">
-          <summary>长期记忆</summary>
+          <summary>长期记忆 <span v-if="memoryItems.length" class="memory-count">{{ memoryItems.length }} 条</span></summary>
           <div class="rag-params-body column">
+            <div v-if="memoryItems.length" class="memory-list">
+              <div v-for="m in memoryItems" :key="m.id" class="memory-item">
+                <div class="memory-item-main">
+                  <span class="memory-item-key">{{ m.key }}</span>:
+                  <span class="memory-item-value">{{ m.value }}</span>
+                </div>
+                <div class="memory-item-meta">
+                  <span class="memory-source" :class="m.source === 'manual' ? 'manual' : 'auto'">{{ memorySourceLabel(m.source) }}</span>
+                  <span class="memory-time">{{ m.updatedTime || m.createdTime || '' }}</span>
+                  <button class="link danger small" title="删除该条记忆" @click="deleteMemory(m)">删除</button>
+                </div>
+              </div>
+            </div>
             <textarea
               v-model="memoryText"
-              rows="3"
-              placeholder="每行一条，格式：偏好: 内容&#10;例如：&#10;语言: 中文&#10;回答风格: 简洁直接"
+              rows="2"
+              placeholder="新增偏好，每行一条，格式：偏好: 内容&#10;例如：&#10;语言: 中文"
             ></textarea>
             <div class="memory-actions">
-              <span class="memory-hint">会话结束后自动提取你的偏好，可手动编辑补充</span>
+              <span class="memory-hint">会话结束后自动提取你的偏好，可手动补充</span>
               <button class="secondary small" @click="saveMemory">保存记忆</button>
             </div>
           </div>
@@ -1063,6 +1096,87 @@ onBeforeUnmount(() => {
 .memory-hint {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* 可追溯记忆条目列表（来源/时间戳/单条删除） */
+.memory-count {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.memory-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-soft, rgba(128, 128, 128, 0.05));
+}
+
+.memory-item-main {
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.memory-item-key {
+  font-weight: 600;
+  color: var(--accent, inherit);
+}
+
+.memory-item-value {
+  color: var(--text, inherit);
+}
+
+.memory-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.memory-source {
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.memory-source.manual {
+  background: rgba(46, 125, 50, 0.15);
+  color: #2e7d32;
+}
+
+.memory-source.auto {
+  background: rgba(21, 101, 192, 0.15);
+  color: #1565c0;
+}
+
+.memory-time {
+  flex: 1;
+}
+
+button.link.danger {
+  background: none;
+  border: none;
+  color: #c62828;
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+}
+
+button.link.danger:hover {
+  text-decoration: underline;
 }
 
 /* 对话沉淀技能：保存按钮行 + 编辑面板 */

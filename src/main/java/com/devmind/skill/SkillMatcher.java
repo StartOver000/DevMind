@@ -16,8 +16,10 @@ public class SkillMatcher {
 
     private static final Logger log = LoggerFactory.getLogger(SkillMatcher.class);
 
-    /** 单次最多注入的技能数 */
+    /** 单次最多注入全文的技能数（关键词命中） */
     private static final int MAX_INJECT = 2;
+    /** 清单中最多展示的技能数（渐进披露：未命中仅给名称+描述，模型按需 load_skill） */
+    private static final int MAX_CATALOG = 20;
     /** 单个技能内容截断（防上下文膨胀） */
     private static final int MAX_CONTENT_CHARS = 1500;
 
@@ -27,36 +29,55 @@ public class SkillMatcher {
         this.repository = repository;
     }
 
+    /** 匹配结果：关键词命中的注入全文 + 其余技能轻量清单（渐进披露） */
+    public record MatchResult(List<String> injectFull, List<String> catalog) {
+        public boolean isEmpty() {
+            return (injectFull == null || injectFull.isEmpty())
+                    && (catalog == null || catalog.isEmpty());
+        }
+    }
+
     /**
-     * 匹配当前请求命中的技能规范文本（团队 + 本人 personal）。
-     * 匹配规则：问题文本包含 apply_to 中的任一关键词（按 | 分隔）；未命中不注入。
-     * 注入文本带技能 ID（供 update_skill 定位），并自增命中统计。
+     * 匹配当前请求（Guide-51 P1 + P3 渐进披露）：
+     * 1. 关键词命中（apply_to 包含问题中的词）→ 注入全文规范（确定性场景直接遵循）；
+     * 2. 其余技能 → 只注入轻量清单（ID+名称+描述），模型判断相关时调 load_skill 获取全文。
+     * 命中全文自增 hit_count（发现僵尸/热门技能）。
      */
-    public List<String> match(String question, Long tenantId, Long userId) {
-        List<String> result = new ArrayList<>();
+    public MatchResult match(String question, Long tenantId, Long userId) {
+        List<String> injectFull = new ArrayList<>();
+        List<String> catalog = new ArrayList<>();
         if (question == null || question.isBlank()) {
-            return result;
+            return new MatchResult(injectFull, catalog);
         }
         try {
             List<Skill> skills = repository.listEnabledForUser(tenantId, userId);
             String q = question.toLowerCase();
+            int catalogCount = 0;
             for (Skill skill : skills) {
-                if (result.size() >= MAX_INJECT) {
-                    break;
-                }
                 if (matches(skill, q)) {
-                    String content = skill.content();
-                    if (content.length() > MAX_CONTENT_CHARS) {
-                        content = content.substring(0, MAX_CONTENT_CHARS);
+                    if (injectFull.size() < MAX_INJECT) {
+                        String content = skill.content();
+                        if (content.length() > MAX_CONTENT_CHARS) {
+                            content = content.substring(0, MAX_CONTENT_CHARS);
+                        }
+                        injectFull.add("【技能 ID " + skill.id() + "：" + skill.name() + "】\n" + content);
+                        repository.incrementHit(tenantId, skill.id());
+                        continue;
                     }
-                    result.add("【技能 ID " + skill.id() + "：" + skill.name() + "】\n" + content);
-                    repository.incrementHit(tenantId, skill.id());
+                    // 已到全文上限：其余命中技能降级进清单（模型可 load_skill 加载）
+                }
+                if (catalogCount < MAX_CATALOG) {
+                    // 未命中关键词（或命中但全文已满）：只给名称+描述，供模型按需加载全文
+                    String desc = skill.description() == null || skill.description().isBlank()
+                            ? skill.name() : skill.description();
+                    catalog.add("【技能 ID " + skill.id() + "】" + skill.name() + "：" + desc);
+                    catalogCount++;
                 }
             }
         } catch (Exception ex) {
             log.warn("技能匹配失败，跳过注入: {}", ex.getMessage());
         }
-        return result;
+        return new MatchResult(injectFull, catalog);
     }
 
     /** apply_to 用 | 分隔多个关键词/场景；任一命中即匹配；空 apply_to 不匹配 */
@@ -72,5 +93,14 @@ public class SkillMatcher {
             }
         }
         return false;
+    }
+
+    /** 按需加载（load_skill 内部工具）命中时自增 hit_count，反映真实使用热度 */
+    public void recordLoad(Long tenantId, Long skillId) {
+        try {
+            repository.incrementHit(tenantId, skillId);
+        } catch (Exception ex) {
+            log.warn("技能命中统计失败: {}", ex.getMessage());
+        }
     }
 }

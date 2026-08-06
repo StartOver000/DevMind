@@ -187,10 +187,11 @@ class AgentServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void injectsMatchedSkillIntoSystemPrompt() {
-        // 技能匹配器命中 → 规范注入 system prompt（Guide-51 P1）
+        // 技能匹配器命中 → 规范注入 system prompt（Guide-51 P1：关键词命中注入全文）
         com.devmind.skill.SkillMatcher matcher = org.mockito.Mockito.mock(com.devmind.skill.SkillMatcher.class);
         when(matcher.match(eq("写一份月度经营分析报告"), eq(1L), eq(1L)))
-                .thenReturn(List.of("【技能：月报规范】\n生成月报必须包含同比环比。"));
+                .thenReturn(new com.devmind.skill.SkillMatcher.MatchResult(
+                        List.of("【技能 ID 1：月报规范】\n生成月报必须包含同比环比。"), List.of()));
 
         AgentTool tool = kbTool();
         AgentService service = service(new ToolRegistry(List.of(tool)));
@@ -209,6 +210,35 @@ class AgentServiceTest {
                         && String.valueOf(m.get("content")).contains("相关技能规范")
                         && String.valueOf(m.get("content")).contains("同比环比"));
         assertThat(found).isTrue();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void injectsSkillCatalogWithoutFullContent() {
+        // 渐进披露：未命中关键词的技能只进清单（名称+描述），不含全文
+        com.devmind.skill.SkillMatcher matcher = org.mockito.Mockito.mock(com.devmind.skill.SkillMatcher.class);
+        when(matcher.match(eq("帮我看看代码规范"), eq(1L), eq(1L)))
+                .thenReturn(new com.devmind.skill.SkillMatcher.MatchResult(
+                        List.of(),
+                        List.of("【技能 ID 2】监控版本检查：检查各服务版本是否符合规范")));
+
+        AgentTool tool = kbTool();
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        service.setSkillMatcher(matcher);
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(new AiModelGateway.ChatResult("清单已收到。", "m", 0, 0));
+
+        service.chat(new AgentChatRequest(0L, "帮我看看代码规范", null), 1L);
+
+        ArgumentCaptor<List<Map<String, Object>>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatRouter).chatWithTools(anyString(), captor.capture(), anyList());
+        List<Map<String, Object>> messages = captor.getValue();
+        boolean foundCatalog = messages.stream().anyMatch(m ->
+                "system".equals(m.get("role"))
+                        && String.valueOf(m.get("content")).contains("可参考技能清单")
+                        && String.valueOf(m.get("content")).contains("监控版本检查"));
+        assertThat(foundCatalog).isTrue();
     }
 
     @Test
@@ -403,6 +433,73 @@ class AgentServiceTest {
         AgentChatResponse response = service.chat(new AgentChatRequest(0L, "改技能", null), 1L);
 
         assertThat(response.answer()).isEqualTo("技能服务暂不可用，请稍后再试。");
+        assertThat(response.toolTrace()).hasSize(1);
+        assertThat(response.toolTrace().get(0).ok()).isFalse();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void loadSkillInternalToolReturnsFullContentForModel() {
+        // 渐进披露：模型调 load_skill 获取清单中技能的全文 → 回填工具结果供其遵循
+        AgentTool tool = kbTool();
+        com.devmind.skill.SkillService skillService = org.mockito.Mockito.mock(com.devmind.skill.SkillService.class);
+        com.devmind.skill.SkillMatcher matcher = org.mockito.Mockito.mock(com.devmind.skill.SkillMatcher.class);
+        com.devmind.skill.Skill skill = new com.devmind.skill.Skill(2L, 1L, "team", "监控版本检查", "d",
+                "监控版本", "必须包含构建用户，且不超过 3 句话。", "manual", null, true, 0L, 1L, null);
+        when(skillService.get(eq(1L), eq(2L))).thenReturn(skill);
+
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        service.setSkillService(skillService);
+        service.setSkillMatcher(matcher);
+        when(matcher.match(anyString(), eq(1L), eq(1L)))
+                .thenReturn(new com.devmind.skill.SkillMatcher.MatchResult(List.of(), List.of()));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        String loadArgs = "{\"skillId\":2}";
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("l1", AgentService.LOAD_SKILL_TOOL_NAME, loadArgs))),
+                        new AiModelGateway.ChatResult("已加载技能并按其规范执行。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "查一下监控版本信息并总结", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("已加载技能并按其规范执行。");
+        verify(skillService).get(eq(1L), eq(2L));
+        // 命中即自增
+        verify(matcher).recordLoad(eq(1L), eq(2L));
+        // 轨迹含 load_skill 且成功
+        assertThat(response.toolTrace()).hasSize(1);
+        assertThat(response.toolTrace().get(0).tool()).isEqualTo(AgentService.LOAD_SKILL_TOOL_NAME);
+        assertThat(response.toolTrace().get(0).ok()).isTrue();
+        // 工具结果消息（回填给模型）含完整规范文本
+        org.mockito.ArgumentCaptor<List<Map<String, Object>>> captor =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(chatRouter, org.mockito.Mockito.times(2)).chatWithTools(anyString(), captor.capture(), anyList());
+        boolean toolMsgHasContent = captor.getAllValues().stream()
+                .flatMap(List::stream)
+                .anyMatch(m -> "tool".equals(m.get("role"))
+                        && String.valueOf(m.get("content")).contains("必须包含构建用户"));
+        assertThat(toolMsgHasContent).isTrue();
+    }
+
+    @Test
+    void loadSkillWithoutServiceReturnsErrorButContinues() {
+        // 未注入 SkillService 时 load_skill 返回错误但不中断
+        AgentTool tool = kbTool();
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("l1", AgentService.LOAD_SKILL_TOOL_NAME,
+                                        "{\"skillId\":2}"))),
+                        new AiModelGateway.ChatResult("技能服务暂不可用，我基于已有信息回答。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "查监控", null), 1L);
+
+        assertThat(response.answer()).isEqualTo("技能服务暂不可用，我基于已有信息回答。");
         assertThat(response.toolTrace()).hasSize(1);
         assertThat(response.toolTrace().get(0).ok()).isFalse();
     }

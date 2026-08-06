@@ -61,6 +61,8 @@ public class AgentService {
             可调用工具：
             - plan：多步任务的执行计划（≥3 个独立步骤时提交 plan，含 goal 与有序 steps，每步一个工具）。
             - update_skill：用户指出某条技能规范不对/需要调整时，调用本工具修改技能内容。
+            - load_skill：按需加载技能完整规范。system 中【可参考技能清单】只列了名称/描述；
+              当当前任务确实涉及清单中某项时，先调用 load_skill（skillId 取清单中的 ID）拿到完整规范再执行。
             - kb_search：检索研发知识库，获取与问题相关的文档片段（含相似度分数）。
             - kb_info：查询当前用户可访问的知识库列表。
             - doc_list：查询指定知识库内的文档清单（文件名、状态、文本块数）。
@@ -78,6 +80,9 @@ public class AgentService {
                问题/要修改（如"这个技能不对"、"把第 2 步改成先查 A"），调用 update_skill
                （skillId 取规范中的 ID，instruction 为用户原话）。修改后必须向用户展示
                "修改前 → 修改后"对比，并询问是否符合预期；用户仍不满意则继续调整。
+            7. 若 system 中只有【可参考技能清单】（未给全文），而当前任务确实与清单中某项
+               技能相关（如用户明确要求按某项规范执行），必须先用 load_skill 加载其全文并遵循，
+               不要凭名称猜测技能内容。
             """;
 
     /** 会话结束后自动提取用户长期偏好的提取器提示词 */
@@ -132,6 +137,22 @@ public class AgentService {
                 "instruction": { "type": "string", "description": "用户的修改意见/要求（原话即可）" }
               },
               "required": ["skillId", "instruction"]
+            }
+            """;
+
+    /**
+     * load_skill：按需加载技能全文的内部工具（渐进披露）。
+     * system 中【可参考技能清单】只含名称/描述；模型判断当前任务涉及某项时调用本工具获取完整规范。
+     */
+    public static final String LOAD_SKILL_TOOL_NAME = "load_skill";
+    private static final String LOAD_SKILL_TOOL_DESC = "加载一项技能（Skill）的完整规范文本：当 system 中的【可参考技能清单】里某项技能与当前任务相关时，传入其 ID 获取完整规范并遵循。";
+    private static final String LOAD_SKILL_TOOL_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "skillId": { "type": "integer", "description": "要加载的技能 ID" }
+              },
+              "required": ["skillId"]
             }
             """;
 
@@ -214,16 +235,17 @@ public class AgentService {
     }
 
     /** 匹配当前请求命中的技能规范（Guide-51 P1）：未注入 matcher 或未命中时返回空 */
-    private List<String> matchSkills(String question, Long userId) {
+    /** 技能匹配（渐进披露）：返回命中全文 + 可加载清单 */
+    private com.devmind.skill.SkillMatcher.MatchResult matchSkills(String question, Long userId) {
         if (skillMatcher == null) {
-            return List.of();
+            return new com.devmind.skill.SkillMatcher.MatchResult(List.of(), List.of());
         }
         try {
             Long tenantId = userService.tenantIdOf(userId);
             return skillMatcher.match(question, tenantId, userId);
         } catch (Exception ex) {
             log.warn("技能匹配失败: {}", ex.getMessage());
-            return List.of();
+            return new com.devmind.skill.SkillMatcher.MatchResult(List.of(), List.of());
         }
     }
 
@@ -272,12 +294,19 @@ public class AgentService {
 
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", SYSTEM_PROMPT));
-        // 技能注入：命中当前请求场景的团队/个人技能作为规范遵循（Guide-51 P1）
-        List<String> skillTexts = matchSkills(question, userId);
-        if (!skillTexts.isEmpty()) {
-            messages.add(Map.of("role", "system", "content",
-                    "【相关技能规范】以下是与当前任务相关的技能规范，请遵循（如与通用规则冲突以本条为准）：\n"
-                            + String.join("\n---\n", skillTexts)));
+        // 技能注入（Guide-51 渐进披露）：关键词命中注入全文；其余仅给清单，按需 load_skill
+        com.devmind.skill.SkillMatcher.MatchResult skillMatch = matchSkills(question, userId);
+        List<String> skillParts = new ArrayList<>();
+        if (skillMatch.injectFull() != null && !skillMatch.injectFull().isEmpty()) {
+            skillParts.add("【相关技能规范】以下技能与当前任务直接相关，请遵循（与通用规则冲突以本条为准）：\n"
+                    + String.join("\n---\n", skillMatch.injectFull()));
+        }
+        if (skillMatch.catalog() != null && !skillMatch.catalog().isEmpty()) {
+            skillParts.add("【可参考技能清单】以下技能可能相关。若当前任务确实涉及某项，调用 load_skill 加载其完整规范后遵循：\n"
+                    + String.join("\n", skillMatch.catalog()));
+        }
+        if (!skillParts.isEmpty()) {
+            messages.add(Map.of("role", "system", "content", String.join("\n\n", skillParts)));
         }
         // 长期记忆：注入用户偏好（跨会话保留）
         List<com.devmind.agent.dto.MemoryItem> memory = memoryRepository.listByUser(userId);
@@ -317,6 +346,8 @@ public class AgentService {
         tools.add(new AiModelGateway.ToolSpec(PLAN_TOOL_NAME, PLAN_TOOL_DESC, PLAN_TOOL_SCHEMA));
         // 注入技能修正工具（对话式调整）：模型发现用户要改技能时特判执行
         tools.add(new AiModelGateway.ToolSpec(UPDATE_SKILL_TOOL_NAME, UPDATE_SKILL_TOOL_DESC, UPDATE_SKILL_TOOL_SCHEMA));
+        // 注入技能加载工具（渐进披露）：system 只给技能清单，模型按需加载全文
+        tools.add(new AiModelGateway.ToolSpec(LOAD_SKILL_TOOL_NAME, LOAD_SKILL_TOOL_DESC, LOAD_SKILL_TOOL_SCHEMA));
 
         try {
             // 计划失败后是否还能引导模型重规划（限 1 次，避免死循环）
@@ -365,6 +396,10 @@ public class AgentService {
                     } else if (UPDATE_SKILL_TOOL_NAME.equals(tc.name())) {
                         // 对话式修正技能：特判执行，结果回填
                         ToolExecOutcome outcome = executeUpdateSkill(tc, userId);
+                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
+                    } else if (LOAD_SKILL_TOOL_NAME.equals(tc.name())) {
+                        // 按需加载技能全文：特判执行，结果回填
+                        ToolExecOutcome outcome = executeLoadSkill(tc, userId);
                         trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
                     } else {
                         parallelCalls.add(tc);
@@ -597,8 +632,44 @@ public class AgentService {
         }
     }
 
-    /** 解析 plan 工具参数为有序步骤列表；无法解析（非数组/为空/工具名为空）返回 null */
-    private List<PlanStep> parsePlan(String argumentsJson) {
+    /**
+     * 按需加载技能全文（load_skill 内部工具，渐进披露）：解析 skillId，
+     * 经 SkillService.get 走可见性校验（个人技能仅本人/团队技能全员）后返回完整规范文本。
+     * 命中即视为一次有效使用，自增 hit_count。
+     */
+    private ToolExecOutcome executeLoadSkill(AiModelGateway.ToolCall tc, Long userId) {
+        if (skillService == null) {
+            return new ToolExecOutcome(
+                    "{\"error\": \"技能服务不可用，请稍后再试\"}", false, 0);
+        }
+        long start = System.currentTimeMillis();
+        try {
+            JsonNode root = objectMapper.readTree(tc.argumentsJson() == null ? "{}" : tc.argumentsJson());
+            long skillId = root.path("skillId").asLong(0);
+            if (skillId <= 0) {
+                return new ToolExecOutcome("{\"error\": \"缺少有效的 skillId\"}", false,
+                        System.currentTimeMillis() - start);
+            }
+            com.devmind.skill.Skill skill = skillService.get(userId, skillId);
+            // 命中一次即自增（与关键词命中同一统计口径，反映技能真实使用热度）
+            try {
+                skillMatcher.recordLoad(userService.tenantIdOf(userId), skillId);
+            } catch (Exception ignored) {
+                // 统计失败不影响主流程
+            }
+            String content = truncate(skill.content(), MAX_TOOL_RESULT_CHARS);
+            String summary = "技能【" + skill.name() + "】（ID " + skill.id() + "，"
+                    + ("personal".equals(skill.scope()) ? "个人" : "团队") + "）完整规范如下：\n" + content
+                    + "\n请遵循该规范完成当前任务。";
+            return new ToolExecOutcome(summary, true, System.currentTimeMillis() - start);
+        } catch (Exception ex) {
+            String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+            return new ToolExecOutcome("{\"error\": \"技能加载失败: " + message + "\"}", false,
+                    System.currentTimeMillis() - start);
+        }
+    }
+
+    /** 解析 plan 工具参数为有序步骤列表；无法解析（非数组/为空/工具名为空）返回 null */    private List<PlanStep> parsePlan(String argumentsJson) {
         try {
             JsonNode root = objectMapper.readTree(argumentsJson == null ? "{}" : argumentsJson);
             JsonNode steps = root.path("steps");

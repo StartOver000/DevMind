@@ -103,6 +103,8 @@ onMounted(loadUsers);
     <nav class="tabs">
       <router-link to="/kb" class="tab" active-class="active">知识库</router-link>
       <router-link to="/chat" class="tab" active-class="active">问答</router-link>
+      <router-link to="/tools" class="tab" active-class="active">接口</router-link>
+      <router-link to="/workflows" class="tab" active-class="active">流程</router-link>
       <router-link to="/sql" class="tab" active-class="active">SQL 诊断</router-link>
       <router-link to="/usage" class="tab" active-class="active">用量</router-link>
       <router-link to="/team" class="tab" active-class="active">团队</router-link>

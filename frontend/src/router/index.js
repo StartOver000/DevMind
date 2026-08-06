@@ -15,6 +15,18 @@ const routes = [
     meta: { title: '问答' }
   },
   {
+    path: '/tools',
+    name: 'tools',
+    component: () => import('@/views/ToolsView.vue'),
+    meta: { title: '接口' }
+  },
+  {
+    path: '/workflows',
+    name: 'workflows',
+    component: () => import('@/views/WorkflowsView.vue'),
+    meta: { title: '流程' }
+  },
+  {
     path: '/sql',
     name: 'sql',
     component: () => import('@/views/SqlDiagnosisView.vue'),

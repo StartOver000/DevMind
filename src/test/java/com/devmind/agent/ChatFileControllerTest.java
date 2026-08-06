@@ -15,6 +15,9 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -75,5 +78,27 @@ class ChatFileControllerTest {
         assertThatThrownBy(() -> controller.upload(file("x.xyz", "data".getBytes()), 1L))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("解析失败");
+    }
+
+    @Test
+    void xlsxUploadPassesNormalizedTypeToParser() throws Exception {
+        when(parserRegistry.parse(eq("a.xlsx"), eq("xlsx"), any()))
+                .thenReturn("| 月份 | 销售额 |");
+        when(fileStore.put(1L, "a.xlsx", "| 月份 | 销售额 |")).thenReturn("f2");
+
+        Map<String, Object> res = controller.upload(file("a.xlsx", new byte[]{1}), 1L);
+
+        assertThat(res.get("fileId")).isEqualTo("f2");
+        verify(parserRegistry).parse(eq("a.xlsx"), eq("xlsx"), any());
+    }
+
+    @Test
+    void docxUploadPassesNormalizedTypeToParser() throws Exception {
+        when(parserRegistry.parse(eq("b.docx"), eq("docx"), any())).thenReturn("报告文本");
+        when(fileStore.put(1L, "b.docx", "报告文本")).thenReturn("f3");
+
+        controller.upload(file("b.docx", new byte[]{1}), 1L);
+
+        verify(parserRegistry).parse(eq("b.docx"), eq("docx"), any());
     }
 }

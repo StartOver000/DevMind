@@ -96,6 +96,12 @@
             <artifactId>tika-core</artifactId>
             <version>${tika.version}</version>
         </dependency>
+        <!-- xlsx 解析（表格结构转 Markdown，供 AI 分析） -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

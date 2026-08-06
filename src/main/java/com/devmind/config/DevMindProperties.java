@@ -8,7 +8,7 @@ public record DevMindProperties(
         @DefaultValue("openai") String modelMode,
         @DefaultValue("./data/files") String storagePath,
         @DefaultValue("20") long maxFileSizeMb,
-        @DefaultValue("md,markdown,pdf") String allowedFileTypes,
+        @DefaultValue("md,markdown,pdf,docx,xlsx,pptx") String allowedFileTypes,
         @DefaultValue("1500") int maxChunkChars,
         @DefaultValue("200") int overlapChars,
         @DefaultValue("boundary") String chunkerStrategy,

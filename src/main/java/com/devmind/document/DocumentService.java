@@ -463,11 +463,20 @@ public class DocumentService {
     }
 
     private String normalizeFileType(String extension) {
-        if (extension.equals("md") || extension.equals("markdown")) {
+        if (extension.equals("md") || extension.equals("markdown") || extension.equals("txt")) {
             return "markdown";
         }
         if (extension.equals("pdf")) {
             return "pdf";
+        }
+        if (extension.equals("doc") || extension.equals("docx")) {
+            return "docx";
+        }
+        if (extension.equals("xls") || extension.equals("xlsx")) {
+            return "xlsx";
+        }
+        if (extension.equals("ppt") || extension.equals("pptx")) {
+            return "pptx";
         }
         return extension;
     }

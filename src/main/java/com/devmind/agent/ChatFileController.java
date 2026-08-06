@@ -75,6 +75,15 @@ public class ChatFileController {
         if ("pdf".equals(extension)) {
             return "pdf";
         }
+        if ("doc".equals(extension) || "docx".equals(extension)) {
+            return "docx";
+        }
+        if ("xls".equals(extension) || "xlsx".equals(extension)) {
+            return "xlsx";
+        }
+        if ("ppt".equals(extension) || "pptx".equals(extension)) {
+            return "pptx";
+        }
         return extension;
     }
 }

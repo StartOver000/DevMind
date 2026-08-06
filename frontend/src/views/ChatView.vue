@@ -699,7 +699,7 @@ onBeforeUnmount(() => {
           <button class="small" :disabled="uploadingFile" @click="uploadFileInput.click()">
             {{ uploadingFile ? '上传中…' : '📎 上传文件' }}
           </button>
-          <span v-if="!chatFiles.length" class="file-hint">支持 txt/md/pdf/docx，Agent 将读取内容分析（不超过 10MB）</span>
+          <span v-if="!chatFiles.length" class="file-hint">支持 txt/md/pdf/docx/xlsx/pptx，Agent 将读取内容分析（不超过 10MB）</span>
           <span v-for="(f, i) in chatFiles" :key="f.fileId" class="file-chip">
             {{ f.fileName }}
             <b class="chip-x" @click="removeFile(i)">×</b>

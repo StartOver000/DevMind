@@ -335,15 +335,44 @@ async function sendChat() {
   }
 }
 
+// 上传文件附件（Agent 模式，文件文本注入为分析上下文）
+const chatFiles = ref([]);
+const uploadFileInput = ref(null);
+const uploadingFile = ref(false);
+
+async function pickFile(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = '';
+  if (!file) return;
+  uploadingFile.value = true;
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await api('/api/chat/files', { method: 'POST', body: form });
+    chatFiles.value.push({ fileId: res.fileId, fileName: res.fileName });
+    showToast(`已上传 ${res.fileName}${res.truncated ? '（内容过长已截断）' : ''}`);
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    uploadingFile.value = false;
+  }
+}
+
+function removeFile(i) {
+  chatFiles.value.splice(i, 1);
+}
+
 async function sendAgent() {
   const question = chatQuestion.value.trim();
   if (!question) {
     showToast('请输入问题', true);
     return;
   }
+  const fileIds = chatFiles.value.map(f => f.fileId);
   agentLoading.value = true;
   agentResult.value = null;
   chatQuestion.value = '';
+  chatFiles.value = [];
   pushThread('user', question, nowText());
   // 占位 assistant 消息，工具轨迹实时挂载、回答增量填充
   const assistantIndex = thread.value.length;
@@ -352,7 +381,7 @@ async function sendAgent() {
   try {
     await streamFetch(
       '/api/agent/chat/stream',
-      { conversationId: conversationId.value || 0, question },
+      { conversationId: conversationId.value || 0, question, fileIds },
       {
         onThinking: (payload) => {
           // 模型原生思考过程（reasoning）：累积显示在回答上方
@@ -665,6 +694,17 @@ onBeforeUnmount(() => {
             {{ (mode === 'rag' ? loading : agentLoading) ? '处理中…' : '发送' }}
           </button>
         </div>
+        <div v-if="mode === 'agent'" class="file-row">
+          <input ref="uploadFileInput" type="file" class="hidden-file" @change="pickFile">
+          <button class="small" :disabled="uploadingFile" @click="uploadFileInput.click()">
+            {{ uploadingFile ? '上传中…' : '📎 上传文件' }}
+          </button>
+          <span v-if="!chatFiles.length" class="file-hint">支持 txt/md/pdf/docx，Agent 将读取内容分析（不超过 10MB）</span>
+          <span v-for="(f, i) in chatFiles" :key="f.fileId" class="file-chip">
+            {{ f.fileName }}
+            <b class="chip-x" @click="removeFile(i)">×</b>
+          </span>
+        </div>
       </div>
     </div>
   </section>
@@ -966,6 +1006,39 @@ onBeforeUnmount(() => {
 
 .kb-check input {
   width: auto;
+}
+
+.hidden-file {
+  display: none;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+}
+
+.file-hint {
+  font-size: 12px;
+  color: var(--muted, #888);
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 2px 8px;
+  border: 1px solid var(--line, #ddd);
+  border-radius: 12px;
+  background: var(--alt-bg, #f5f5f5);
+}
+
+.chip-x {
+  cursor: pointer;
+  color: var(--danger, #e53935);
 }
 
 .param {

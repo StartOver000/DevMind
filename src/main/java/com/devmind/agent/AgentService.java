@@ -124,6 +124,7 @@ public class AgentService {
     private final MeterRegistry meterRegistry;
     private final ToolCallValidator toolCallValidator;
     private final ToolAccessService toolAccessService;
+    private final ChatFileStore chatFileStore;
     private final ObjectMapper objectMapper = new ObjectMapper();
     /** 单工具执行超时（秒） */
     private static final int TOOL_TIMEOUT_SECONDS = 20;
@@ -148,7 +149,8 @@ public class AgentService {
             DevMindProperties properties,
             MeterRegistry meterRegistry,
             ToolCallValidator toolCallValidator,
-            ToolAccessService toolAccessService
+            ToolAccessService toolAccessService,
+            ChatFileStore chatFileStore
     ) {
         this.chatRouter = chatRouter;
         this.toolRegistry = toolRegistry;
@@ -163,6 +165,7 @@ public class AgentService {
         this.meterRegistry = meterRegistry;
         this.toolCallValidator = toolCallValidator;
         this.toolAccessService = toolAccessService;
+        this.chatFileStore = chatFileStore;
     }
 
     @jakarta.annotation.PreDestroy
@@ -204,10 +207,12 @@ public class AgentService {
             Consumer<String> onThinking
     ) {
         userService.requireUser(userId);
-        String question = request.question() == null ? "" : request.question().trim();
-        if (question.isEmpty()) {
+        String rawQuestion = request.question() == null ? "" : request.question().trim();
+        if (rawQuestion.isEmpty()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "问题不能为空");
         }
+        // 上传文件注入：fileIds 对应的文本作为分析上下文拼到问题前
+        String question = enrichWithFiles(rawQuestion, request.fileIds(), userId);
 
         Long conversationId = resolveConversation(request.conversationId(), question, userId);
 
@@ -267,8 +272,8 @@ public class AgentService {
                 List<AiModelGateway.ToolCall> toolCalls = result.toolCalls();
                 if (toolCalls == null || toolCalls.isEmpty()) {
                     String answer = result.content() == null ? "" : result.content();
-                    saveMessages(conversationId, question, answer);
-                    extractMemory(userId, question, answer);
+                    saveMessages(conversationId, rawQuestion, answer);
+                    extractMemory(userId, rawQuestion, answer);
                     return new AgentChatResponse(conversationId, answer, List.of(), trace);
                 }
                 // 回填 assistant（含 tool_calls）
@@ -326,10 +331,38 @@ public class AgentService {
             throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "Agent 工具调用轮数超限");
         } catch (Exception ex) {
             log.warn("agent 链路失败，降级本地 RAG: {}", ex.getMessage());
-            AgentChatResponse fallback = fallbackToLocalRag(conversationId, question, userId, trace);
-            saveMessages(conversationId, question, fallback.answer());
+            AgentChatResponse fallback = fallbackToLocalRag(conversationId, rawQuestion, userId, trace);
+            // 携带上传文件时降级：明确告知文件未参与分析，避免误导
+            if (request.fileIds() != null && !request.fileIds().isEmpty()) {
+                fallback = new AgentChatResponse(
+                        fallback.conversationId(),
+                        "（提示：大模型暂不可用，上传的文件未参与分析，以下为知识库兜底回答）\n\n" + fallback.answer(),
+                        fallback.references(),
+                        fallback.toolTrace()
+                );
+            }
+            saveMessages(conversationId, rawQuestion, fallback.answer());
             return fallback;
         }
+    }
+
+    /** 把上传文件的文本注入为问题上下文（文件分析场景） */
+    private String enrichWithFiles(String question, List<String> fileIds, Long userId) {
+        if (fileIds == null || fileIds.isEmpty()) {
+            return question;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String fileId : fileIds) {
+            ChatFileStore.ChatFile file = chatFileStore.get(fileId, userId);
+            if (file != null) {
+                sb.append("【上传文件：").append(file.fileName()).append("】\n")
+                        .append(file.text()).append("\n\n");
+            }
+        }
+        if (sb.isEmpty()) {
+            return question;
+        }
+        return sb + "用户问题：" + question;
     }
 
     /** 工具执行结果（纯执行产物，不含消息回填，可跨线程安全传递） */

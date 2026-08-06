@@ -17,6 +17,7 @@ import com.devmind.tool.ToolAccessService;
 import com.devmind.user.UserService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -69,6 +70,9 @@ class AgentServiceTest {
     @Mock
     private ToolAccessService toolAccessService;
 
+    @Mock
+    private ChatFileStore chatFileStore;
+
     private DevMindProperties properties() {
         return new DevMindProperties(
                 "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
@@ -100,7 +104,8 @@ class AgentServiceTest {
                 properties(),
                 new io.micrometer.core.instrument.simple.SimpleMeterRegistry(),
                 new ToolCallValidator(registry),
-                toolAccessService
+                toolAccessService,
+                chatFileStore
         );
     }
 
@@ -177,6 +182,28 @@ class AgentServiceTest {
 
         assertThat(response.answer()).isEqualTo("这是直接回答，无需工具。");
         assertThat(response.toolTrace()).isEmpty();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void uploadedFileContentInjectedIntoQuestion() {
+        AgentTool tool = kbTool();
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatFileStore.get("f1", 1L))
+                .thenReturn(new ChatFileStore.ChatFile(1L, "report.md", "本月销售额 100 万"));
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(new AiModelGateway.ChatResult("已分析。", "m", 0, 0));
+
+        service.chat(new AgentChatRequest(0L, "分析这份报告", null, java.util.List.of("f1")), 1L);
+
+        // 发给模型的最后一条 user 消息应包含文件文本 + 用户问题
+        ArgumentCaptor<java.util.List<Map<String, Object>>> messagesCaptor = ArgumentCaptor.forClass(java.util.List.class);
+        verify(chatRouter).chatWithTools(anyString(), messagesCaptor.capture(), anyList());
+        java.util.List<Map<String, Object>> messages = messagesCaptor.getValue();
+        Map<String, Object> last = messages.get(messages.size() - 1);
+        String content = (String) last.get("content");
+        assertThat(content).contains("本月销售额 100 万").contains("分析这份报告");
     }
 
     @Test

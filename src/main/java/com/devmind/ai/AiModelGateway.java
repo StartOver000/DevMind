@@ -26,10 +26,15 @@ public interface AiModelGateway {
             String model,
             Integer promptTokens,
             Integer completionTokens,
+            String reasoning,
             List<ToolCall> toolCalls
     ) {
         public ChatResult(String content, String model, Integer promptTokens, Integer completionTokens) {
-            this(content, model, promptTokens, completionTokens, null);
+            this(content, model, promptTokens, completionTokens, null, null);
+        }
+
+        public ChatResult(String content, String model, Integer promptTokens, Integer completionTokens, List<ToolCall> toolCalls) {
+            this(content, model, promptTokens, completionTokens, null, toolCalls);
         }
     }
 

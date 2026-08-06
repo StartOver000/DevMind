@@ -56,6 +56,7 @@ public class AgentController {
 
     /**
      * Agent SSE 流式问答：
+     * - event: thinking —— 模型原生思考过程（reasoning，实时）
      * - event: trace  —— 工具执行轨迹（实时，工具完成即推）
      * - event: delta  —— 最终回答文本分块
      * - event: done   —— 结束（含会话 ID + 完整轨迹）
@@ -81,6 +82,12 @@ public class AgentController {
         AgentChatResponse response = agentService.chatStream(request, userId, item -> {
             try {
                 ssePusher.sendJson(emitter, "trace", item);
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        }, thinking -> {
+            try {
+                ssePusher.sendJson(emitter, "thinking", Map.of("text", thinking));
             } catch (Exception ex) {
                 throw new RuntimeException(ex);
             }

@@ -354,6 +354,15 @@ async function sendAgent() {
       '/api/agent/chat/stream',
       { conversationId: conversationId.value || 0, question },
       {
+        onThinking: (payload) => {
+          // 模型原生思考过程（reasoning）：累积显示在回答上方
+          const text = (payload && payload.text) ? payload.text : String(payload || '');
+          const m = thread.value[assistantIndex];
+          if (m) {
+            m.thinking = (m.thinking || '') + text;
+            scrollToBottom();
+          }
+        },
         onTrace: (t) => {
           traces.push(t);
           const m = thread.value[assistantIndex];
@@ -542,6 +551,12 @@ onBeforeUnmount(() => {
         <!-- 消息流（含时间戳，支持完整多轮历史） -->
         <div v-for="(m, i) in thread" :key="i" class="msg" :class="m.role">
           <div class="bubble" :class="{ error: m.error }">
+            <div v-if="m.thinking" class="thinking-panel">
+              <details>
+                <summary>🧠 思考过程（模型推理）</summary>
+                <pre>{{ m.thinking }}</pre>
+              </details>
+            </div>
             <div v-if="m.trace && m.trace.length" class="tool-trace">
               <details>
                 <summary>Agent 执行轨迹（{{ m.trace.length }} 步）</summary>
@@ -1044,6 +1059,33 @@ onBeforeUnmount(() => {
   margin-left: auto;
   color: var(--muted);
   flex-shrink: 0;
+}
+
+/* 模型原生思考过程面板 */
+.thinking-panel {
+  margin-bottom: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--alt-bg);
+}
+
+.thinking-panel summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.thinking-panel pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 /* Plan-Execute 计划卡片 */

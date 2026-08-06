@@ -1,0 +1,227 @@
+2026-08-05T08:35:53.644Z INFO  [background-preinit] [] o.h.validator.internal.util.Version - HV000001: Hibernate Validator 8.0.2.Final
+2026-08-05T08:35:53.709Z INFO  [main] [] com.devmind.DevMindApplication - Starting DevMindApplication v0.1.0-SNAPSHOT using Java 17.0.19 with PID 1 (/app/app.jar started by root in /app)
+2026-08-05T08:35:53.712Z INFO  [main] [] com.devmind.DevMindApplication - The following 1 profile is active: "openai"
+2026-08-05T08:35:55.214Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Multiple Spring Data modules found, entering strict repository configuration mode
+2026-08-05T08:35:55.217Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-08-05T08:35:55.253Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 19 ms. Found 0 Redis repository interfaces.
+2026-08-05T08:35:55.997Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8081 (http)
+2026-08-05T08:35:56.011Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Initializing ProtocolHandler ["http-nio-8081"]
+2026-08-05T08:35:56.015Z INFO  [main] [] o.a.catalina.core.StandardService - Starting service [Tomcat]
+2026-08-05T08:35:56.017Z INFO  [main] [] o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.42]
+2026-08-05T08:35:56.058Z INFO  [main] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
+2026-08-05T08:35:56.064Z INFO  [main] [] o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 2299 ms
+2026-08-05T08:35:57.602Z INFO  [main] [] o.s.b.a.w.s.WelcomePageHandlerMapping - Adding welcome page: class path resource [static/index.html]
+2026-08-05T08:35:58.986Z INFO  [main] [] o.s.b.a.e.web.EndpointLinksResolver - Exposing 4 endpoints beneath base path '/actuator'
+2026-08-05T08:35:59.145Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Starting ProtocolHandler ["http-nio-8081"]
+2026-08-05T08:35:59.175Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8081 (http) with context path '/'
+2026-08-05T08:35:59.208Z INFO  [main] [] com.devmind.DevMindApplication - Started DevMindApplication in 6.503 seconds (process running for 7.24)
+2026-08-05T08:35:59.297Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+2026-08-05T08:35:59.667Z INFO  [main] [] com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@147892be
+2026-08-05T08:35:59.682Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+2026-08-05T08:35:59.773Z INFO  [main] [] c.devmind.config.DatabaseInitializer - database initialized, embedding dimension=1024
+2026-08-05T08:36:13.757Z INFO  [http-nio-8081-exec-1] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-08-05T08:36:13.758Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Initializing Servlet 'dispatcherServlet'
+2026-08-05T08:36:13.761Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Completed initialization in 2 ms
+2026-08-05T08:38:27.354Z WARN  [redis-task-consumer] [] io.lettuce.core.RedisChannelHandler - Connection is already closed
+2026-08-05T08:38:27.355Z WARN  [redis-task-consumer] [] c.d.document.RedisStreamTaskQueue - redis stream 消费异常: Redis exception
+2026-08-05T08:38:27.413Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown initiated...
+2026-08-05T08:38:27.417Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown completed.
+2026-08-05T08:38:30.878Z INFO  [background-preinit] [] o.h.validator.internal.util.Version - HV000001: Hibernate Validator 8.0.2.Final
+2026-08-05T08:38:30.977Z INFO  [main] [] com.devmind.DevMindApplication - Starting DevMindApplication v0.1.0-SNAPSHOT using Java 17.0.19 with PID 1 (/app/app.jar started by root in /app)
+2026-08-05T08:38:30.984Z INFO  [main] [] com.devmind.DevMindApplication - The following 1 profile is active: "openai"
+2026-08-05T08:38:32.449Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Multiple Spring Data modules found, entering strict repository configuration mode
+2026-08-05T08:38:32.454Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-08-05T08:38:32.500Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 27 ms. Found 0 Redis repository interfaces.
+2026-08-05T08:38:33.385Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8081 (http)
+2026-08-05T08:38:33.406Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Initializing ProtocolHandler ["http-nio-8081"]
+2026-08-05T08:38:33.409Z INFO  [main] [] o.a.catalina.core.StandardService - Starting service [Tomcat]
+2026-08-05T08:38:33.410Z INFO  [main] [] o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.42]
+2026-08-05T08:38:33.457Z INFO  [main] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
+2026-08-05T08:38:33.459Z INFO  [main] [] o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 2406 ms
+2026-08-05T08:38:34.957Z INFO  [main] [] o.s.b.a.w.s.WelcomePageHandlerMapping - Adding welcome page: class path resource [static/index.html]
+2026-08-05T08:38:36.088Z INFO  [main] [] o.s.b.a.e.web.EndpointLinksResolver - Exposing 4 endpoints beneath base path '/actuator'
+2026-08-05T08:38:36.183Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Starting ProtocolHandler ["http-nio-8081"]
+2026-08-05T08:38:36.211Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8081 (http) with context path '/'
+2026-08-05T08:38:36.244Z INFO  [main] [] com.devmind.DevMindApplication - Started DevMindApplication in 6.272 seconds (process running for 7.254)
+2026-08-05T08:38:36.310Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+2026-08-05T08:38:36.586Z INFO  [main] [] com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@2b6a4da7
+2026-08-05T08:38:36.595Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+2026-08-05T08:38:36.656Z INFO  [main] [] c.devmind.config.DatabaseInitializer - database initialized, embedding dimension=1024
+2026-08-05T08:38:43.742Z INFO  [http-nio-8081-exec-1] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-08-05T08:38:43.743Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Initializing Servlet 'dispatcherServlet'
+2026-08-05T08:38:43.745Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Completed initialization in 1 ms
+2026-08-05T08:40:15.165Z WARN  [redis-task-consumer] [] io.lettuce.core.RedisChannelHandler - Connection is already closed
+2026-08-05T08:40:15.168Z WARN  [redis-task-consumer] [] c.d.document.RedisStreamTaskQueue - redis stream 消费异常: Redis exception
+2026-08-05T08:40:15.194Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown initiated...
+2026-08-05T08:40:15.200Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown completed.
+2026-08-05T08:40:18.416Z INFO  [background-preinit] [] o.h.validator.internal.util.Version - HV000001: Hibernate Validator 8.0.2.Final
+2026-08-05T08:40:18.527Z INFO  [main] [] com.devmind.DevMindApplication - Starting DevMindApplication v0.1.0-SNAPSHOT using Java 17.0.19 with PID 1 (/app/app.jar started by root in /app)
+2026-08-05T08:40:18.530Z INFO  [main] [] com.devmind.DevMindApplication - The following 1 profile is active: "openai"
+2026-08-05T08:40:20.703Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Multiple Spring Data modules found, entering strict repository configuration mode
+2026-08-05T08:40:20.707Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-08-05T08:40:20.755Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 31 ms. Found 0 Redis repository interfaces.
+2026-08-05T08:40:21.713Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8081 (http)
+2026-08-05T08:40:21.741Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Initializing ProtocolHandler ["http-nio-8081"]
+2026-08-05T08:40:21.752Z INFO  [main] [] o.a.catalina.core.StandardService - Starting service [Tomcat]
+2026-08-05T08:40:21.755Z INFO  [main] [] o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.42]
+2026-08-05T08:40:21.799Z INFO  [main] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
+2026-08-05T08:40:21.808Z INFO  [main] [] o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 3184 ms
+2026-08-05T08:40:23.387Z INFO  [main] [] o.s.b.a.w.s.WelcomePageHandlerMapping - Adding welcome page: class path resource [static/index.html]
+2026-08-05T08:40:24.666Z INFO  [main] [] o.s.b.a.e.web.EndpointLinksResolver - Exposing 4 endpoints beneath base path '/actuator'
+2026-08-05T08:40:24.774Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Starting ProtocolHandler ["http-nio-8081"]
+2026-08-05T08:40:24.816Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8081 (http) with context path '/'
+2026-08-05T08:40:24.845Z INFO  [main] [] com.devmind.DevMindApplication - Started DevMindApplication in 7.408 seconds (process running for 8.095)
+2026-08-05T08:40:24.902Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+2026-08-05T08:40:25.186Z INFO  [main] [] com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@78839c2e
+2026-08-05T08:40:25.202Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+2026-08-05T08:40:25.273Z INFO  [main] [] c.devmind.config.DatabaseInitializer - database initialized, embedding dimension=1024
+2026-08-05T08:40:28.744Z INFO  [http-nio-8081-exec-1] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-08-05T08:40:28.745Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Initializing Servlet 'dispatcherServlet'
+2026-08-05T08:40:28.747Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Completed initialization in 1 ms
+2026-08-05T08:45:54.146Z WARN  [redis-task-consumer] [] io.lettuce.core.RedisChannelHandler - Connection is already closed
+2026-08-05T08:45:54.149Z WARN  [redis-task-consumer] [] c.d.document.RedisStreamTaskQueue - redis stream 消费异常: Redis exception
+2026-08-05T08:45:54.181Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown initiated...
+2026-08-05T08:45:54.195Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown completed.
+2026-08-05T08:45:57.438Z INFO  [background-preinit] [] o.h.validator.internal.util.Version - HV000001: Hibernate Validator 8.0.2.Final
+2026-08-05T08:45:57.610Z INFO  [main] [] com.devmind.DevMindApplication - Starting DevMindApplication v0.1.0-SNAPSHOT using Java 17.0.19 with PID 1 (/app/app.jar started by root in /app)
+2026-08-05T08:45:57.614Z INFO  [main] [] com.devmind.DevMindApplication - The following 1 profile is active: "openai"
+2026-08-05T08:46:00.194Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Multiple Spring Data modules found, entering strict repository configuration mode
+2026-08-05T08:46:00.208Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-08-05T08:46:00.306Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 68 ms. Found 0 Redis repository interfaces.
+2026-08-05T08:46:01.572Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8081 (http)
+2026-08-05T08:46:01.593Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Initializing ProtocolHandler ["http-nio-8081"]
+2026-08-05T08:46:01.602Z INFO  [main] [] o.a.catalina.core.StandardService - Starting service [Tomcat]
+2026-08-05T08:46:01.604Z INFO  [main] [] o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.42]
+2026-08-05T08:46:01.662Z INFO  [main] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
+2026-08-05T08:46:01.666Z INFO  [main] [] o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 3945 ms
+2026-08-05T08:46:03.877Z INFO  [main] [] o.s.b.a.w.s.WelcomePageHandlerMapping - Adding welcome page: class path resource [static/index.html]
+2026-08-05T08:46:05.397Z INFO  [main] [] o.s.b.a.e.web.EndpointLinksResolver - Exposing 4 endpoints beneath base path '/actuator'
+2026-08-05T08:46:05.524Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Starting ProtocolHandler ["http-nio-8081"]
+2026-08-05T08:46:05.583Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8081 (http) with context path '/'
+2026-08-05T08:46:05.634Z INFO  [main] [] com.devmind.DevMindApplication - Started DevMindApplication in 9.206 seconds (process running for 10.125)
+2026-08-05T08:46:05.729Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+2026-08-05T08:46:06.079Z INFO  [main] [] com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@7e1ae693
+2026-08-05T08:46:06.089Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+2026-08-05T08:46:06.294Z INFO  [main] [] c.devmind.config.DatabaseInitializer - database initialized, embedding dimension=1024
+2026-08-05T08:46:13.724Z INFO  [http-nio-8081-exec-1] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-08-05T08:46:13.735Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Initializing Servlet 'dispatcherServlet'
+2026-08-05T08:46:13.737Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Completed initialization in 1 ms
+2026-08-05T09:04:34.897Z WARN  [redis-task-consumer] [] io.lettuce.core.RedisChannelHandler - Connection is already closed
+2026-08-05T09:04:34.902Z WARN  [redis-task-consumer] [] c.d.document.RedisStreamTaskQueue - redis stream 消费异常: Redis exception
+2026-08-05T09:04:34.956Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown initiated...
+2026-08-05T09:04:34.967Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown completed.
+2026-08-05T09:04:38.335Z INFO  [background-preinit] [] o.h.validator.internal.util.Version - HV000001: Hibernate Validator 8.0.2.Final
+2026-08-05T09:04:38.406Z INFO  [main] [] com.devmind.DevMindApplication - Starting DevMindApplication v0.1.0-SNAPSHOT using Java 17.0.19 with PID 1 (/app/app.jar started by root in /app)
+2026-08-05T09:04:38.416Z INFO  [main] [] com.devmind.DevMindApplication - The following 1 profile is active: "openai"
+2026-08-05T09:04:40.575Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Multiple Spring Data modules found, entering strict repository configuration mode
+2026-08-05T09:04:40.580Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-08-05T09:04:40.647Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 35 ms. Found 0 Redis repository interfaces.
+2026-08-05T09:04:41.601Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8081 (http)
+2026-08-05T09:04:41.617Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Initializing ProtocolHandler ["http-nio-8081"]
+2026-08-05T09:04:41.619Z INFO  [main] [] o.a.catalina.core.StandardService - Starting service [Tomcat]
+2026-08-05T09:04:41.620Z INFO  [main] [] o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.42]
+2026-08-05T09:04:41.662Z INFO  [main] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
+2026-08-05T09:04:41.670Z INFO  [main] [] o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 3160 ms
+2026-08-05T09:04:43.371Z INFO  [main] [] o.s.b.a.w.s.WelcomePageHandlerMapping - Adding welcome page: class path resource [static/index.html]
+2026-08-05T09:04:44.689Z INFO  [main] [] o.s.b.a.e.web.EndpointLinksResolver - Exposing 4 endpoints beneath base path '/actuator'
+2026-08-05T09:04:44.810Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Starting ProtocolHandler ["http-nio-8081"]
+2026-08-05T09:04:44.851Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8081 (http) with context path '/'
+2026-08-05T09:04:44.906Z INFO  [main] [] com.devmind.DevMindApplication - Started DevMindApplication in 7.565 seconds (process running for 8.39)
+2026-08-05T09:04:44.996Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+2026-08-05T09:04:45.436Z INFO  [main] [] com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@341141ab
+2026-08-05T09:04:45.449Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+2026-08-05T09:04:45.579Z INFO  [main] [] c.devmind.config.DatabaseInitializer - database initialized, embedding dimension=1024
+2026-08-05T09:04:58.667Z INFO  [http-nio-8081-exec-1] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-08-05T09:04:58.668Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Initializing Servlet 'dispatcherServlet'
+2026-08-05T09:04:58.670Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Completed initialization in 2 ms
+2026-08-05T09:22:31.867Z WARN  [redis-task-consumer] [] io.lettuce.core.RedisChannelHandler - Connection is already closed
+2026-08-05T09:22:31.871Z WARN  [redis-task-consumer] [] c.d.document.RedisStreamTaskQueue - redis stream 消费异常: Redis exception
+2026-08-05T09:22:31.914Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown initiated...
+2026-08-05T09:22:31.933Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown completed.
+2026-08-05T09:22:35.049Z INFO  [background-preinit] [] o.h.validator.internal.util.Version - HV000001: Hibernate Validator 8.0.2.Final
+2026-08-05T09:22:35.103Z INFO  [main] [] com.devmind.DevMindApplication - Starting DevMindApplication v0.1.0-SNAPSHOT using Java 17.0.19 with PID 1 (/app/app.jar started by root in /app)
+2026-08-05T09:22:35.109Z INFO  [main] [] com.devmind.DevMindApplication - The following 1 profile is active: "openai"
+2026-08-05T09:22:36.760Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Multiple Spring Data modules found, entering strict repository configuration mode
+2026-08-05T09:22:36.765Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-08-05T09:22:36.821Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 36 ms. Found 0 Redis repository interfaces.
+2026-08-05T09:22:37.759Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8081 (http)
+2026-08-05T09:22:37.775Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Initializing ProtocolHandler ["http-nio-8081"]
+2026-08-05T09:22:37.780Z INFO  [main] [] o.a.catalina.core.StandardService - Starting service [Tomcat]
+2026-08-05T09:22:37.782Z INFO  [main] [] o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.42]
+2026-08-05T09:22:37.831Z INFO  [main] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
+2026-08-05T09:22:37.835Z INFO  [main] [] o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 2658 ms
+2026-08-05T09:22:39.354Z INFO  [main] [] o.s.b.a.w.s.WelcomePageHandlerMapping - Adding welcome page: class path resource [static/index.html]
+2026-08-05T09:22:40.642Z INFO  [main] [] o.s.b.a.e.web.EndpointLinksResolver - Exposing 4 endpoints beneath base path '/actuator'
+2026-08-05T09:22:40.735Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Starting ProtocolHandler ["http-nio-8081"]
+2026-08-05T09:22:40.773Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8081 (http) with context path '/'
+2026-08-05T09:22:40.799Z INFO  [main] [] com.devmind.DevMindApplication - Started DevMindApplication in 6.494 seconds (process running for 7.261)
+2026-08-05T09:22:40.849Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+2026-08-05T09:22:41.088Z INFO  [main] [] com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@1c96bf1e
+2026-08-05T09:22:41.096Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+2026-08-05T09:22:41.167Z INFO  [main] [] c.devmind.config.DatabaseInitializer - database initialized, embedding dimension=1024
+2026-08-05T09:22:43.618Z INFO  [http-nio-8081-exec-1] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-08-05T09:22:43.619Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Initializing Servlet 'dispatcherServlet'
+2026-08-05T09:22:43.622Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Completed initialization in 2 ms
+2026-08-05T09:22:49.164Z INFO  [redis-task-consumer] [] c.d.document.DocumentTaskService - document task succeeded, taskId=49, documentId=48, chunks=4, changed=4, removed=0
+2026-08-05T09:23:54.119Z INFO  [redis-task-consumer] [] c.d.document.DocumentTaskService - document task succeeded, taskId=49, documentId=48, chunks=5, changed=5, removed=0
+2026-08-05T09:25:23.869Z INFO  [redis-task-consumer] [] c.d.document.DocumentTaskService - document task succeeded, taskId=51, documentId=49, chunks=5, changed=5, removed=0
+2026-08-05T09:26:40.248Z WARN  [redis-task-consumer] [] io.lettuce.core.RedisChannelHandler - Connection is already closed
+2026-08-05T09:26:40.249Z WARN  [redis-task-consumer] [] c.d.document.RedisStreamTaskQueue - redis stream 消费异常: Redis exception
+2026-08-05T09:26:40.266Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown initiated...
+2026-08-05T09:26:40.270Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown completed.
+2026-08-05T09:33:49.664Z INFO  [background-preinit] [] o.h.validator.internal.util.Version - HV000001: Hibernate Validator 8.0.2.Final
+2026-08-05T09:33:49.706Z INFO  [main] [] com.devmind.DevMindApplication - Starting DevMindApplication v0.1.0-SNAPSHOT using Java 17.0.19 with PID 1 (/app/app.jar started by root in /app)
+2026-08-05T09:33:49.708Z INFO  [main] [] com.devmind.DevMindApplication - The following 1 profile is active: "openai"
+2026-08-05T09:33:50.899Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Multiple Spring Data modules found, entering strict repository configuration mode
+2026-08-05T09:33:50.902Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-08-05T09:33:50.933Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 18 ms. Found 0 Redis repository interfaces.
+2026-08-05T09:33:51.552Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8081 (http)
+2026-08-05T09:33:51.561Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Initializing ProtocolHandler ["http-nio-8081"]
+2026-08-05T09:33:51.564Z INFO  [main] [] o.a.catalina.core.StandardService - Starting service [Tomcat]
+2026-08-05T09:33:51.565Z INFO  [main] [] o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.42]
+2026-08-05T09:33:51.598Z INFO  [main] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
+2026-08-05T09:33:51.600Z INFO  [main] [] o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 1854 ms
+2026-08-05T09:33:52.580Z INFO  [main] [] o.s.b.a.w.s.WelcomePageHandlerMapping - Adding welcome page: class path resource [static/index.html]
+2026-08-05T09:33:53.469Z INFO  [main] [] o.s.b.a.e.web.EndpointLinksResolver - Exposing 4 endpoints beneath base path '/actuator'
+2026-08-05T09:33:53.540Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Starting ProtocolHandler ["http-nio-8081"]
+2026-08-05T09:33:53.556Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8081 (http) with context path '/'
+2026-08-05T09:33:53.576Z INFO  [main] [] com.devmind.DevMindApplication - Started DevMindApplication in 4.639 seconds (process running for 5.485)
+2026-08-05T09:33:53.618Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+2026-08-05T09:33:53.818Z INFO  [main] [] com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@6e3acd7
+2026-08-05T09:33:53.823Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+2026-08-05T09:33:53.869Z INFO  [main] [] c.devmind.config.DatabaseInitializer - database initialized, embedding dimension=1024
+2026-08-05T09:33:58.580Z INFO  [http-nio-8081-exec-1] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-08-05T09:33:58.582Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Initializing Servlet 'dispatcherServlet'
+2026-08-05T09:33:58.584Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Completed initialization in 2 ms
+2026-08-05T09:36:49.147Z WARN  [redis-task-consumer] [] io.lettuce.core.RedisChannelHandler - Connection is already closed
+2026-08-05T09:36:49.149Z WARN  [redis-task-consumer] [] c.d.document.RedisStreamTaskQueue - redis stream 消费异常: Redis exception
+2026-08-05T09:36:49.214Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown initiated...
+2026-08-05T09:36:49.235Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown completed.
+2026-08-05T09:36:52.390Z INFO  [background-preinit] [] o.h.validator.internal.util.Version - HV000001: Hibernate Validator 8.0.2.Final
+2026-08-05T09:36:52.442Z INFO  [main] [] com.devmind.DevMindApplication - Starting DevMindApplication v0.1.0-SNAPSHOT using Java 17.0.19 with PID 1 (/app/app.jar started by root in /app)
+2026-08-05T09:36:52.445Z INFO  [main] [] com.devmind.DevMindApplication - The following 1 profile is active: "openai"
+2026-08-05T09:36:54.235Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Multiple Spring Data modules found, entering strict repository configuration mode
+2026-08-05T09:36:54.241Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-08-05T09:36:54.287Z INFO  [main] [] o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 28 ms. Found 0 Redis repository interfaces.
+2026-08-05T09:36:55.201Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8081 (http)
+2026-08-05T09:36:55.213Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Initializing ProtocolHandler ["http-nio-8081"]
+2026-08-05T09:36:55.216Z INFO  [main] [] o.a.catalina.core.StandardService - Starting service [Tomcat]
+2026-08-05T09:36:55.219Z INFO  [main] [] o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.42]
+2026-08-05T09:36:55.270Z INFO  [main] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
+2026-08-05T09:36:55.272Z INFO  [main] [] o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 2775 ms
+2026-08-05T09:36:56.680Z INFO  [main] [] o.s.b.a.w.s.WelcomePageHandlerMapping - Adding welcome page: class path resource [static/index.html]
+2026-08-05T09:36:57.766Z INFO  [main] [] o.s.b.a.e.web.EndpointLinksResolver - Exposing 4 endpoints beneath base path '/actuator'
+2026-08-05T09:36:57.876Z INFO  [main] [] o.a.coyote.http11.Http11NioProtocol - Starting ProtocolHandler ["http-nio-8081"]
+2026-08-05T09:36:57.910Z INFO  [main] [] o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8081 (http) with context path '/'
+2026-08-05T09:36:57.942Z INFO  [main] [] com.devmind.DevMindApplication - Started DevMindApplication in 6.325 seconds (process running for 7.079)
+2026-08-05T09:36:58.006Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+2026-08-05T09:36:58.311Z INFO  [main] [] com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@d8751de
+2026-08-05T09:36:58.322Z INFO  [main] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+2026-08-05T09:36:58.431Z INFO  [main] [] c.devmind.config.DatabaseInitializer - database initialized, embedding dimension=1024
+2026-08-05T09:36:58.672Z INFO  [http-nio-8081-exec-1] [] o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-08-05T09:36:58.693Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Initializing Servlet 'dispatcherServlet'
+2026-08-05T09:36:58.712Z INFO  [http-nio-8081-exec-1] [] o.s.web.servlet.DispatcherServlet - Completed initialization in 3 ms
+2026-08-05T10:55:30.921Z WARN  [redis-task-consumer] [] io.lettuce.core.RedisChannelHandler - Connection is already closed
+2026-08-05T10:55:30.923Z WARN  [redis-task-consumer] [] c.d.document.RedisStreamTaskQueue - redis stream 消费异常: Redis exception
+2026-08-05T10:55:30.962Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown initiated...
+2026-08-05T10:55:30.973Z INFO  [SpringApplicationShutdownHook] [] com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Shutdown completed.

@@ -66,7 +66,8 @@ public class ZhipuRestModelGateway implements AiModelGateway {
                         Map.of("role", "user", "content", userPrompt)
                 ),
                 "max_tokens", properties.zhipuMaxTokens(),
-                "temperature", 0.2
+                "temperature", 0.2,
+                "thinking", Map.of("type", "enabled")
         );
         ChatCompletionResponse response = retry(() -> {
             RestClient client = client();
@@ -86,7 +87,9 @@ public class ZhipuRestModelGateway implements AiModelGateway {
                 choice.message() == null ? "" : choice.message().content(),
                 properties.zhipuChatModel(),
                 response.usage() == null ? null : response.usage().promptTokens(),
-                response.usage() == null ? null : response.usage().completionTokens()
+                response.usage() == null ? null : response.usage().completionTokens(),
+                choice.message() == null ? null : choice.message().reasoning_content(),
+                null
         );
     }
 
@@ -101,6 +104,7 @@ public class ZhipuRestModelGateway implements AiModelGateway {
         body.put("messages", messages);
         body.put("max_tokens", properties.zhipuMaxTokens());
         body.put("temperature", 0.2);
+        body.put("thinking", Map.of("type", "enabled"));
         body.put("tools", tools.stream()
                 .map(tool -> Map.of(
                         "type", "function",
@@ -142,6 +146,7 @@ public class ZhipuRestModelGateway implements AiModelGateway {
                 properties.zhipuChatModel(),
                 response.usage() == null ? null : response.usage().promptTokens(),
                 response.usage() == null ? null : response.usage().completionTokens(),
+                message == null ? null : message.reasoning_content(),
                 toolCalls
         );
     }
@@ -197,9 +202,9 @@ public class ZhipuRestModelGateway implements AiModelGateway {
         public record Choice(Message message) {
         }
 
-        public record Message(String content, List<ToolCallData> tool_calls) {
+        public record Message(String content, String reasoning_content, List<ToolCallData> tool_calls) {
             public Message(String content) {
-                this(content, null);
+                this(content, null, null);
             }
         }
 

@@ -163,25 +163,37 @@ public class AgentService {
     }
 
     public AgentChatResponse chat(AgentChatRequest request, Long userId) {
-        return doChat(request, userId, null);
+        return doChat(request, userId, null, null);
     }
 
     /**
      * Agent 流式入口：与 {@link #chat} 逻辑一致，但每次工具执行完成时通过
-     * {@code onTrace} 实时回调（供 SSE 推送工具轨迹），最终答案由调用方分片推送。
+     * {@code onTrace} 实时回调（供 SSE 推送工具轨迹），模型原生思考过程通过
+     * {@code onThinking} 实时回调（供 SSE 推送 reasoning），最终答案由调用方分片推送。
      */
     public AgentChatResponse chatStream(
             AgentChatRequest request,
             Long userId,
             Consumer<ToolTraceItem> onTrace
     ) {
-        return doChat(request, userId, onTrace);
+        return doChat(request, userId, onTrace, null);
+    }
+
+    /** 流式入口 + 思考过程回调（reasoning 实时推送） */
+    public AgentChatResponse chatStream(
+            AgentChatRequest request,
+            Long userId,
+            Consumer<ToolTraceItem> onTrace,
+            Consumer<String> onThinking
+    ) {
+        return doChat(request, userId, onTrace, onThinking);
     }
 
     private AgentChatResponse doChat(
             AgentChatRequest request,
             Long userId,
-            Consumer<ToolTraceItem> onTrace
+            Consumer<ToolTraceItem> onTrace,
+            Consumer<String> onThinking
     ) {
         userService.requireUser(userId);
         String question = request.question() == null ? "" : request.question().trim();
@@ -231,7 +243,15 @@ public class AgentService {
             boolean replanAllowed = true;
             for (int round = 0; round <= MAX_TOOL_ROUNDS; round++) {
                 AiModelGateway.ChatResult result = chatRouter.chatWithTools(SYSTEM_PROMPT, messages, tools);
+                if (result == null) {
+                    throw new IllegalStateException("模型网关返回空结果");
+                }
                 recordUsage(userId, result, question);
+                // 模型原生思考过程（reasoning）：实时透传给调用方（SSE thinking 事件）
+                String reasoning = result.reasoning();
+                if (reasoning != null && !reasoning.isBlank() && onThinking != null) {
+                    onThinking.accept(reasoning);
+                }
                 List<AiModelGateway.ToolCall> toolCalls = result.toolCalls();
                 if (toolCalls == null || toolCalls.isEmpty()) {
                     String answer = result.content() == null ? "" : result.content();

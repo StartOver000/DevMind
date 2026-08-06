@@ -164,7 +164,10 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="kb-grid">
-    <KbSidebar :kbs="kbsStore.kbs" :current-kb-id="currentKbId" :teams="teams" @select="selectKb" @created="onKbCreated" />
+    <div class="kb-left">
+      <KbSidebar :kbs="kbsStore.kbs" :current-kb-id="currentKbId" :teams="teams" @select="selectKb" @created="onKbCreated" />
+      <MemberPanel :key="memberReloadKey" :kb-id="currentKbId" />
+    </div>
     <div class="panel kb-main">
       <div class="panel-header">
         <h2>{{ currentKbId ? currentKbTitle : '请选择知识库' }}</h2>
@@ -177,7 +180,6 @@ onBeforeUnmount(() => {
       </div>
       <DocTable :docs="docs" :kb-id="currentKbId" @refresh="loadDocs" />
     </div>
-    <MemberPanel :key="memberReloadKey" :kb-id="currentKbId" />
   </section>
 </template>
 
@@ -189,8 +191,26 @@ onBeforeUnmount(() => {
   align-items: start;
 }
 
+/* 左侧栏整列：知识库列表 + 成员，内容多时列内滚动 */
+.kb-left {
+  height: calc(100vh - 110px);
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 16px;
+}
+
+/* 成员面板：跟随左侧栏，不额外撑高页面 */
+.kb-left .member-panel {
+  max-height: 160px;
+  overflow-y: auto;
+}
+
 .kb-main {
   min-width: 0;
+  height: calc(100vh - 110px);
+  overflow-y: auto;
+  align-content: start;
 }
 
 .tags-input {
@@ -200,6 +220,11 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .kb-grid {
     grid-template-columns: 1fr;
+  }
+  .kb-left, .kb-main {
+    height: auto;
+    max-height: 420px;
+    overflow-y: auto;
   }
 }
 </style>

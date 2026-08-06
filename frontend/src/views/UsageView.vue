@@ -135,7 +135,7 @@ onMounted(loadUsage);
 
 /* 明细面板：列表头切换 + 内容多时面板内滚动，不撑高页面 */
 .detail-panel {
-  height: calc(100vh - 190px);
+  height: calc(100vh - 270px);
   min-height: 260px;
   overflow-y: auto;
   display: grid;

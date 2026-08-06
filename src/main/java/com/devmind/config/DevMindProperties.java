@@ -44,6 +44,10 @@ public record DevMindProperties(
         @DefaultValue("embedding-2") String zhipuEmbeddingModel,
         @DefaultValue("2000") int zhipuMaxTokens,
         @DefaultValue("false") boolean authEnabled,
-        @DefaultValue("true") boolean localRagFallback
+        @DefaultValue("true") boolean localRagFallback,
+        // 第二备用模型（如硅基流动免费模型），进一步兜底
+        @DefaultValue("") String modelFallback2BaseUrl,
+        @DefaultValue("") String modelFallback2ApiKey,
+        @DefaultValue("") String modelFallback2ChatModel
 ) {
 }

@@ -71,7 +71,7 @@ public class ChatRouter {
                 .register(meterRegistry);
     }
 
-    /** 从配置构建备用 Provider 列表（目前：OpenRouter 备用 chat 网关，可扩展） */
+    /** 从配置构建备用 Provider 列表（第一备用：OpenRouter；第二备用：硅基流动等，配置驱动） */
     private List<ChatProvider> buildFallbackProviders(
             RestClient.Builder restClientBuilder,
             DevMindProperties properties,
@@ -87,6 +87,17 @@ public class ChatRouter {
                     new ObjectMapper()
             );
             providers.add(new ChatProvider("openrouter", openrouter, true));
+        }
+        // 第二备用（如硅基流动免费模型）：独立熔断，进一步兜底
+        if (properties.modelFallback2BaseUrl() != null && !properties.modelFallback2BaseUrl().isBlank()) {
+            OpenAiCompatibleGateway siliconflow = new OpenAiCompatibleGateway(
+                    restClientBuilder,
+                    properties.modelFallback2BaseUrl(),
+                    secretCipher.resolve(properties.modelFallback2ApiKey()),
+                    properties.modelFallback2ChatModel(),
+                    new ObjectMapper()
+            );
+            providers.add(new ChatProvider("siliconflow", siliconflow, true));
         }
         return providers;
     }

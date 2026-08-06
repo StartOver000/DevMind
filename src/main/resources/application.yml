@@ -95,6 +95,9 @@ devmind:
   model-fallback-base-url: ${DEVMIND_MODEL_FALLBACK_BASE_URL:}
   model-fallback-api-key: ${DEVMIND_MODEL_FALLBACK_API_KEY:}
   model-fallback-chat-model: ${DEVMIND_MODEL_FALLBACK_CHAT_MODEL:}
+  model-fallback-2-base-url: ${DEVMIND_MODEL_FALLBACK2_BASE_URL:}
+  model-fallback-2-api-key: ${DEVMIND_MODEL_FALLBACK2_API_KEY:}
+  model-fallback-2-chat-model: ${DEVMIND_MODEL_FALLBACK2_CHAT_MODEL:}
   zhipu-base-url: ${DEVMIND_ZHIPU_BASE_URL:}
   zhipu-api-key: ${DEVMIND_ZHIPU_API_KEY:}
   zhipu-chat-model: ${DEVMIND_ZHIPU_CHAT_MODEL:glm-4.7-flash}

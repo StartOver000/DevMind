@@ -58,7 +58,7 @@ class DocumentServiceTest {
         DevMindProperties properties = new DevMindProperties(
                 "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
                 4, 3, 5000, 5, 60000, 60000, 0.7, 0.3, true, "mock", "mysql", "", "", "", 2000, "heuristic", 5,
-                0.00015, 0.0006, "", "", "", "", "", "glm-4.7-flash", "embedding-2", 2000, false, true
+                0.00015, 0.0006, "", "", "", "", "", "glm-4.7-flash", "embedding-2", 2000, false, true, "", "", ""
         );
         DocumentService service = new DocumentService(
                 knowledgeBaseService,
@@ -96,7 +96,7 @@ class DocumentServiceTest {
         DevMindProperties properties = new DevMindProperties(
                 "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
                 4, 3, 5000, 5, 60000, 60000, 0.7, 0.3, true, "mock", "mysql", "", "", "", 2000, "heuristic", 5,
-                0.00015, 0.0006, "", "", "", "", "", "glm-4.7-flash", "embedding-2", 2000, false, true
+                0.00015, 0.0006, "", "", "", "", "", "glm-4.7-flash", "embedding-2", 2000, false, true, "", "", ""
         );
         DocumentService service = new DocumentService(
                 knowledgeBaseService,
@@ -126,7 +126,7 @@ class DocumentServiceTest {
         DevMindProperties properties = new DevMindProperties(
                 "mock", tempDir.toString(), 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
                 4, 3, 5000, 5, 60000, 60000, 0.7, 0.3, true, "mock", "mysql", "", "", "", 2000, "heuristic", 5,
-                0.00015, 0.0006, "", "", "", "", "", "glm-4.7-flash", "embedding-2", 2000, false, true
+                0.00015, 0.0006, "", "", "", "", "", "glm-4.7-flash", "embedding-2", 2000, false, true, "", "", ""
         );
         DocumentService service = new DocumentService(
                 knowledgeBaseService,

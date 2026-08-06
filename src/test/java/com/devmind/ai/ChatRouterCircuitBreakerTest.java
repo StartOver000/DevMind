@@ -45,7 +45,7 @@ class ChatRouterCircuitBreakerTest {
                 "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
                 4, 3, 5000, 5, 60000, 60000, 0.7, 0.3, true, "mock", "mysql", "", "", "", 2000, "heuristic", 5,
                 0.00015, 0.0006, fallbackBaseUrl, "fallback-key", "fallback-model", "", "", "glm-4.7-flash",
-                "embedding-2", 2000, false, true
+                "embedding-2", 2000, false, true, "", "", ""
         );
     }
 

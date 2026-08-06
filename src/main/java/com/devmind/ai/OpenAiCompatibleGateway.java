@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 
 import java.util.LinkedHashMap;
@@ -111,13 +112,26 @@ public class OpenAiCompatibleGateway implements AiModelGateway {
     }
 
     private ChatCompletionResponse post(Map<String, Object> body) {
-        return client.post()
+        ResponseEntity<byte[]> entity = client.post()
                 .uri("/chat/completions")
                 .header("Authorization", "Bearer " + apiKey)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(body)
                 .retrieve()
-                .body(ChatCompletionResponse.class);
+                .toEntity(byte[].class);
+        MediaType contentType = entity.getHeaders().getContentType();
+        byte[] raw = entity.getBody();
+        // 非 JSON 响应（部分 Provider 对异常请求返回 HTML/octet-stream）：打印真实内容便于诊断
+        if (contentType == null || !contentType.isCompatibleWith(MediaType.APPLICATION_JSON)) {
+            log.warn("备用模型非 JSON 响应 (status={}, contentType={}): {}",
+                    entity.getStatusCode(), contentType,
+                    raw == null ? "" : new String(raw, java.nio.charset.StandardCharsets.UTF_8));
+        }
+        try {
+            return objectMapper.readValue(raw, ChatCompletionResponse.class);
+        } catch (Exception ex) {
+            throw new IllegalStateException("备用模型响应解析失败: " + ex.getMessage());
+        }
     }
 
     private Map<String, Object> parseJson(String json) {
@@ -133,19 +147,24 @@ public class OpenAiCompatibleGateway implements AiModelGateway {
         }
     }
 
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     public record ChatCompletionResponse(List<Choice> choices) {
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         public record Choice(Message message) {
         }
 
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         public record Message(String content, List<ToolCallData> tool_calls) {
             public Message(String content) {
                 this(content, null);
             }
         }
 
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         public record ToolCallData(String id, String type, FunctionCall function) {
         }
 
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         public record FunctionCall(String name, String arguments) {
         }
     }

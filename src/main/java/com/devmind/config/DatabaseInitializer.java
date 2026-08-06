@@ -4,11 +4,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 @Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class DatabaseInitializer implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DatabaseInitializer.class);
@@ -333,6 +336,32 @@ public class DatabaseInitializer implements ApplicationRunner {
                 SET team_id = (SELECT id FROM team WHERE name = '演示团队')
                 WHERE team_id IS NULL
                   AND created_by = (SELECT id FROM app_user WHERE username = 'demo')
+                """);
+        // 平台工具注册表：登记的内部接口/动态工具（M1 动态工具注册）
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS tool_definition (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id BIGINT NOT NULL DEFAULT 1,
+                    name VARCHAR(100) NOT NULL,
+                    description VARCHAR(500),
+                    tool_type VARCHAR(20) NOT NULL DEFAULT 'interface',
+                    endpoint_url VARCHAR(500),
+                    http_method VARCHAR(10) NOT NULL DEFAULT 'GET',
+                    request_schema_json TEXT,
+                    response_desc VARCHAR(500),
+                    auth_type VARCHAR(20) NOT NULL DEFAULT 'none',
+                    auth_config_encrypted TEXT,
+                    mask_fields_json TEXT,
+                    status VARCHAR(20) NOT NULL DEFAULT 'READY',
+                    created_by BIGINT,
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_definition_name
+                ON tool_definition(name)
+                WHERE status <> 'DELETED'
                 """);
         log.info("database initialized, embedding dimension={}", dimensions);
     }

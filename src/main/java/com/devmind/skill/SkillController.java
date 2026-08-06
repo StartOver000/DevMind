@@ -1,5 +1,6 @@
 package com.devmind.skill;
 
+import com.devmind.skill.dto.ChatDraftRequest;
 import com.devmind.skill.dto.SkillRequest;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -89,5 +91,22 @@ public class SkillController {
             @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
     ) {
         return skillService.draftFromWorkflow(userId, workflowId);
+    }
+
+    /** 从对话沉淀技能草稿（P2）：把一次 Agent 对话提炼为技能规范 */
+    @PostMapping("/from-chat")
+    public SkillService.SkillDraft draftFromChat(
+            @RequestBody ChatDraftRequest request,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        List<SkillService.ToolTraceItem> trace = new ArrayList<>();
+        if (request.toolTrace() != null) {
+            for (ChatDraftRequest.ToolCallItem item : request.toolTrace()) {
+                trace.add(new SkillService.ToolTraceItem(
+                        item.tool(), item.args(), item.ok(), item.costMs()
+                ));
+            }
+        }
+        return skillService.draftFromChat(userId, request.question(), trace, request.answer());
     }
 }

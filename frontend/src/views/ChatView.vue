@@ -441,6 +441,65 @@ async function sendAgent() {
   }
 }
 
+// 对话沉淀为技能（Guide-51 P2）：把这次 Agent 对话提炼为技能草稿，编辑确认后创建
+const chatSkillDraft = ref(null);
+const chatSkillSaving = ref(false);
+
+function hasAgentAnswer() {
+  return agentResult.value && !agentResult.value.error && (agentResult.value.answer || '');
+}
+
+async function draftChatAsSkill() {
+  if (!hasAgentAnswer()) {
+    showToast('请先完成一次 Agent 问答', true);
+    return;
+  }
+  chatSkillDraft.value = null;
+  try {
+    const body = JSON.stringify({
+      question: thread.value.find((m) => m.role === 'user')?.content || '对话',
+      toolTrace: (agentResult.value.toolTrace || []).map((t) => ({
+        tool: t.tool, args: t.args, ok: t.ok, costMs: t.costMs
+      })),
+      answer: agentResult.value.answer
+    });
+    const draft = await api('/api/skills/from-chat', { method: 'POST', body });
+    chatSkillDraft.value = {
+      scope: 'team',
+      name: draft.name,
+      description: draft.description || '',
+      applyTo: draft.applyTo || '',
+      content: draft.content
+    };
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function saveChatSkill() {
+  if (!chatSkillDraft.value.name.trim()) { showToast('请输入技能名称', true); return; }
+  if (!chatSkillDraft.value.content.trim()) { showToast('请输入技能内容', true); return; }
+  chatSkillSaving.value = true;
+  try {
+    await api('/api/skills', {
+      method: 'POST',
+      body: JSON.stringify({
+        scope: chatSkillDraft.value.scope,
+        name: chatSkillDraft.value.name.trim(),
+        description: chatSkillDraft.value.description || '',
+        applyTo: chatSkillDraft.value.applyTo || '',
+        content: chatSkillDraft.value.content
+      })
+    });
+    showToast('技能已创建，Agent 遇到同类任务会自动遵循');
+    chatSkillDraft.value = null;
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    chatSkillSaving.value = false;
+  }
+}
+
 async function selectAgentConversation(id) {
   const conv = agentConversations.value.find((c) => c.id === id);
   conversationId.value = id;
@@ -632,6 +691,10 @@ onBeforeUnmount(() => {
               <div class="user-text">{{ m.content }}</div>
             </template>
             <div v-if="m.time" class="msg-time">{{ m.time }}</div>
+            <div v-if="mode === 'agent' && i === thread.length - 1 && !agentLoading && hasAgentAnswer()" class="skill-save-row">
+              <button class="small" @click="draftChatAsSkill">✨ 存为技能</button>
+              <span class="skill-hint">把这次做法沉淀为技能，Agent 以后遇到同类任务自动遵循</span>
+            </div>
           </div>
         </div>
 
@@ -640,6 +703,32 @@ onBeforeUnmount(() => {
           <div class="bubble thinking">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
             {{ mode === 'agent' ? 'Agent 思考中…' : '检索中…' }}
+          </div>
+        </div>
+
+        <!-- 对话沉淀技能编辑面板 -->
+        <div v-if="chatSkillDraft" class="skill-draft-panel">
+          <h4>存为技能（编辑后保存，Agent 遇到同类任务自动遵循）</h4>
+          <label>技能名称
+            <input v-model="chatSkillDraft.name">
+          </label>
+          <label>适用范围
+            <select v-model="chatSkillDraft.scope">
+              <option value="team">团队（全员生效）</option>
+              <option value="personal">个人（仅自己）</option>
+            </select>
+          </label>
+          <label>触发关键词（| 分隔）
+            <input v-model="chatSkillDraft.applyTo" placeholder="如：月报|经营分析|月度报告">
+          </label>
+          <label>技能内容（AI 从本次对话提炼，可编辑）
+            <textarea v-model="chatSkillDraft.content" rows="6"></textarea>
+          </label>
+          <div class="actions">
+            <button class="primary" :disabled="chatSkillSaving" @click="saveChatSkill">
+              {{ chatSkillSaving ? '保存中…' : '保存技能' }}
+            </button>
+            <button @click="chatSkillDraft = null">取消</button>
           </div>
         </div>
       </div>
@@ -974,6 +1063,39 @@ onBeforeUnmount(() => {
 .memory-hint {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* 对话沉淀技能：保存按钮行 + 编辑面板 */
+.skill-save-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.skill-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.skill-draft-panel {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 10px 16px;
+  background: var(--alt-bg);
+  display: grid;
+  gap: 8px;
+}
+
+.skill-draft-panel h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.skill-draft-panel .actions {
+  display: flex;
+  gap: 8px;
 }
 
 .kb-line {

@@ -167,11 +167,65 @@ public class SkillService {
                 "你是一个流程沉淀助手，把工作流提炼为 AI 可遵循的规范文本。",
                 prompt
         );
+        String content = extractSkillContent(result);
+        String applyTo = workflow.description() == null || workflow.description().isBlank()
+                ? workflow.name() : workflow.name() + "|" + workflow.description();
+        return new SkillDraft(workflow.name(), workflow.description(), applyTo, content, "from_workflow", workflowId);
+    }
+
+    /**
+     * 从对话沉淀为技能草稿（Guide-51 P2）：把一次 Agent 对话（问题 + 工具调用 + 最终回答）
+     * 提炼为技能规范。用户在问答页"存为技能"，编辑确认后 create。
+     */
+    public SkillDraft draftFromChat(Long userId, String question, List<ToolTraceItem> toolTrace, String answer) {
+        if (question == null || question.isBlank()) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "对话问题不能为空");
+        }
+        StringBuilder traceText = new StringBuilder();
+        if (toolTrace != null && !toolTrace.isEmpty()) {
+            for (ToolTraceItem item : toolTrace) {
+                traceText.append("- ").append(item.tool())
+                        .append(" args=").append(item.args() == null ? "{}" : item.args())
+                        .append(" ok=").append(item.ok())
+                        .append('\n');
+            }
+        } else {
+            traceText.append("（本次未调用工具）");
+        }
+        String prompt = """
+                你是技能沉淀助手。下面是一次用户与 AI Agent 的对话（问题、Agent 调用的工具、最终回答）。请把它提炼为一份"技能规范"，供 AI Agent 在遇到同类任务时遵循。
+                要求：
+                1. 开头一句：适用场景（何时使用本技能）；
+                2. 然后列出执行要点（先调用哪些工具、按什么顺序、参数要点、最后输出什么）；
+                3. 语言精炼，全部使用中文，不超过 400 字；
+                4. 只输出技能内容本身，不要标题包裹或解释。
+
+                用户问题：%s
+
+                Agent 调用的工具：
+                %s
+
+                最终回答：%s
+                """.formatted(question.trim(), traceText, answer == null ? "" : answer);
+        AiModelGateway.ChatResult result = chatRouter.chat(
+                "你是一个技能沉淀助手，把一次成功的对话提炼为 AI 可遵循的规范文本。",
+                prompt
+        );
+        String content = extractSkillContent(result);
+        // 技能名取自问题核心（截断），描述为空（由用户补充）
+        String name = question.trim().replaceAll("[\\r\\n]+", " ");
+        if (name.length() > 30) {
+            name = name.substring(0, 30);
+        }
+        return new SkillDraft(name, "", name, content, "from_chat", null);
+    }
+
+    /** 调用模型并容错提取技能内容（去代码块包裹） */
+    private String extractSkillContent(AiModelGateway.ChatResult result) {
         if (result == null || result.content() == null || result.content().isBlank()) {
             throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "技能生成失败，请稍后重试");
         }
         String content = result.content().trim();
-        // 移除可能的 markdown 代码块包裹
         if (content.startsWith("```")) {
             int firstNewline = content.indexOf('\n');
             int lastFence = content.lastIndexOf("```");
@@ -179,14 +233,16 @@ public class SkillService {
                 content = content.substring(firstNewline + 1, lastFence).trim();
             }
         }
-        String applyTo = workflow.description() == null || workflow.description().isBlank()
-                ? workflow.name() : workflow.name() + "|" + workflow.description();
-        return new SkillDraft(workflow.name(), workflow.description(), applyTo, content, "from_workflow", workflowId);
+        return content;
     }
 
     /** 从工作流沉淀的草稿（前端编辑确认后 create） */
     public record SkillDraft(String name, String description, String applyTo, String content,
                              String source, Long sourceWorkflowId) {
+    }
+
+    /** 对话沉淀的工具轨迹项 */
+    public record ToolTraceItem(String tool, String args, Boolean ok, Long costMs) {
     }
 
     /** 可见性校验：团队技能同租户可见；personal 仅本人 */

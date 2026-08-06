@@ -105,4 +105,42 @@ class SkillServiceTest {
         assertThat(result).isEmpty();
         verify(repository).listVisible(1L, 1L, "all");
     }
+
+    @Test
+    void draftFromChatCallsLlmWithTrace() {
+        setUp();
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult(
+                        "当用户请求查询监控版本信息时：1. 调用 prom_buildinfo；2. 若含 version 则总结。", "m", 0, 0));
+
+        SkillService.SkillDraft draft = service.draftFromChat(1L, "查一下监控版本",
+                List.of(new SkillService.ToolTraceItem("prom_buildinfo", "{}", true, 16L)),
+                "版本是 3.13.2");
+
+        assertThat(draft.name()).isEqualTo("查一下监控版本");
+        assertThat(draft.content()).contains("prom_buildinfo");
+        assertThat(draft.source()).isEqualTo("from_chat");
+        assertThat(draft.sourceWorkflowId()).isNull();
+        verify(chatRouter).chat(anyString(), anyString());
+    }
+
+    @Test
+    void draftFromChatRejectsBlankQuestion() {
+        setUp();
+        assertThatThrownBy(() -> service.draftFromChat(1L, "  ", List.of(), "x"))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("问题");
+    }
+
+    @Test
+    void draftFromChatTruncatesLongQuestionToName() {
+        setUp();
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult("规范内容", "m", 0, 0));
+        String longQuestion = "这是一个非常非常非常非常非常非常非常非常非常非常非常非常非常非常长的关于如何生成月度经营分析报告的问题描述";
+
+        SkillService.SkillDraft draft = service.draftFromChat(1L, longQuestion, List.of(), "回答");
+
+        assertThat(draft.name().length()).isLessThanOrEqualTo(30);
+    }
 }

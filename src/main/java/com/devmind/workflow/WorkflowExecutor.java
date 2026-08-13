@@ -18,12 +18,15 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 工作流轻量执行器：按 steps_json 顺序调度工具，支持 {{var}} 步骤间数据传递，
- * 复用 {@link ToolRegistry}（含动态接口工具）。防重叠执行（同一工作流 RUNNING 时拒绝）。
+ * 复用 {@link ToolRegistry}（含动态接口工具）。
+ * 并发排队：同一工作流并发触发时排队串行（webhook 风暴场景从"拒绝"改为"等待"），不同工作流互不影响。
  */
 @Component
 public class WorkflowExecutor {
@@ -38,6 +41,17 @@ public class WorkflowExecutor {
     private final ExecutorService parallelExecutor = Executors.newCachedThreadPool();
     /** 单步工具执行超时（秒）：防止底层调用挂起导致 run 永久 RUNNING（阻塞定时/后续执行） */
     private static final long TOOL_TIMEOUT_SECONDS = 30;
+    /** 同一工作流允许的最大排队触发数（超出直接拒绝，防止 webhook 风暴无限堆积） */
+    private static final int MAX_QUEUED_PER_WORKFLOW = 10;
+    /** 排队等待许可超时（秒）：前一个执行太久时不再干等 */
+    private static final long QUEUE_WAIT_SECONDS = 60;
+    /** 每工作流执行闸门：permit=1 保证同工作流串行，waiting 统计排队深度 */
+    private final ConcurrentHashMap<Long, WorkflowGate> gates = new ConcurrentHashMap<>();
+
+    private static final class WorkflowGate {
+        final Semaphore permit = new Semaphore(1);
+        final AtomicInteger waiting = new AtomicInteger();
+    }
 
     public WorkflowExecutor(
             ToolRegistry toolRegistry,
@@ -88,15 +102,40 @@ public class WorkflowExecutor {
      * 任一步骤失败则整次 FAILED（并行组内会等所有步骤跑完再判失败）。
      */
     public WorkflowRun execute(Workflow workflow, Long userId, String triggerType, Map<String, Object> initialVars) {
-        if (runRepository.hasRunning(workflow.tenantId(), workflow.id())) {
-            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流正在执行中，请稍后再试");
+        // 并发排队：同一工作流并发触发时排队串行，而不是直接拒绝（修复 webhook 风暴/定时重叠时
+        // 下游高频失败）。排队上限与等待超时兜底（防无限堆积/挂死）；不同工作流互不影响；
+        // 跨进程场景由下方 hasRunning（DB 层）兜底拒绝。
+        WorkflowGate gate = gates.computeIfAbsent(workflow.id(), id -> new WorkflowGate());
+        int queued = gate.waiting.incrementAndGet();
+        try {
+            if (queued > MAX_QUEUED_PER_WORKFLOW) {
+                throw new ApiException(ErrorCode.WORKFLOW_BUSY,
+                        "工作流排队已满（同工作流最多 " + MAX_QUEUED_PER_WORKFLOW + " 个等待），请稍后再试");
+            }
+            boolean acquired = gate.permit.tryAcquire(QUEUE_WAIT_SECONDS, TimeUnit.SECONDS);
+            if (!acquired) {
+                throw new ApiException(ErrorCode.WORKFLOW_BUSY,
+                        "工作流排队等待超时（" + QUEUE_WAIT_SECONDS + " 秒），请稍后再试");
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(ErrorCode.WORKFLOW_BUSY, "排队等待被中断");
+        } finally {
+            gate.waiting.decrementAndGet();
         }
-        List<StepUnit> units = parseUnits(workflow.stepsJson());
-        if (units == null || units.isEmpty()) {
-            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤为空");
+        try {
+            if (runRepository.hasRunning(workflow.tenantId(), workflow.id())) {
+                throw new ApiException(ErrorCode.WORKFLOW_BUSY, "工作流正在执行中，请稍后再试");
+            }
+            List<StepUnit> units = parseUnits(workflow.stepsJson());
+            if (units == null || units.isEmpty()) {
+                throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流步骤为空");
+            }
+            Long runId = runRepository.insertRun(workflow.id(), workflow.tenantId(), triggerType);
+            return executeExistingRun(workflow, userId, triggerType, initialVars, runId);
+        } finally {
+            gate.permit.release();
         }
-        Long runId = runRepository.insertRun(workflow.id(), workflow.tenantId(), triggerType);
-        return executeExistingRun(workflow, userId, triggerType, initialVars, runId);
     }
 
     /**

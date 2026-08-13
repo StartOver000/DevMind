@@ -5,22 +5,33 @@ import com.devmind.ai.AiModelGateway;
 import com.devmind.ai.ChatRouter;
 import com.devmind.common.ApiException;
 import com.devmind.tool.ToolAccessService;
+import com.devmind.tool.ToolDefinition;
+import com.devmind.tool.ToolSemanticRepository;
+import com.devmind.tool.OpenApiImportService;
 import com.devmind.user.UserService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -198,5 +209,136 @@ class WorkflowGenerationServiceTest {
         assertThat(result.steps().get(1).kind()).isEqualTo("if");
         assertThat(result.steps().get(1).elseBranch()).isEmpty();
         assertThat(result.stepsJson()).doesNotContain("\"else\":");
+    }
+
+    // ---------- M3 接口语义聚焦（生成工作流时只列与需求相关的接口）----------
+
+    private ToolRegistry registryWithBuiltin() {
+        ToolRegistry reg = new ToolRegistry(List.of());
+        reg.register(new com.devmind.agent.AgentTool() {
+            @Override public String name() { return "prom_buildinfo"; }
+            @Override public String description() { return "查询版本"; }
+            @Override public String parametersJsonSchema() { return "{}"; }
+            @Override public String execute(String argumentsJson, Long userId) { return "{}"; }
+        });
+        reg.register(new com.devmind.agent.AgentTool() {
+            @Override public String name() { return "ai_generate"; }
+            @Override public String description() { return "AI 生成文本"; }
+            @Override public String parametersJsonSchema() { return "{}"; }
+            @Override public String execute(String argumentsJson, Long userId) { return "ok"; }
+        });
+        return reg;
+    }
+
+    private ToolRegistry registryWithInterfaceTools(int count) {
+        ToolRegistry reg = registryWithBuiltin();
+        for (int i = 0; i < count; i++) {
+            com.devmind.agent.AgentTool t = mock(com.devmind.agent.AgentTool.class);
+            lenient().when(t.name()).thenReturn("api_tool_" + i);
+            lenient().when(t.description()).thenReturn("接口 " + i);
+            lenient().when(t.parametersJsonSchema()).thenReturn("{}");
+            reg.register(t);
+        }
+        return reg;
+    }
+
+    private List<ToolDefinition> interfaceDefinitions(int count) {
+        List<ToolDefinition> defs = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            defs.add(new ToolDefinition((long) (i + 1), 1L, "api_tool_" + i, "接口 " + i, "interface",
+                    "http://x/api/" + i, "GET", null, null, "none", null, null, "READY", 1L, null));
+        }
+        return defs;
+    }
+
+    private String capturedSystemPrompt(WorkflowGenerationService svc, String description) {
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult(
+                        "[{\"tool\":\"prom_buildinfo\",\"params\":{},\"goal\":\"x\"}]", "m", 0, 0));
+        svc.generate(1L, description);
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(chatRouter).chat(captor.capture(), anyString());
+        return captor.getValue();
+    }
+
+    @Test
+    void manyInterfacesOnlyListSemanticHitsInPrompt() {
+        ToolRegistry reg = registryWithInterfaceTools(25);
+        WorkflowGenerationService svc = new WorkflowGenerationService(
+                chatRouter, reg, objectMapper, userService, toolAccessService);
+        Set<String> allNames = reg.all().stream().map(com.devmind.agent.AgentTool::name).collect(Collectors.toSet());
+        when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenReturn(allNames);
+        when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(25));
+        OpenApiImportService openApi = mock(OpenApiImportService.class);
+        when(openApi.semanticSearch(anyString(), eq(1L), anyInt())).thenReturn(List.of(
+                new ToolSemanticRepository.SemanticHit(4L, "api_tool_3", "库存", "http://x/3", "GET", 0.4),
+                new ToolSemanticRepository.SemanticHit(18L, "api_tool_17", "库存", "http://x/17", "GET", 0.3)
+        ));
+        svc.setOpenApiImportService(openApi);
+
+        String prompt = capturedSystemPrompt(svc, "查库存");
+
+        // 命中的接口列出；未命中不列出；内置工具不受影响
+        assertThat(prompt).contains("api_tool_3");
+        assertThat(prompt).contains("api_tool_17");
+        assertThat(prompt).doesNotContain("api_tool_0");
+        assertThat(prompt).doesNotContain("api_tool_24");
+        assertThat(prompt).contains("prom_buildinfo");
+        assertThat(prompt).contains("ai_generate");
+        verify(openApi).semanticSearch(eq("查库存"), eq(1L), anyInt());
+    }
+
+    @Test
+    void manyInterfacesFallBackToAllWhenNoSemanticHit() {
+        ToolRegistry reg = registryWithInterfaceTools(25);
+        WorkflowGenerationService svc = new WorkflowGenerationService(
+                chatRouter, reg, objectMapper, userService, toolAccessService);
+        Set<String> allNames = reg.all().stream().map(com.devmind.agent.AgentTool::name).collect(Collectors.toSet());
+        when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenReturn(allNames);
+        when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(25));
+        OpenApiImportService openApi = mock(OpenApiImportService.class);
+        when(openApi.semanticSearch(anyString(), eq(1L), anyInt())).thenReturn(List.of());
+        svc.setOpenApiImportService(openApi);
+
+        String prompt = capturedSystemPrompt(svc, "查库存");
+
+        // 命中为空 → 回退全量（接口可用优先）
+        assertThat(prompt).contains("api_tool_0");
+        assertThat(prompt).contains("api_tool_24");
+    }
+
+    @Test
+    void fewInterfacesListAllWithoutSemanticSearch() {
+        ToolRegistry reg = registryWithInterfaceTools(3);
+        WorkflowGenerationService svc = new WorkflowGenerationService(
+                chatRouter, reg, objectMapper, userService, toolAccessService);
+        Set<String> allNames = reg.all().stream().map(com.devmind.agent.AgentTool::name).collect(Collectors.toSet());
+        when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenReturn(allNames);
+        when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(3));
+        OpenApiImportService openApi = mock(OpenApiImportService.class);
+        svc.setOpenApiImportService(openApi);
+
+        String prompt = capturedSystemPrompt(svc, "查库存");
+
+        // 接口少 → 全量列出且不触发语义检索
+        assertThat(prompt).contains("api_tool_0");
+        assertThat(prompt).contains("api_tool_2");
+        verify(openApi, never()).semanticSearch(anyString(), any(), anyInt());
+    }
+
+    @Test
+    void withoutSemanticServiceListsAllInterfaces() {
+        ToolRegistry reg = registryWithInterfaceTools(25);
+        WorkflowGenerationService svc = new WorkflowGenerationService(
+                chatRouter, reg, objectMapper, userService, toolAccessService);
+        Set<String> allNames = reg.all().stream().map(com.devmind.agent.AgentTool::name).collect(Collectors.toSet());
+        when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenReturn(allNames);
+        when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(25));
+        // 不注入 openApiImportService → 回退全量（向后兼容）
+
+        String prompt = capturedSystemPrompt(svc, "查库存");
+
+        assertThat(prompt).contains("api_tool_0");
+        assertThat(prompt).contains("api_tool_24");
     }
 }

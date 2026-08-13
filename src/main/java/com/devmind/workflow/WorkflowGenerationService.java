@@ -7,6 +7,8 @@ import com.devmind.ai.ChatRouter;
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
 import com.devmind.tool.ToolAccessService;
+import com.devmind.tool.ToolDefinition;
+import com.devmind.tool.ToolSemanticRepository;
 import com.devmind.user.UserService;
 import com.devmind.workflow.dto.WorkflowStepDraft;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -15,11 +17,13 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 对话式生成工作流草案：业务人员用自然语言描述需求，
@@ -30,11 +34,18 @@ public class WorkflowGenerationService {
 
     private static final Logger log = LoggerFactory.getLogger(WorkflowGenerationService.class);
 
+    /** 接口工具全量列出上限：超过后改为按语义命中列出（防 prompt 膨胀） */
+    private static final int MAX_INTERFACE_TOOLS_FULL_LIST = 20;
+    /** 语义命中列出的接口工具数（M3，与 AgentService 工具发现一致） */
+    private static final int MAX_INTERFACE_TOOLS_INJECT = 8;
+
     private final ChatRouter chatRouter;
     private final ToolRegistry toolRegistry;
     private final ObjectMapper objectMapper;
     private final UserService userService;
     private final ToolAccessService toolAccessService;
+    /** 接口语义化服务（M3 工具发现）：可选注入，接口多时按语义命中列出接口 */
+    private com.devmind.tool.OpenApiImportService openApiImportService;
 
     public WorkflowGenerationService(
             ChatRouter chatRouter,
@@ -50,6 +61,12 @@ public class WorkflowGenerationService {
         this.toolAccessService = toolAccessService;
     }
 
+    /** 接口语义化服务可选注入（接口多时按语义命中列出接口工具） */
+    @Autowired(required = false)
+    public void setOpenApiImportService(com.devmind.tool.OpenApiImportService openApiImportService) {
+        this.openApiImportService = openApiImportService;
+    }
+
     /** 生成结果：步骤（展示用）+ stepsJson（可直接提交创建工作流） */
     public record GenerationResult(List<WorkflowStepDraft> steps, String stepsJson) {
     }
@@ -63,7 +80,7 @@ public class WorkflowGenerationService {
         if (description == null || description.isBlank()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "请描述你的需求");
         }
-        String systemPrompt = buildSystemPrompt(userId);
+        String systemPrompt = buildSystemPrompt(userId, description);
         AiModelGateway.ChatResult result = chatRouter.chat(systemPrompt, description.trim());
         if (result == null || result.content() == null || result.content().isBlank()) {
             throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型未返回工作流草案");
@@ -78,13 +95,42 @@ public class WorkflowGenerationService {
         return new GenerationResult(steps, toStepsJson(steps));
     }
 
-    private String buildSystemPrompt(Long userId) {
+    private String buildSystemPrompt(Long userId, String description) {
         Long tenantId = userService.tenantIdOf(userId);
         Set<String> accessible = toolAccessService.accessibleToolNames(tenantId, userId);
+        // 接口工具名集合（动态接口工具；null 防御——测试/降级场景可能无授权列表）
+        List<ToolDefinition> dynamicTools = toolAccessService.accessibleDynamicTools(tenantId, userId);
+        Set<String> interfaceNames = (dynamicTools == null ? List.<ToolDefinition>of() : dynamicTools).stream()
+                .map(ToolDefinition::name)
+                .collect(Collectors.toSet());
+        // 接口工具语义聚焦（M3）：接口多时，只把与需求语义命中的接口列给模型，
+        // 避免几百个接口挤爆生成 prompt；命中为空/失败回退全量（保持可用）。
+        Set<String> listedInterface = interfaceNames;
+        if (interfaceNames.size() > MAX_INTERFACE_TOOLS_FULL_LIST && openApiImportService != null) {
+            try {
+                List<ToolSemanticRepository.SemanticHit> hits =
+                        openApiImportService.semanticSearch(description, userId, MAX_INTERFACE_TOOLS_INJECT);
+                Set<String> hitNames = hits.stream()
+                        .map(ToolSemanticRepository.SemanticHit::name)
+                        .filter(interfaceNames::contains)
+                        .collect(Collectors.toSet());
+                if (!hitNames.isEmpty()) {
+                    listedInterface = hitNames;
+                    log.info("工作流生成接口语义聚焦：{} 个接口中命中列出 {} 个",
+                            interfaceNames.size(), hitNames.size());
+                }
+            } catch (Exception e) {
+                log.warn("工作流生成接口语义聚焦失败，回退全量列出: {}", e.getMessage());
+            }
+        }
         StringBuilder tools = new StringBuilder();
         for (AgentTool tool : toolRegistry.all()) {
             if (!accessible.contains(tool.name())) {
                 continue; // 只列出当前用户可用的工具
+            }
+            // 接口工具未命中语义 → 不列出（内置工具不受影响）
+            if (interfaceNames.contains(tool.name()) && !listedInterface.contains(tool.name())) {
+                continue;
             }
             tools.append("- ").append(tool.name()).append(": ").append(tool.description());
             String params = summarizeParams(tool.parametersJsonSchema());

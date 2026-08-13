@@ -219,6 +219,36 @@ class AgentServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void skillDeclaredInterfaceToolIsInjectedIntoTools() {
+        // M4 沉淀复用：命中技能 references 声明的接口工具 → 直接注入工具列表（不依赖语义检索）
+        com.devmind.skill.SkillMatcher matcher = org.mockito.Mockito.mock(com.devmind.skill.SkillMatcher.class);
+        when(matcher.match(eq("库存不足发预警"), eq(1L), eq(1L)))
+                .thenReturn(new com.devmind.skill.SkillMatcher.MatchResult(
+                        List.of("【技能 ID 1：库存预警规范】检查库存，不足发预警。"),
+                        List.of(),
+                        Set.of("declared_api")));
+
+        AgentTool tool = kbTool();
+        AgentTool declared = org.mockito.Mockito.mock(AgentTool.class);
+        lenient().when(declared.name()).thenReturn("declared_api");
+        lenient().when(declared.description()).thenReturn("库存查询接口");
+        lenient().when(declared.parametersJsonSchema()).thenReturn("{}");
+        AgentService service = service(new ToolRegistry(List.of(tool, declared)));
+        service.setSkillMatcher(matcher);
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(new AiModelGateway.ChatResult("已按规范检查。", "m", 0, 0));
+
+        service.chat(new AgentChatRequest(0L, "库存不足发预警", null), 1L);
+
+        // 技能声明的接口工具进入 tools（模型可直接调用）
+        ArgumentCaptor<List<AiModelGateway.ToolSpec>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatRouter).chatWithTools(anyString(), anyList(), captor.capture());
+        assertThat(captor.getValue()).anyMatch(s -> s.name().equals("declared_api"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void injectsSkillCatalogWithoutFullContent() {
         // 渐进披露：未命中关键词的技能只进清单（名称+描述），不含全文
         com.devmind.skill.SkillMatcher matcher = org.mockito.Mockito.mock(com.devmind.skill.SkillMatcher.class);
@@ -226,7 +256,6 @@ class AgentServiceTest {
                 .thenReturn(new com.devmind.skill.SkillMatcher.MatchResult(
                         List.of(),
                         List.of("【技能 ID 2】监控版本检查：检查各服务版本是否符合规范")));
-
         AgentTool tool = kbTool();
         AgentService service = service(new ToolRegistry(List.of(tool)));
         service.setSkillMatcher(matcher);

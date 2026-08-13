@@ -392,6 +392,7 @@ async function draftAsSkill(w) {
       description: draft.description || '',
       applyTo: draft.applyTo || '',
       content: draft.content,
+      references: draft.references || '[]',
       sourceWorkflowId: draft.sourceWorkflowId
     };
   } catch (err) {
@@ -411,7 +412,8 @@ async function saveSkillDraft() {
         name: skillDraft.value.name.trim(),
         description: skillDraft.value.description || '',
         applyTo: skillDraft.value.applyTo || '',
-        content: skillDraft.value.content
+        content: skillDraft.value.content,
+        references: skillDraft.value.references || '[]'
       })
     });
     showToast('技能已创建，Agent 遇到同类任务会自动遵循');

@@ -4,15 +4,22 @@ import com.devmind.ai.AiModelGateway;
 import com.devmind.ai.ChatRouter;
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
+import com.devmind.tool.ToolAccessService;
+import com.devmind.tool.ToolDefinition;
 import com.devmind.user.UserService;
 import com.devmind.workflow.Workflow;
 import com.devmind.workflow.WorkflowRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 技能（Skill）服务（Guide-51）：CRUD + 权限 + 从工作流沉淀。
@@ -27,17 +34,21 @@ public class SkillService {
     private final UserService userService;
     private final WorkflowRepository workflowRepository;
     private final ChatRouter chatRouter;
+    private final ToolAccessService toolAccessService;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public SkillService(
             SkillRepository repository,
             UserService userService,
             WorkflowRepository workflowRepository,
-            ChatRouter chatRouter
+            ChatRouter chatRouter,
+            ToolAccessService toolAccessService
     ) {
         this.repository = repository;
         this.userService = userService;
         this.workflowRepository = workflowRepository;
         this.chatRouter = chatRouter;
+        this.toolAccessService = toolAccessService;
     }
 
     public List<Skill> list(Long userId, String scope, String sort) {
@@ -242,7 +253,58 @@ public class SkillService {
         String content = extractSkillContent(result);
         String applyTo = workflow.description() == null || workflow.description().isBlank()
                 ? workflow.name() : workflow.name() + "|" + workflow.description();
-        return new SkillDraft(workflow.name(), workflow.description(), applyTo, content, "from_workflow", workflowId);
+        // M4 沉淀复用：references 记录工作流本身 + 工作流用到的接口工具（接口能力随技能复用）
+        String references = buildWorkflowReferences(userId, workflow, stepsText);
+        return new SkillDraft(workflow.name(), workflow.description(), applyTo, content,
+                "from_workflow", workflowId, references);
+    }
+
+    /**
+     * M4 沉淀复用：从工作流步骤提取接口工具，生成 references
+     * （[{"type":"workflow",...},{"type":"interface_tool","name":"listOrders"},...]）。
+     * 解析失败/无接口时只保留工作流引用。
+     */
+    private String buildWorkflowReferences(Long userId, Workflow workflow, String stepsJson) {
+        List<Map<String, Object>> refs = new ArrayList<>();
+        refs.add(Map.of("type", "workflow", "id", workflow.id(), "name", workflow.name()));
+        try {
+            Long tenantId = userService.tenantIdOf(userId);
+            Set<String> interfaceNames = (toolAccessService.accessibleDynamicTools(tenantId, userId) == null
+                    ? List.<ToolDefinition>of()
+                    : toolAccessService.accessibleDynamicTools(tenantId, userId)).stream()
+                    .map(ToolDefinition::name)
+                    .collect(java.util.stream.Collectors.toSet());
+            Set<String> used = new LinkedHashSet<>();
+            collectTools(objectMapper.readTree(stepsJson), used);
+            for (String tool : used) {
+                if (interfaceNames.contains(tool)) {
+                    refs.add(Map.of("type", "interface_tool", "name", tool));
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("工作流沉淀 references 提取失败，仅记录工作流引用: {}", ex.getMessage());
+        }
+        try {
+            return objectMapper.writeValueAsString(refs);
+        } catch (Exception ex) {
+            return "[]";
+        }
+    }
+
+    /** 递归收集工作流步骤中的 tool 名（支持 if/parallel 嵌套） */
+    private void collectTools(JsonNode node, Set<String> out) {
+        if (node == null || !node.isArray()) {
+            return;
+        }
+        for (JsonNode item : node) {
+            String tool = item.path("tool").asText("");
+            if (!tool.isBlank()) {
+                out.add(tool);
+            }
+            collectTools(item.path("then"), out);
+            collectTools(item.path("else"), out);
+            collectTools(item.path("parallel"), out);
+        }
     }
 
     /**
@@ -308,9 +370,13 @@ public class SkillService {
         return content;
     }
 
-    /** 从工作流沉淀的草稿（前端编辑确认后 create） */
+    /** 从工作流沉淀的草稿（前端编辑确认后 create）；references 记录工作流与接口依赖 */
     public record SkillDraft(String name, String description, String applyTo, String content,
-                             String source, Long sourceWorkflowId) {
+                             String source, Long sourceWorkflowId, String references) {
+        public SkillDraft(String name, String description, String applyTo, String content,
+                          String source, Long sourceWorkflowId) {
+            this(name, description, applyTo, content, source, sourceWorkflowId, "[]");
+        }
     }
 
     /** 对话沉淀的工具轨迹项 */

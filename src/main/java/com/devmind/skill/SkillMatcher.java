@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 技能匹配器（Guide-51 §5.2）：在 Agent 请求时匹配当前请求场景的团队/个人技能。
@@ -51,8 +52,16 @@ public class SkillMatcher {
         this.modelGateway = modelGateway;
     }
 
-    /** 匹配结果：关键词命中的注入全文 + 其余技能轻量清单（渐进披露） */
-    public record MatchResult(List<String> injectFull, List<String> catalog) {
+    /** 匹配结果：关键词命中的注入全文 + 其余技能轻量清单（渐进披露）+ 命中技能引用的接口工具 */
+    public record MatchResult(
+            List<String> injectFull,
+            List<String> catalog,
+            Set<String> linkedInterfaceTools
+    ) {
+        public MatchResult(List<String> injectFull, List<String> catalog) {
+            this(injectFull, catalog, Set.of());
+        }
+
         public boolean isEmpty() {
             return (injectFull == null || injectFull.isEmpty())
                     && (catalog == null || catalog.isEmpty());
@@ -68,8 +77,9 @@ public class SkillMatcher {
     public MatchResult match(String question, Long tenantId, Long userId) {
         List<String> injectFull = new ArrayList<>();
         List<Skill> remaining = new ArrayList<>();
+        Set<String> linkedInterfaceTools = new java.util.LinkedHashSet<>();
         if (question == null || question.isBlank()) {
-            return new MatchResult(injectFull, new ArrayList<>());
+            return new MatchResult(injectFull, new ArrayList<>(), linkedInterfaceTools);
         }
         try {
             List<Skill> skills = repository.listEnabledForUser(tenantId, userId);
@@ -87,6 +97,8 @@ public class SkillMatcher {
                             inject += "\n\n" + refs;
                         }
                         injectFull.add(inject);
+                        // M4：收集命中技能引用的接口工具，供 Agent 直接注入工具列表
+                        collectInterfaceTools(skill.references(), linkedInterfaceTools);
                         repository.incrementHit(tenantId, skill.id());
                         continue;
                     }
@@ -98,7 +110,7 @@ public class SkillMatcher {
             log.warn("技能匹配失败，跳过注入: {}", ex.getMessage());
         }
         List<String> catalog = buildCatalog(question, remaining);
-        return new MatchResult(injectFull, catalog);
+        return new MatchResult(injectFull, catalog, linkedInterfaceTools);
     }
 
     /**
@@ -248,21 +260,55 @@ public class SkillMatcher {
             List<String> parts = new ArrayList<>();
             for (JsonNode ref : root) {
                 String type = ref.path("type").asText("");
-                long id = ref.path("id").asLong(0);
-                String name = ref.path("name").asText("");
-                if (type.isBlank() || id <= 0) {
+                if (type.isBlank()) {
                     continue;
                 }
+                long id = ref.path("id").asLong(0);
+                String name = ref.path("name").asText("");
                 if ("workflow".equals(type)) {
+                    if (id <= 0) {
+                        continue;
+                    }
                     parts.add("【可联动资源：工作流「" + name + "」(ID " + id + ")，如需执行请调用 run_workflow】");
                 } else if ("kb".equals(type)) {
+                    if (id <= 0) {
+                        continue;
+                    }
                     parts.add("【可联动资源：知识库「" + name + "」(ID " + id + ")，如需检索请调用 kb_search 并指定该知识库】");
+                } else if ("interface_tool".equals(type)) {
+                    if (name.isBlank()) {
+                        continue;
+                    }
+                    parts.add("【可联动资源：接口「" + name + "」，如需调用请直接使用该接口工具】");
                 }
             }
             return String.join("\n", parts);
         } catch (Exception ex) {
             log.warn("技能 references 解析失败: {}", ex.getMessage());
             return "";
+        }
+    }
+
+    /** 收集 references 中的接口工具名（M4 沉淀复用：技能声明的接口依赖直接可用） */
+    private void collectInterfaceTools(String referencesJson, Set<String> out) {
+        if (referencesJson == null || referencesJson.isBlank() || "[]".equals(referencesJson.trim())) {
+            return;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(referencesJson);
+            if (!root.isArray()) {
+                return;
+            }
+            for (JsonNode ref : root) {
+                if ("interface_tool".equals(ref.path("type").asText(""))) {
+                    String name = ref.path("name").asText("");
+                    if (!name.isBlank()) {
+                        out.add(name);
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("技能接口工具引用解析失败: {}", ex.getMessage());
         }
     }
 }

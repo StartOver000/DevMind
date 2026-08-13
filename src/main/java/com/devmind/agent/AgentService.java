@@ -451,6 +451,18 @@ public class AgentService {
         tools.add(new AiModelGateway.ToolSpec(DELETE_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_DESC, DELETE_MEMORY_TOOL_SCHEMA));
         // 注入工作流执行工具（技能引用资源联动）：技能 references 引用工作流时按需执行
         tools.add(new AiModelGateway.ToolSpec(RUN_WORKFLOW_TOOL_NAME, RUN_WORKFLOW_TOOL_DESC, RUN_WORKFLOW_TOOL_SCHEMA));
+        // M4 沉淀复用：命中技能 references 声明的接口工具直接注入（技能明确依赖，不依赖语义检索）
+        if (skillMatch.linkedInterfaceTools() != null && !skillMatch.linkedInterfaceTools().isEmpty()) {
+            for (String toolName : skillMatch.linkedInterfaceTools()) {
+                AgentTool declared = toolRegistry.get(toolName);
+                boolean already = tools.stream().anyMatch(s -> s.name().equals(toolName));
+                if (declared != null && accessible.contains(toolName) && !already) {
+                    tools.add(new AiModelGateway.ToolSpec(
+                            declared.name(), declared.description(), declared.parametersJsonSchema()));
+                    log.info("技能声明接口注入：{}（技能依赖，直接可用）", toolName);
+                }
+            }
+        }
 
         try {
             // 计划失败后是否还能引导模型重规划（限 1 次，避免死循环）

@@ -24,6 +24,7 @@ class SkillServiceTest {
     private UserService userService;
     private WorkflowRepository workflowRepository;
     private ChatRouter chatRouter;
+    private com.devmind.tool.ToolAccessService toolAccessService;
     private SkillService service;
 
     private void setUp() {
@@ -31,9 +32,11 @@ class SkillServiceTest {
         userService = mock(UserService.class);
         workflowRepository = mock(WorkflowRepository.class);
         chatRouter = mock(ChatRouter.class);
-        service = new SkillService(repository, userService, workflowRepository, chatRouter);
+        toolAccessService = mock(com.devmind.tool.ToolAccessService.class);
+        service = new SkillService(repository, userService, workflowRepository, chatRouter, toolAccessService);
         when(userService.tenantIdOf(1L)).thenReturn(1L);
         when(userService.isAdmin(1L)).thenReturn(true);
+        when(toolAccessService.accessibleDynamicTools(1L, 1L)).thenReturn(List.of());
     }
 
     @Test
@@ -87,10 +90,35 @@ class SkillServiceTest {
     }
 
     @Test
+    void draftFromWorkflowRecordsInterfaceToolsInReferences() {
+        setUp();
+        when(workflowRepository.findById(1L, 5L)).thenReturn(
+                new Workflow(5L, 1L, "库存预警", "检查库存并发预警",
+                        "[{\"tool\":\"checkStock\",\"params\":{\"productId\":5},\"output_var\":\"stock\"},"
+                                + "{\"tool\":\"ai_generate\",\"params\":{\"prompt\":\"总结 {{stock}}\"}}]",
+                        "manual", null, "private", "ENABLED", 1L, null)
+        );
+        // 接口工具集合含 checkStock（ai_generate 是内置工具，不应记录为接口依赖）
+        when(toolAccessService.accessibleDynamicTools(1L, 1L)).thenReturn(List.of(
+                new com.devmind.tool.ToolDefinition(1L, 1L, "checkStock", "库存查询", "interface",
+                        "http://x/stock", "GET", null, null, "none", null, null, "READY", 1L, null)
+        ));
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult("检查库存，不足发预警。", "m", 0, 0));
+
+        SkillService.SkillDraft draft = service.draftFromWorkflow(1L, 5L);
+
+        assertThat(draft.references()).contains("\"type\":\"workflow\"");
+        assertThat(draft.references()).contains("\"type\":\"interface_tool\"");
+        assertThat(draft.references()).contains("checkStock");
+        // 内置工具不记录为接口依赖
+        assertThat(draft.references()).doesNotContain("ai_generate");
+    }
+
+    @Test
     void draftFromWorkflowThrowsWhenWorkflowMissing() {
         setUp();
         when(workflowRepository.findById(1L, 99L)).thenReturn(null);
-
         assertThatThrownBy(() -> service.draftFromWorkflow(1L, 99L))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("工作流不存在");

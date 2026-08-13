@@ -53,8 +53,29 @@ class SkillMatcherTest {
     }
 
     @Test
+    void interfaceToolReferenceInjectedAndCollected() {
+        // 技能 references 含 interface_tool → 注入"接口"可联动说明 + linkedInterfaceTools 收集接口名
+        SkillRepository repository = mock(SkillRepository.class);
+        when(repository.listEnabledForUser(1L, 1L)).thenReturn(List.of(
+                skillWithRefs(1L, "team", "库存预警规范", "d", "库存|预警",
+                        "检查库存，不足发预警。",
+                        "[{\"type\":\"workflow\",\"id\":5,\"name\":\"库存预警\"},"
+                                + "{\"type\":\"interface_tool\",\"name\":\"checkStock\"},"
+                                + "{\"type\":\"interface_tool\",\"name\":\"sendAlert\"}]")
+        ));
+
+        SkillMatcher matcher = new SkillMatcher(repository);
+        SkillMatcher.MatchResult result = matcher.match("库存不足发预警", 1L, 1L);
+
+        assertThat(result.injectFull()).hasSize(1);
+        assertThat(result.injectFull().get(0)).contains("可联动资源")
+                .contains("接口「checkStock」").contains("接口「sendAlert」");
+        // M4：命中技能声明的接口工具被收集，供 Agent 直接注入
+        assertThat(result.linkedInterfaceTools()).containsExactlyInAnyOrder("checkStock", "sendAlert");
+    }
+
+    @Test
     void emptyOrInvalidReferencesProduceNoLinkage() {
-        // 引用为空 / 非 JSON / 结构缺失 → 注入不带联动说明，不报错
         SkillRepository repository = mock(SkillRepository.class);
         when(repository.listEnabledForUser(1L, 1L)).thenReturn(List.of(
                 skillWithRefs(1L, "team", "规范A", "d", "报告", "内容A", "[]"),

@@ -13,6 +13,7 @@ import com.devmind.team.TeamService;
 import com.devmind.user.UserService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -39,6 +40,11 @@ public class KnowledgeBaseService {
         this.teamService = teamService;
     }
 
+    /**
+     * 创建知识库并写入 OWNER 成员 + 审计（knowledge_base + member 跨表原子写）。
+     * A3：跨表写补事务，失败整体回滚；审计日志失败不阻断（audit 已内部吞异常）。
+     */
+    @Transactional
     public KnowledgeBaseResponse create(CreateKnowledgeBaseRequest request, Long userId) {
         userService.requireUser(userId);
         Long teamId = request.teamId();

@@ -126,6 +126,11 @@ public class TeamRepository {
         return count == null ? 0 : count;
     }
 
+    /** 删除团队（同时清理成员，避免孤儿 team_member 数据） */
+    public void deleteMembers(Long teamId) {
+        jdbcTemplate.update("DELETE FROM team_member WHERE team_id = ?", teamId);
+    }
+
     public boolean delete(Long teamId) {
         return jdbcTemplate.update("DELETE FROM team WHERE id = ?", teamId) > 0;
     }

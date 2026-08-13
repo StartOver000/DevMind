@@ -11,6 +11,7 @@ import com.devmind.team.dto.TeamResponse;
 import com.devmind.user.UserService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -31,6 +32,11 @@ public class TeamService {
         this.auditLogService = auditLogService;
     }
 
+    /**
+     * 创建团队并加入创建者为 OWNER（team + team_member 两表原子写）。
+     * A3：跨表写补事务，失败整体回滚，避免孤儿团队。
+     */
+    @Transactional
     public TeamResponse create(CreateTeamRequest request, Long userId) {
         userService.requireUser(userId);
         String name = request.name().trim();
@@ -93,10 +99,16 @@ public class TeamService {
         auditLogService.log(userId, "REMOVE_TEAM_MEMBER", "team", teamId, "user=" + memberUserId, teamId);
     }
 
+    /**
+     * 删除团队（team + team_member 原子写，先清成员再删团队，避免孤儿成员）。
+     * A3：跨表写补事务。
+     */
+    @Transactional
     public void delete(Long teamId, Long userId) {
         userService.requireUser(userId);
         requireTeamManage(teamId, userId);
         Team team = requireTeam(teamId);
+        repository.deleteMembers(teamId);
         repository.delete(teamId);
         auditLogService.log(userId, "DELETE_TEAM", "team", teamId, team.name(), teamId);
     }

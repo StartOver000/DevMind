@@ -129,4 +129,17 @@ class TeamServiceTest {
                 .isEqualTo(ErrorCode.FORBIDDEN);
         verify(repository, never()).delete(10L);
     }
+
+    @Test
+    void ownerDeletesTeamAndClearsMembersFirst() {
+        TeamService service = service();
+        when(repository.findById(10L)).thenReturn(Optional.of(team(10L, 1L)));
+        when(repository.isOwner(10L, 1L)).thenReturn(true);
+
+        service.delete(10L, 1L);
+
+        // 先清成员再删团队，避免孤儿 team_member（A3 一致性）
+        verify(repository).deleteMembers(10L);
+        verify(repository).delete(10L);
+    }
 }

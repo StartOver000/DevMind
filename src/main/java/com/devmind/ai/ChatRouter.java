@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -270,18 +271,53 @@ public class ChatRouter {
         throw new IllegalStateException("备用 Provider 调用失败: " + name, last);
     }
 
+    /**
+     * 限流识别（结构化优先，字符串兜底）：
+     * 优先按 HTTP 状态码（{@link RestClientResponseException} 429）判断，并穿透 cause 链
+     * （上游网关可能把原始异常包装进自定义异常，如 IllegalStateException(cause=429)）；
+     * 字符串匹配作为最后兜底，避免不同网关错误封装时漏判。
+     */
     private static boolean isRateLimited(Exception error) {
-        String message = error.getMessage() == null ? "" : error.getMessage();
-        return message.contains("429") || message.contains("Too Many");
+        for (Throwable t = error; t != null; t = t.getCause()) {
+            if (t instanceof RestClientResponseException httpError) {
+                if (httpError.getStatusCode().value() == 429) {
+                    return true;
+                }
+            }
+            String message = t.getMessage() == null ? "" : t.getMessage();
+            if (message.contains("429") || message.contains("Too Many")) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    /** 读取/连接超时：上游长时间无响应，继续重试会叠加等待，应快速放弃 */
+    /**
+     * 超时识别（结构化优先，字符串兜底）：
+     * JDK HttpClient 超时（{@link java.net.http.HttpTimeoutException} / SocketTimeoutException /
+     * TimeoutException）按异常类型直接判定；网关侧超时常见 504（网关超时）也视作超时，快速放弃不重试；
+     * 穿透 cause 链 + 字符串兜底，避免不同错误封装漏判。
+     */
     private static boolean isTimeout(Exception error) {
-        String message = error.getMessage() == null ? "" : error.getMessage();
-        return message.contains("timed out")
-                || message.contains("Timeout")
-                || message.contains("Read timed out")
-                || message.contains("connect timed out");
+        for (Throwable t = error; t != null; t = t.getCause()) {
+            if (t instanceof java.net.http.HttpTimeoutException
+                    || t instanceof java.net.SocketTimeoutException
+                    || t instanceof java.util.concurrent.TimeoutException) {
+                return true;
+            }
+            if (t instanceof RestClientResponseException httpError
+                    && httpError.getStatusCode().value() == 504) {
+                return true;
+            }
+            String message = t.getMessage() == null ? "" : t.getMessage();
+            if (message.contains("timed out")
+                    || message.contains("Timeout")
+                    || message.contains("Read timed out")
+                    || message.contains("connect timed out")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void sleep(long millis) {

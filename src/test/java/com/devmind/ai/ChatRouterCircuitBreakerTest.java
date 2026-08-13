@@ -218,4 +218,47 @@ class ChatRouterCircuitBreakerTest {
         verify(primaryGateway, times(2)).chat(anyString(), anyString());
         server.verify();
     }
+
+    @Test
+    void rateLimitedByStatusCodeOpensCircuitImmediately() {
+        // 结构化识别：HTTP 429 状态码（不依赖消息文本）→ 第一次失败即熔断
+        doThrow(org.springframework.web.client.HttpClientErrorException.create(
+                org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
+                "Too Many Requests", org.springframework.http.HttpHeaders.EMPTY, new byte[0], null))
+                .when(primaryGateway).chat(anyString(), anyString());
+
+        assertThatThrownBy(() -> router.chat("s", "u")).isInstanceOf(ApiException.class);
+        // 熔断打开：不再调用主模型，快速失败交由上层降级
+        assertThatThrownBy(() -> router.chat("s", "u")).isInstanceOf(ApiException.class);
+
+        verify(primaryGateway, times(1)).chat(anyString(), anyString());
+    }
+
+    @Test
+    void timeoutWrappedInCauseIsNotRetriedOnFallback() {
+        // 超时被包装进 cause 链（如 Zhipu 网关 retry 后抛 IllegalStateException(cause=HttpTimeoutException)）：
+        // 结构化识别穿透 cause 判定为超时 → 备用 Provider 快速放弃（不重试 3 次）→ 全失败抛 ApiException
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restClientBuilder).build();
+        server.expect(requestTo("https://fallback.example.com/chat/completions"))
+                .andRespond(request -> {
+                    throw new java.net.http.HttpTimeoutException("read timed out");
+                });
+        when(secretCipher.resolve(anyString())).thenReturn("fb-secret");
+        router = new ChatRouter(
+                primaryGateway,
+                restClientBuilder,
+                baseProperties("https://fallback.example.com"),
+                secretCipher,
+                new InMemoryCircuitStateStore(),
+                new SimpleMeterRegistry()
+        );
+        doThrow(new IllegalStateException("调用失败", new java.net.http.HttpTimeoutException("read timed out")))
+                .when(primaryGateway).chat(anyString(), anyString());
+
+        assertThatThrownBy(() -> router.chat("s", "u")).isInstanceOf(ApiException.class);
+
+        // 备用只被调用 1 次（超时快速放弃，而非退避重试 3 次）：server.verify() 在有多余请求时会失败
+        server.verify();
+        verify(primaryGateway, times(1)).chat(anyString(), anyString());
+    }
 }

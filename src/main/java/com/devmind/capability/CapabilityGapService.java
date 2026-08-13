@@ -92,7 +92,7 @@ public class CapabilityGapService {
         if (result == null || result.content() == null || result.content().isBlank()) {
             throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型未返回能力分析");
         }
-        List<AnalysisStep> steps = parseSteps(result.content(), warnings);
+        List<AnalysisStep> steps = parseSteps(result.content(), warnings, hits);
         List<Gap> gaps = collectGaps(steps);
 
         log.info("能力盘点完成：命中 {} 个接口，拆解 {} 步，缺失能力 {} 个 (user={})",
@@ -131,7 +131,11 @@ public class CapabilityGapService {
     }
 
     /** 容错解析 LLM 输出的 JSON 对象（支持 ```json 包裹/前后文字），失败不中断 */
-    private List<AnalysisStep> parseSteps(String content, List<String> warnings) {
+    private List<AnalysisStep> parseSteps(
+            String content,
+            List<String> warnings,
+            List<ToolSemanticRepository.SemanticHit> hits
+    ) {
         String json = extractJsonObject(content);
         if (json == null) {
             warnings.add("模型未返回结构化能力分析，仅展示语义检索命中的接口");
@@ -145,13 +149,26 @@ public class CapabilityGapService {
                 warnings.add("模型返回格式缺少 steps 数组");
                 return List.of();
             }
+            java.util.Set<String> availableInterfaces = hits.stream()
+                    .map(hit -> hit.name())
+                    .collect(java.util.stream.Collectors.toSet());
             List<AnalysisStep> list = new ArrayList<>();
             for (JsonNode node : steps) {
                 boolean covered = node.path("covered").asBoolean(false);
+                String interfaceName = node.path("interface").asText("");
+                String note = node.path("note").asText("");
                 Gap gap = null;
+                if (covered && !availableInterfaces.contains(interfaceName)) {
+                    warnings.add("模型引用了未命中的接口：" + interfaceName);
+                    covered = false;
+                    note = "模型引用的接口不在实际命中清单中，已按缺失能力处理";
+                    String suggestedName = interfaceName.isBlank() ? "unknownCapability" : interfaceName;
+                    gap = new Gap(suggestedName, "GET", "/" + suggestedName, "模型建议的接口未在当前能力清单中");
+                    interfaceName = "";
+                }
                 if (!covered) {
                     JsonNode g = node.path("gap");
-                    if (g.isObject()) {
+                    if (gap == null && g.isObject()) {
                         gap = new Gap(
                                 g.path("suggestedName").asText(""),
                                 g.path("method").asText(""),
@@ -163,8 +180,8 @@ public class CapabilityGapService {
                 list.add(new AnalysisStep(
                         node.path("step").asText(""),
                         covered,
-                        node.path("interface").asText(""),
-                        node.path("note").asText(""),
+                    interfaceName,
+                    note,
                         gap
                 ));
             }

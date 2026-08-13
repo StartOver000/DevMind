@@ -72,6 +72,9 @@ public class AgentConversationStore {
     /** 解析/创建会话：传入有效会话 ID 则复用，否则按问题标题新建 */
     public Long resolveConversation(Long conversationId, String question, Long userId) {
         if (conversationId != null && conversationId > 0) {
+            if (!conversationRepository.existsForUser(conversationId, userId)) {
+                throw new ApiException(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在");
+            }
             return conversationId;
         }
         String title = AgentTools.truncate(question, 100);

@@ -73,10 +73,22 @@ class AgentConversationStoreTest {
 
     @Test
     void resolveConversationReusesExistingId() {
+        when(conversationRepository.existsForUser(10L, 1L)).thenReturn(true);
+
         Long id = store.resolveConversation(10L, "问题", 1L);
 
         assertThat(id).isEqualTo(10L);
         verify(conversationRepository, never()).create(anyLong(), anyString());
+    }
+
+    @Test
+    void resolveConversationRejectsConversationNotOwned() {
+        when(conversationRepository.existsForUser(10L, 1L)).thenReturn(false);
+
+        assertThatThrownBy(() -> store.resolveConversation(10L, "问题", 1L))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("会话不存在");
+        verify(conversationRepository, never()).listMessages(anyLong());
     }
 
     @Test

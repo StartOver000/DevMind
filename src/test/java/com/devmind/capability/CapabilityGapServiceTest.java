@@ -82,6 +82,26 @@ class CapabilityGapServiceTest {
     }
 
     @Test
+    void treatsHallucinatedInterfaceAsGap() {
+        when(openApiImportService.semanticSearch(anyString(), eq(1L), anyInt()))
+                .thenReturn(List.of(hit("listOrders")));
+        String llm = """
+                {"steps":[{"step":"查询订单","covered":true,"interface":"getSecretOrders","note":"查询订单"}]}
+                """;
+        when(chatRouter.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult(llm, "m", 0, 0));
+
+        CapabilityGapService.CapabilityAnalysis result = service.analyze(1L, "查订单");
+
+        assertThat(result.steps()).singleElement().satisfies(step -> {
+            assertThat(step.covered()).isFalse();
+            assertThat(step.interfaceName()).isEmpty();
+            assertThat(step.gap().suggestedName()).isEqualTo("getSecretOrders");
+        });
+        assertThat(result.warnings()).anyMatch(warning -> warning.contains("未命中的接口"));
+    }
+
+    @Test
     void deduplicatesGapsByName() {
         when(openApiImportService.semanticSearch(anyString(), eq(1L), anyInt())).thenReturn(List.of());
         String llm = """

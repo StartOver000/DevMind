@@ -132,6 +132,32 @@ public class AgentService {
             """;
 
     /**
+     * 接口工具语义发现：按自然语言问题对接口语义档案做向量检索，返回可注入的接口名集合。
+     * 命中为空或检索失败时回退全量（保持接口可用，语义注入是增强而非必需）。
+     */
+    private Set<String> resolveInterfaceInjection(String question, Long userId, Set<String> interfaceNames) {
+        if (openApiImportService == null) {
+            return interfaceNames;
+        }
+        try {
+            List<com.devmind.tool.ToolSemanticRepository.SemanticHit> hits =
+                    openApiImportService.semanticSearch(question, userId, MAX_INTERFACE_TOOLS_INJECT);
+            Set<String> hitNames = hits.stream()
+                    .map(com.devmind.tool.ToolSemanticRepository.SemanticHit::name)
+                    .filter(interfaceNames::contains)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!hitNames.isEmpty()) {
+                log.info("接口工具语义发现：授权 {} 个接口，按问题命中注入 {} 个",
+                        interfaceNames.size(), hitNames.size());
+                return hitNames;
+            }
+        } catch (Exception e) {
+            log.warn("接口工具语义发现失败，回退全量注入: {}", e.getMessage());
+        }
+        return interfaceNames;
+    }
+
+    /**
      * update_skill：对话式修正技能的内部工具（不注册 ToolRegistry，由本类特判处理）。
      * 用户指出某条技能规范需要调整时，模型调用本工具提交 skillId 与修改指令。
      */
@@ -216,9 +242,15 @@ public class AgentService {
     private com.devmind.skill.SkillService skillService;
     /** 工作流服务（技能引用工作流联动执行 run_workflow）：可选注入 */
     private com.devmind.workflow.WorkflowService workflowService;
+    /** 接口语义化服务（P1 工具发现）：可选注入，生产环境自动注入；测试/未启用时接口工具全量注入 */
+    private com.devmind.tool.OpenApiImportService openApiImportService;
     private final ObjectMapper objectMapper = new ObjectMapper();
     /** 单工具执行超时（秒） */
     private static final int TOOL_TIMEOUT_SECONDS = 20;
+    /** 接口工具全量注入上限：授权的接口工具数超过此值后，改为按语义命中注入（防上下文膨胀） */
+    private static final int MAX_INTERFACE_TOOLS_FULL_INJECT = 20;
+    /** 语义命中注入的接口工具数（P1 接口语义化闭环） */
+    private static final int MAX_INTERFACE_TOOLS_INJECT = 8;
 
     /** 计划中的一个执行步骤 */
     private record PlanStep(String tool, String argsJson, String goal) {
@@ -280,6 +312,12 @@ public class AgentService {
     @Autowired(required = false)
     public void setWorkflowService(com.devmind.workflow.WorkflowService workflowService) {
         this.workflowService = workflowService;
+    }
+
+    /** 接口语义化服务可选注入（工具发现用）：接口多时按自然语言语义命中注入候选接口 */
+    @Autowired(required = false)
+    public void setOpenApiImportService(com.devmind.tool.OpenApiImportService openApiImportService) {
+        this.openApiImportService = openApiImportService;
     }
 
     /** 匹配当前请求命中的技能规范（Guide-51 P1）：未注入 matcher 或未命中时返回空 */
@@ -386,8 +424,21 @@ public class AgentService {
         // 工具可见性：按用户授权过滤（内置工具全部可用，动态接口工具需被授权）
         Long tenantId = userService.tenantIdOf(userId);
         Set<String> accessible = toolAccessService.accessibleToolNames(tenantId, userId);
+        // 接口工具发现（P1 接口语义化闭环 / guide-57 M2）：
+        // 授权的接口工具数量超过阈值时，改用"自然语言 → 语义检索命中"注入最相关的接口，
+        // 避免几百个接口全量注入导致模型上下文膨胀；命中为空/检索失败时回退全量（保持接口可用）。
+        List<com.devmind.tool.ToolDefinition> interfaceTools =
+                toolAccessService.accessibleDynamicTools(tenantId, userId);
+        Set<String> interfaceNames = interfaceTools.stream()
+                .map(com.devmind.tool.ToolDefinition::name)
+                .collect(java.util.stream.Collectors.toSet());
+        Set<String> injectedInterfaceNames = interfaceNames.size() > MAX_INTERFACE_TOOLS_FULL_INJECT
+                ? resolveInterfaceInjection(question, userId, interfaceNames)
+                : interfaceNames;
         List<AiModelGateway.ToolSpec> tools = new ArrayList<>(toolRegistry.all().stream()
                 .filter(tool -> accessible.contains(tool.name()))
+                // 接口工具按语义命中集注入；内置/MCP 工具不受影响
+                .filter(tool -> !interfaceNames.contains(tool.name()) || injectedInterfaceNames.contains(tool.name()))
                 .map(tool -> new AiModelGateway.ToolSpec(tool.name(), tool.description(), tool.parametersJsonSchema()))
                 .toList());
         // 注入内部计划工具（Plan-Execute）：模型多步任务时先提交计划，由本类特判执行

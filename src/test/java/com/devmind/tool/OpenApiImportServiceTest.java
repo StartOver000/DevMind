@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -33,6 +34,7 @@ class OpenApiImportServiceTest {
     private OpenApiParser parser;
     private InterfaceToolService toolService;
     private ToolSemanticRepository semanticRepository;
+    private ToolDefinitionRepository toolDefinitionRepository;
     private AiModelGateway modelGateway;
     private ChatRouter chatRouter;
     private UserService userService;
@@ -48,10 +50,12 @@ class OpenApiImportServiceTest {
         parser = mock(OpenApiParser.class);
         toolService = mock(InterfaceToolService.class);
         semanticRepository = mock(ToolSemanticRepository.class);
+        toolDefinitionRepository = mock(ToolDefinitionRepository.class);
         modelGateway = mock(AiModelGateway.class);
         chatRouter = mock(ChatRouter.class);
         userService = mock(UserService.class);
-        service = new OpenApiImportService(parser, toolService, semanticRepository, modelGateway, chatRouter, userService);
+        service = new OpenApiImportService(parser, toolService, semanticRepository,
+                toolDefinitionRepository, modelGateway, chatRouter, userService);
         when(userService.tenantIdOf(1L)).thenReturn(1L);
     }
 
@@ -111,6 +115,27 @@ class OpenApiImportServiceTest {
         assertThat(result.skipped()).isEqualTo(1);
         assertThat(result.failed()).isZero();
         verify(semanticRepository, never()).upsert(anyLong(), anyLong(), anyString(), anyList());
+    }
+
+    @Test
+    void duplicateImportRefreshesSemanticArchive() {
+        when(userService.isAdmin(1L)).thenReturn(true);
+        when(parser.parse(anyString(), anyString())).thenReturn(new OpenApiParser.ParsedDocument(
+                "重复文档", "https://x", List.of(op("GET", "/a", "getA", "查询A")), List.of()));
+        when(toolService.create(any(), anyLong())).thenThrow(new ApiException(null, "工具名已存在: getA"));
+        // 已存在工具可查 → 刷新其语义档案（接口描述可能已更新）
+        ToolDefinition existing = new ToolDefinition(7L, 1L, "getA", "查询A", "interface",
+                "http://x/a", "GET", null, null, "none", null, null, "READY", 1L, null);
+        when(toolDefinitionRepository.findByName("getA")).thenReturn(existing);
+        when(modelGateway.embed(anyList())).thenReturn(List.of(List.of(0.1, 0.2)));
+
+        MockMultipartFile file = new MockMultipartFile("file", "a.json", "application/json",
+                "{}".getBytes(StandardCharsets.UTF_8));
+        OpenApiImportService.ImportResult result = service.importOpenApi(file, 1L);
+
+        assertThat(result.skipped()).isEqualTo(1);
+        // 已存在接口（id=7）的语义档案被刷新
+        verify(semanticRepository).upsert(eq(1L), eq(7L), anyString(), anyList());
     }
 
     @Test

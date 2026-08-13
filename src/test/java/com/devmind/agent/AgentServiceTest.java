@@ -14,6 +14,9 @@ import com.devmind.modelusage.ModelUsageService;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
 import com.devmind.tool.ToolAccessService;
+import com.devmind.tool.ToolDefinition;
+import com.devmind.tool.ToolSemanticRepository;
+import com.devmind.tool.OpenApiImportService;
 import com.devmind.user.UserService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -21,6 +24,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -91,6 +95,7 @@ class AgentServiceTest {
             }
             return names;
         });
+        lenient().when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(List.of());
         return new AgentService(
                 chatRouter,
                 registry,
@@ -758,5 +763,105 @@ class AgentServiceTest {
         AgentChatResponse response = service.chat(new AgentChatRequest(0L, "你好", null), 1L);
 
         assertThat(response.answer()).isEqualTo("直接回答。");
+    }
+
+    // ---------- 接口工具语义发现（P1 闭环 / M2）----------
+
+    private List<AgentTool> manyInterfaceTools(int count) {
+        List<AgentTool> tools = new ArrayList<>();
+        tools.add(kbTool()); // 内置工具
+        for (int i = 0; i < count; i++) {
+            AgentTool t = org.mockito.Mockito.mock(AgentTool.class);
+            // lenient：接口工具可能未命中注入，其 description/schema stub 不一定被调用
+            lenient().when(t.name()).thenReturn("api_tool_" + i);
+            lenient().when(t.description()).thenReturn("接口 " + i);
+            lenient().when(t.parametersJsonSchema()).thenReturn("{}");
+            tools.add(t);
+        }
+        return tools;
+    }
+
+    private List<ToolDefinition> interfaceDefinitions(int count) {
+        List<ToolDefinition> defs = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            defs.add(new ToolDefinition((long) (i + 1), 1L, "api_tool_" + i, "接口 " + i, "interface",
+                    "http://x/api/" + i, "GET", null, null, "none", null, null, "READY", 1L, null));
+        }
+        return defs;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<AiModelGateway.ToolSpec> capturedTools(AgentService service, OpenApiImportService openApi) {
+        service.setOpenApiImportService(openApi);
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(new AiModelGateway.ChatResult("回答", "m", 0, 0));
+        service.chat(new AgentChatRequest(0L, "查询客户订单", null), 1L);
+        ArgumentCaptor<List<AiModelGateway.ToolSpec>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatRouter).chatWithTools(anyString(), anyList(), captor.capture());
+        return captor.getValue();
+    }
+
+    @Test
+    void manyInterfaceToolsInjectOnlySemanticHits() {
+        AgentService service = service(new ToolRegistry(manyInterfaceTools(25)));
+        when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(25));
+        OpenApiImportService openApi = org.mockito.Mockito.mock(OpenApiImportService.class);
+        when(openApi.semanticSearch(anyString(), eq(1L), anyInt())).thenReturn(List.of(
+                new ToolSemanticRepository.SemanticHit(4L, "api_tool_3", "查询客户", "http://x/3", "GET", 0.91),
+                new ToolSemanticRepository.SemanticHit(18L, "api_tool_17", "客户订单", "http://x/17", "GET", 0.82)
+        ));
+
+        List<AiModelGateway.ToolSpec> injected = capturedTools(service, openApi);
+
+        // 命中的接口注入；未命中接口不注入；内置工具不受影响
+        assertThat(injected).anyMatch(t -> t.name().equals("api_tool_3"));
+        assertThat(injected).anyMatch(t -> t.name().equals("api_tool_17"));
+        assertThat(injected).noneMatch(t -> t.name().equals("api_tool_0"));
+        assertThat(injected).anyMatch(t -> t.name().equals("kb_search"));
+        verify(openApi).semanticSearch(eq("查询客户订单"), eq(1L), anyInt());
+    }
+
+    @Test
+    void manyInterfaceToolsFallBackToAllWhenNoSemanticHit() {
+        AgentService service = service(new ToolRegistry(manyInterfaceTools(25)));
+        when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(25));
+        OpenApiImportService openApi = org.mockito.Mockito.mock(OpenApiImportService.class);
+        when(openApi.semanticSearch(anyString(), eq(1L), anyInt())).thenReturn(List.of());
+
+        List<AiModelGateway.ToolSpec> injected = capturedTools(service, openApi);
+
+        // 命中为空 → 回退全量注入（接口可用优先）
+        assertThat(injected).anyMatch(t -> t.name().equals("api_tool_0"));
+        assertThat(injected).anyMatch(t -> t.name().equals("api_tool_24"));
+    }
+
+    @Test
+    void fewInterfaceToolsInjectAllWithoutSemanticSearch() {
+        AgentService service = service(new ToolRegistry(manyInterfaceTools(3)));
+        when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(3));
+        OpenApiImportService openApi = org.mockito.Mockito.mock(OpenApiImportService.class);
+
+        List<AiModelGateway.ToolSpec> injected = capturedTools(service, openApi);
+
+        // 接口数 ≤ 阈值 → 全量注入且不触发语义检索
+        assertThat(injected).anyMatch(t -> t.name().equals("api_tool_0"));
+        assertThat(injected).anyMatch(t -> t.name().equals("api_tool_2"));
+        verify(openApi, never()).semanticSearch(anyString(), any(), anyInt());
+    }
+
+    @Test
+    void semanticSearchFailureFallsBackToAllInterfaceTools() {
+        AgentService service = service(new ToolRegistry(manyInterfaceTools(25)));
+        when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(25));
+        OpenApiImportService openApi = org.mockito.Mockito.mock(OpenApiImportService.class);
+        when(openApi.semanticSearch(anyString(), eq(1L), anyInt()))
+                .thenThrow(new RuntimeException("embedding 服务不可用"));
+
+        List<AiModelGateway.ToolSpec> injected = capturedTools(service, openApi);
+
+        // 语义检索失败 → 回退全量（接口能力不丢失）
+        assertThat(injected).anyMatch(t -> t.name().equals("api_tool_0"));
+        assertThat(injected).anyMatch(t -> t.name().equals("api_tool_24"));
     }
 }

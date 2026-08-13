@@ -43,14 +43,17 @@ public class OpenApiImportService {
     private static final Logger log = LoggerFactory.getLogger(OpenApiImportService.class);
 
     private static final ObjectMapper objectMapper = new ObjectMapper();
-    /** 语义检索最低相似度（score = 1 - cosine distance） */
-    private static final double SEMANTIC_MIN_SCORE = 0.30;
+    /** 语义检索最低相似度（score = 1 - cosine distance）。
+     * 接口语义检索用于"候选召回"，0.20 已足够过滤无关项（真实 embedding 下无关通常 <0.1，
+     * mock 伪向量下相关项约 0.2-0.5），且 Agent/用户会自行判断最终选用。 */
+    private static final double SEMANTIC_MIN_SCORE = 0.20;
     /** 单个文件大小上限（10MB） */
     private static final long MAX_FILE_BYTES = 10 * 1024 * 1024L;
 
     private final OpenApiParser parser;
     private final InterfaceToolService toolService;
     private final ToolSemanticRepository semanticRepository;
+    private final ToolDefinitionRepository toolDefinitionRepository;
     private final AiModelGateway modelGateway;
     private final ChatRouter chatRouter;
     private final UserService userService;
@@ -59,6 +62,7 @@ public class OpenApiImportService {
             OpenApiParser parser,
             InterfaceToolService toolService,
             ToolSemanticRepository semanticRepository,
+            ToolDefinitionRepository toolDefinitionRepository,
             AiModelGateway modelGateway,
             ChatRouter chatRouter,
             UserService userService
@@ -66,6 +70,7 @@ public class OpenApiImportService {
         this.parser = parser;
         this.toolService = toolService;
         this.semanticRepository = semanticRepository;
+        this.toolDefinitionRepository = toolDefinitionRepository;
         this.modelGateway = modelGateway;
         this.chatRouter = chatRouter;
         this.userService = userService;
@@ -109,7 +114,19 @@ public class OpenApiImportService {
                 String semanticText = buildSemanticText(op, created);
                 items.add(new ImportedItem(op.method(), op.path(), name, created.id(), semanticText, null));
             } catch (ApiException e) {
-                // 工具名已存在/与系统工具冲突等 → 幂等跳过
+                // 工具名已存在（幂等跳过）→ 刷新语义档案：接口描述可能已更新，
+                // 保证重复导入后语义检索仍能命中（tool_semantic 不被遗漏）。
+                if (e.getMessage() != null && e.getMessage().contains("已存在")) {
+                    ToolDefinition existing = toolDefinitionRepository.findByName(name);
+                    if (existing != null && "READY".equals(existing.status())) {
+                        String semanticText = buildSemanticText(op, ToolResponse.from(existing));
+                        // error 标记"已存在"：统计上计入 skipped（未新建），但参与语义档案刷新
+                        items.add(new ImportedItem(op.method(), op.path(), name,
+                                existing.id(), semanticText, "已存在"));
+                        continue;
+                    }
+                }
+                // 其他冲突（与系统工具同名等）→ 幂等跳过
                 items.add(new ImportedItem(op.method(), op.path(), name, null, null, e.getMessage()));
             } catch (Exception e) {
                 log.warn("导入接口 {} {} 失败: {}", op.method(), op.path(), e.getMessage());
@@ -132,8 +149,8 @@ public class OpenApiImportService {
             }
         }
 
-        int created = (int) ok.size();
-        int skipped = (int) items.stream().filter(i -> i.toolId() == null && i.error() != null
+        int created = (int) ok.stream().filter(i -> i.error() == null).count();
+        int skipped = (int) items.stream().filter(i -> i.error() != null
                 && i.error().contains("已存在")).count();
         int failed = items.size() - created - skipped;
         log.info("OpenAPI 导入完成『{}』：共 {}，新建 {}，跳过 {}，失败 {}",

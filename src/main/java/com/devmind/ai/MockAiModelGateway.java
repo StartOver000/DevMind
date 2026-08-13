@@ -84,14 +84,22 @@ public class MockAiModelGateway implements AiModelGateway {
         );
     }
 
+    /**
+     * 确定性伪向量（测试/演示用）：字符级 1-gram + 2-gram 的 hash 桶叠加。
+     * 中文单字 + 相邻两字兼顾"短查询 vs 长文本"的语义重叠：共享"订单/库存/客户"
+     * 等 2 字词（及单字）的文本相似度高，无关文本相似度≈0，可在 mock 模式下
+     * 演示语义检索命中（余弦相似度区分度优于纯 3-gram，后者对中文短查询完全失配）。
+     */
     private List<Double> embedOne(String text) {
         double[] vector = new double[dimensions];
         String normalized = text.toLowerCase();
-        for (int i = 0; i + 3 <= normalized.length(); i++) {
-            String gram = normalized.substring(i, i + 3);
-            int hash = gram.hashCode() & 0x7fffffff;
-            int index = hash % dimensions;
-            vector[index] += (hash % 997 + 1) / 997.0;
+        for (int n = 1; n <= 2; n++) {
+            for (int i = 0; i + n <= normalized.length(); i++) {
+                String gram = normalized.substring(i, i + n);
+                int hash = gram.hashCode() & 0x7fffffff;
+                int index = hash % dimensions;
+                vector[index] += (hash % 997 + 1) / 997.0;
+            }
         }
         if (isZero(vector)) {
             vector[0] = 1.0;

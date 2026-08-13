@@ -3,6 +3,11 @@ name: CI
 on:
   push:
     branches: [master]
+    # 纯文档/README 改动不触发 CI（单线程开发省无谓等待）
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - '**/*.md'
   pull_request:
 
 jobs:
@@ -66,8 +71,9 @@ jobs:
       - name: Package backend jar
         run: mvn -B -DskipTests package
 
+  # docker 与 test 并行：docker 是独立的多阶段构建（不消费 test 产物），
+  # 无需串行等待 test，总耗时从 ~3.5min 降到 ~1.8min
   docker:
-    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

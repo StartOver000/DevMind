@@ -2,12 +2,14 @@ package com.devmind.workflow;
 
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
+import com.devmind.security.PromptInjectionDetector;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -44,6 +46,9 @@ public class WebhookController {
     private final WorkflowExecutor executor;
     private final ObjectMapper objectMapper;
     private final RestClient.Builder restClientBuilder;
+    private final PromptInjectionDetector injectionDetector;
+    /** 是否对 webhook payload 做 Prompt 注入检测（P2 安全专项，默认开启） */
+    private final boolean injectionCheckEnabled;
     /** 异步触发的后台执行线程池 */
     private final ExecutorService asyncExecutor = Executors.newCachedThreadPool();
 
@@ -52,13 +57,17 @@ public class WebhookController {
             WorkflowRunRepository runRepository,
             WorkflowExecutor executor,
             ObjectMapper objectMapper,
-            RestClient.Builder restClientBuilder
+            RestClient.Builder restClientBuilder,
+            PromptInjectionDetector injectionDetector,
+            @Value("${devmind.security.webhook-injection-check:true}") boolean injectionCheckEnabled
     ) {
         this.repository = repository;
         this.runRepository = runRepository;
         this.executor = executor;
         this.objectMapper = objectMapper;
         this.restClientBuilder = restClientBuilder;
+        this.injectionDetector = injectionDetector;
+        this.injectionCheckEnabled = injectionCheckEnabled;
     }
 
     @PreDestroy
@@ -85,6 +94,17 @@ public class WebhookController {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "callbackUrl 必须是 http/https 地址");
         }
         Map<String, Object> initialVars = parseBody(body);
+        // Prompt 注入检测（P2 安全专项）：payload 中命中注入模式时拒绝触发，
+        // 防止恶意内容通过 {{var}} 进入工作流 LLM prompt。
+        if (injectionCheckEnabled) {
+            PromptInjectionDetector.Detection detection = injectionDetector.inspect(initialVars);
+            if (detection.hit()) {
+                log.warn("webhook 触发被拒绝：检测到疑似 Prompt 注入 (workflow={}, matches={})",
+                        workflow.name(), detection.matches());
+                throw new ApiException(ErrorCode.INVALID_ARGUMENT,
+                        "检测到疑似 Prompt 注入内容，已拒绝触发。命中片段: " + String.join(" / ", detection.matches()));
+            }
+        }
         if (async) {
             return triggerAsync(workflow, callbackUrl, initialVars);
         }

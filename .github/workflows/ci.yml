@@ -72,6 +72,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 验证根 Dockerfile 可构建出镜像（多阶段：maven 构建 → JRE 运行时）
-      - name: Build Docker image
-        run: docker build -t devmind:ci .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 验证根 Dockerfile 可构建出镜像（多阶段：maven 构建 → JRE 运行时）。
+      # type=gha 缓存：pom.xml/Dockerfile 未变时依赖下载与编译层跨 run 复用，
+      # 避免每次 push 都重新下载全部 Maven 依赖（docker job 从 ~10min 降到 ~1-2min）。
+      - name: Build Docker image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: devmind:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

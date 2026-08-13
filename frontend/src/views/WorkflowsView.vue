@@ -49,6 +49,10 @@ const triggerType = ref('manual');
 const cronExpr = ref('');
 const creating = ref(false);
 
+// 缺失能力反推（能力盘点）：需求 → 命中接口 + 覆盖/缺口分析
+const capAnalyzing = ref(false);
+const capAnalysis = ref(null); // { description, matchedInterfaces, steps, gaps, warnings }
+
 /** 统计草案中的并行组/分支数量（对话生成 parallel 产品化：生成后给出结构提示） */
 function countStructure(nodes) {
   let parallel = 0;
@@ -259,6 +263,52 @@ async function generateDraft() {
   }
 }
 
+// ---------- 缺失能力反推（能力盘点）----------
+async function analyzeCapabilities() {
+  if (!description.value.trim()) {
+    showToast('请先描述你的业务需求', true);
+    return;
+  }
+  capAnalyzing.value = true;
+  capAnalysis.value = null;
+  try {
+    capAnalysis.value = await api('/api/capabilities/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ description: description.value.trim() })
+    });
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    capAnalyzing.value = false;
+  }
+}
+
+/** 由缺失能力清单生成可导入的 OpenAPI 片段 */
+function openapiSnippet() {
+  const gaps = capAnalysis.value?.gaps || [];
+  const paths = {};
+  for (const g of gaps) {
+    if (!g.path) continue;
+    paths[g.path] = {
+      [String(g.method || 'POST').toLowerCase()]: {
+        operationId: g.suggestedName || ('cap_' + g.path.replace(/[^a-zA-Z0-9]/g, '_')),
+        summary: g.description || '补充缺失能力',
+        tags: ['缺失能力']
+      }
+    };
+  }
+  return JSON.stringify({ openapi: '3.0.3', info: { title: '补充缺失能力', version: '1.0' }, paths }, null, 2);
+}
+
+async function copyOpenapiSnippet() {
+  try {
+    await navigator.clipboard.writeText(openapiSnippet());
+    showToast('缺失能力 OpenAPI 片段已复制，可在「接口」页导入');
+  } catch (err) {
+    showToast('复制失败，请手动复制', true);
+  }
+}
+
 async function createWorkflow() {
   if (!draft.value) return;
   const name = workflowName.value.trim() || description.value.trim().slice(0, 30);
@@ -403,9 +453,51 @@ onMounted(load);
       <label>描述需求
         <textarea v-model="description" rows="3" placeholder="例如：查一下监控系统的版本信息，然后用一句话总结运行状态"></textarea>
       </label>
-      <button class="primary" :disabled="generating" @click="generateDraft">
-        {{ generating ? '生成中…' : '生成流程草案' }}
-      </button>
+      <div class="row-actions">
+        <button class="primary" :disabled="generating" @click="generateDraft">
+          {{ generating ? '生成中…' : '生成流程草案' }}
+        </button>
+        <button :disabled="capAnalyzing" @click="analyzeCapabilities">
+          {{ capAnalyzing ? '盘点中…' : '🧭 能力盘点' }}
+        </button>
+      </div>
+      <p class="hint sub">能力盘点：先看现有接口能否满足需求，缺什么一目了然。</p>
+
+      <div v-if="capAnalysis" class="cap-panel">
+        <h3>能力盘点：现有接口 {{ capAnalysis.matchedInterfaces.length }} 个命中 · 缺失能力 {{ capAnalysis.gaps.length }} 个</h3>
+        <template v-if="capAnalysis.matchedInterfaces.length">
+          <p class="cap-label">现有接口（可满足部分需求）：</p>
+          <ul class="cap-list">
+            <li v-for="m in capAnalysis.matchedInterfaces" :key="m.name">
+              <b>{{ m.name }}</b>
+              <span class="cap-desc">{{ m.description || '' }}</span>
+              <span class="cap-score">{{ (m.score * 100).toFixed(0) }}%</span>
+            </li>
+          </ul>
+        </template>
+        <template v-if="capAnalysis.steps.length">
+          <p class="cap-label">需求拆解：</p>
+          <ol class="cap-steps">
+            <li v-for="(s, i) in capAnalysis.steps" :key="i" :class="s.covered ? 'covered' : 'missing'">
+              <span class="cap-mark">{{ s.covered ? '✓' : '✗' }}</span>
+              <span>{{ s.step }}</span>
+              <span v-if="s.covered && s.interfaceName" class="cap-iface">→ {{ s.interfaceName }}</span>
+              <span v-if="!s.covered && s.gap" class="cap-gap">需要 {{ s.gap.suggestedName }}（{{ s.gap.method }} {{ s.gap.path }}）</span>
+            </li>
+          </ol>
+        </template>
+        <template v-if="capAnalysis.gaps.length">
+          <p class="cap-label">缺失能力清单（补全后可完成整个需求）：</p>
+          <ul class="cap-list">
+            <li v-for="g in capAnalysis.gaps" :key="g.suggestedName">
+              <b>{{ g.suggestedName }}</b>
+              <span class="cap-desc">{{ g.method }} {{ g.path }} — {{ g.description }}</span>
+            </li>
+          </ul>
+          <button class="small" @click="copyOpenapiSnippet">📋 复制缺失能力 OpenAPI 片段（去「接口」页导入）</button>
+        </template>
+        <p v-if="capAnalysis.warnings.length" class="hint sub">提示：{{ capAnalysis.warnings.join('；') }}</p>
+      </div>
 
       <div v-if="draft" class="draft">
         <h3>
@@ -595,6 +687,87 @@ onMounted(load);
   padding-top: 12px;
   display: grid;
   gap: 8px;
+}
+
+/* 能力盘点面板（缺失能力反推） */
+.row-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cap-panel {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+  background: var(--bg-soft, #f8f9fa);
+}
+
+.cap-panel h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.cap-label {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted, #888);
+}
+
+.cap-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  display: grid;
+  gap: 3px;
+}
+
+.cap-list li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.cap-desc {
+  color: var(--muted, #888);
+  flex: 1;
+}
+
+.cap-score {
+  color: var(--ok, #1a7f37);
+  font-size: 12px;
+}
+
+.cap-steps {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  display: grid;
+  gap: 3px;
+}
+
+.cap-steps li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.cap-steps li.missing {
+  color: var(--danger, #d1242f);
+}
+
+.cap-mark {
+  font-weight: bold;
+}
+
+.cap-iface {
+  color: var(--ok, #1a7f37);
+}
+
+.cap-gap {
+  color: var(--danger, #d1242f);
 }
 
 /* 草案结构徽标（对话生成 parallel 产品化） */

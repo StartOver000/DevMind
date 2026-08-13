@@ -1,0 +1,180 @@
+package com.devmind.tool.openapi;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class OpenApiParserTest {
+
+    private final OpenApiParser parser = new OpenApiParser();
+
+    @Test
+    void parsesJsonDocument() {
+        String json = """
+                {
+                  "openapi": "3.0.1",
+                  "info": { "title": "订单服务", "version": "1.0" },
+                  "servers": [ { "url": "https://api.example.com" } ],
+                  "paths": {
+                    "/orders": {
+                      "get": {
+                        "operationId": "listOrders",
+                        "summary": "查询订单列表",
+                        "description": "按条件分页查询订单",
+                        "tags": ["订单"],
+                        "parameters": [
+                          { "name": "page", "in": "query", "required": false,
+                            "schema": { "type": "integer" }, "description": "页码" },
+                          { "name": "status", "in": "query",
+                            "schema": { "type": "string" } }
+                        ]
+                      },
+                      "post": {
+                        "operationId": "createOrder",
+                        "summary": "创建订单",
+                        "requestBody": {
+                          "content": {
+                            "application/json": {
+                              "schema": {
+                                "type": "object",
+                                "properties": {
+                                  "amount": { "type": "number" },
+                                  "userId": { "type": "integer" }
+                                },
+                                "required": ["amount"]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "/orders/{id}": {
+                      "get": {
+                        "operationId": "getOrderById",
+                        "summary": "查询订单详情",
+                        "parameters": [
+                          { "name": "id", "in": "path", "required": true,
+                            "schema": { "type": "integer" } }
+                        ]
+                      },
+                      "delete": {
+                        "operationId": "cancelOrder",
+                        "summary": "取消订单"
+                      }
+                    },
+                    "/health": {
+                      "get": { "summary": "健康检查" },
+                      "head": { "summary": "head 探活（应被跳过）" }
+                    }
+                  }
+                }
+                """;
+
+        OpenApiParser.ParsedDocument doc = parser.parse(json, "orders.json");
+
+        assertThat(doc.title()).isEqualTo("订单服务");
+        assertThat(doc.baseUrl()).isEqualTo("https://api.example.com");
+        assertThat(doc.operations()).hasSize(5); // get/post + get/delete + get(head 跳过)
+
+        OpenApiOperation list = doc.operations().get(0);
+        assertThat(list.method()).isEqualTo("GET");
+        assertThat(list.path()).isEqualTo("/orders");
+        assertThat(list.operationId()).isEqualTo("listOrders");
+        assertThat(list.summary()).isEqualTo("查询订单列表");
+        assertThat(list.tags()).containsExactly("订单");
+        assertThat(list.parameters()).hasSize(2);
+        assertThat(list.parameters().get(0).name()).isEqualTo("page");
+        assertThat(list.parameters().get(0).in()).isEqualTo("query");
+        assertThat(list.parameters().get(0).type()).isEqualTo("integer");
+
+        // requestBody 提取
+        OpenApiOperation create = doc.operations().get(1);
+        assertThat(create.requestBodyJson()).contains("amount");
+
+        // 无 operationId 时保留 summary
+        OpenApiOperation health = doc.operations().get(4);
+        assertThat(health.operationId()).isEmpty();
+        assertThat(health.summary()).isEqualTo("健康检查");
+    }
+
+    @Test
+    void parsesYamlDocument() {
+        String yaml = """
+                openapi: 3.0.3
+                info:
+                  title: 用户服务
+                  version: 1.0.0
+                paths:
+                  /users:
+                    get:
+                      operationId: listUsers
+                      summary: 查询用户列表
+                      parameters:
+                        - name: keyword
+                          in: query
+                          schema:
+                            type: string
+                  /users/{id}:
+                    put:
+                      operationId: updateUser
+                      summary: 更新用户
+                """;
+
+        OpenApiParser.ParsedDocument doc = parser.parse(yaml, "users.yaml");
+
+        assertThat(doc.title()).isEqualTo("用户服务");
+        assertThat(doc.operations()).hasSize(2);
+        assertThat(doc.operations().get(0).method()).isEqualTo("GET");
+        assertThat(doc.operations().get(1).method()).isEqualTo("PUT");
+        assertThat(doc.operations().get(1).path()).isEqualTo("/users/{id}");
+    }
+
+    @Test
+    void rejectsNonOpenApi3() {
+        String json = """
+                { "openapi": "2.0", "info": { "title": "旧版" }, "paths": {} }
+                """;
+        assertThatThrownBy(() -> parser.parse(json, "a.json"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("OpenAPI 3.x");
+    }
+
+    @Test
+    void rejectsMissingPaths() {
+        String json = """
+                { "openapi": "3.0.0", "info": { "title": "无接口" } }
+                """;
+        assertThatThrownBy(() -> parser.parse(json, "a.json"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("paths");
+    }
+
+    @Test
+    void rejectsBlankContent() {
+        assertThatThrownBy(() -> parser.parse("   ", "a.json"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("为空");
+    }
+
+    @Test
+    void skipsUnsupportedMethodsButKeepsSupported() {
+        String json = """
+                {
+                  "openapi": "3.0.0",
+                  "info": { "title": "混合" },
+                  "paths": {
+                    "/a": { "trace": { "summary": "trace" }, "get": { "operationId": "getA" } },
+                    "/b": { "patch": { "summary": "patch" }, "post": { "operationId": "postB" } }
+                  }
+                }
+                """;
+        OpenApiParser.ParsedDocument doc = parser.parse(json, "a.json");
+        List<OpenApiOperation> ops = doc.operations();
+        assertThat(ops).hasSize(2);
+        assertThat(ops.get(0).method()).isEqualTo("GET");
+        assertThat(ops.get(1).method()).isEqualTo("POST");
+    }
+}

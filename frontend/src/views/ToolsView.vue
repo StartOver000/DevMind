@@ -25,6 +25,20 @@ const tools = ref([]);
 const loading = ref(false);
 const testingId = ref(null);
 
+// OpenAPI 批量导入（仅管理员）
+const importFile = ref(null);
+const importing = ref(false);
+const importResult = ref(null);
+
+// 语义检索（所有用户）
+const searchQuery = ref('');
+const searchResults = ref(null); // null=未搜索，展示全部工具
+const searching = ref(false);
+const searchError = ref('');
+
+// AI 语义增强（仅管理员）
+const enhancingId = ref(null);
+
 // 授权管理（仅管理员）：选择成员 → 勾选可用工具
 const users = ref([]);
 const grantOpen = ref(false);
@@ -124,6 +138,75 @@ async function deleteTool(tool) {
   }
 }
 
+// ---------- OpenAPI 批量导入（管理员）----------
+function onImportFile(e) {
+  importFile.value = e.target.files[0] || null;
+  importResult.value = null;
+}
+
+async function importOpenApi() {
+  if (!importFile.value) {
+    showToast('请先选择 OpenAPI 3.0 文档（JSON 或 YAML）', true);
+    return;
+  }
+  importing.value = true;
+  importResult.value = null;
+  try {
+    const fd = new FormData();
+    fd.append('file', importFile.value);
+    const res = await api('/api/tools/import', { method: 'POST', body: fd });
+    importResult.value = res;
+    const verb = res.created > 0 ? `导入 ${res.created} 个接口` : '无新接口'; 
+    showToast(`『${res.docTitle || 'OpenAPI'}』${verb}${res.skipped ? `，跳过 ${res.skipped} 个已存在` : ''}${res.failed ? `，失败 ${res.failed} 个` : ''}`);
+    importFile.value = null;
+    await load();
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    importing.value = false;
+  }
+}
+
+// ---------- 语义检索（自然语言 → 命中接口）----------
+async function doSearch() {
+  const q = searchQuery.value.trim();
+  if (!q) {
+    clearSearch();
+    return;
+  }
+  searching.value = true;
+  searchError.value = '';
+  try {
+    searchResults.value = await api(`/api/tools/search?q=${encodeURIComponent(q)}&limit=8`);
+  } catch (err) {
+    searchError.value = err.message;
+    searchResults.value = [];
+  } finally {
+    searching.value = false;
+  }
+}
+
+function clearSearch() {
+  searchQuery.value = '';
+  searchResults.value = null;
+  searchError.value = '';
+}
+
+// ---------- AI 语义增强（管理员）----------
+async function enhanceSemantic(tool) {
+  enhancingId.value = tool.id;
+  try {
+    const res = await api(`/api/tools/${tool.id}/semantic`, { method: 'POST' });
+    // 语义文本较长，toast 只展示 AI 增强段落
+    const aiPart = (res.semanticText || '').split('【AI 增强】')[1] || '';
+    showToast(`『${tool.name}』已增强语义：${aiPart.trim().split('\n')[0]}`);
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    enhancingId.value = null;
+  }
+}
+
 // ---------- 授权管理 ----------
 async function openGrant(user) {
   grantUser.value = user;
@@ -203,6 +286,22 @@ onMounted(() => {
       <button class="primary" :disabled="submitting" @click="createTool">
         {{ submitting ? '登记中…' : '登记接口' }}
       </button>
+
+      <div class="import-divider">或批量导入 OpenAPI</div>
+      <label class="file-label">OpenAPI 3.0 文档（JSON / YAML）
+        <input type="file" accept=".json,.yaml,.yml" @change="onImportFile">
+      </label>
+      <button class="primary ghost" :disabled="importing || !importFile" @click="importOpenApi">
+        {{ importing ? '导入中…' : '导入并生成接口工具' }}
+      </button>
+      <div v-if="importResult" class="import-result">
+        <p class="ok">『{{ importResult.docTitle || 'OpenAPI' }}』共 {{ importResult.total }} 个接口：
+          <b class="ok">新建 {{ importResult.created }}</b>，
+          <span v-if="importResult.skipped">跳过 {{ importResult.skipped }}</span>
+          <span v-if="importResult.failed" class="danger-text">失败 {{ importResult.failed }}</span>
+        </p>
+        <p class="hint sub">导入的接口已生成语义档案（向量化），可在右侧搜索框用自然语言检索。</p>
+      </div>
     </div>
     <div v-else class="panel hint-panel">
       <p class="hint">你是团队成员，无法登记接口工具。下方展示的是管理员已授权给你的接口。</p>
@@ -211,7 +310,16 @@ onMounted(() => {
 
     <div class="panel scroll-panel">
       <div class="list-head">
-        <h2>{{ isAdmin ? '已登记接口工具' : '我可用接口工具' }}（{{ tools.length }}）</h2>
+        <h2>{{ searchResults ? `语义检索：${searchResults.length} 个命中` : (isAdmin ? '已登记接口工具' : '我可用接口工具') }}（{{ tools.length }}）</h2>
+        <div class="search-entry">
+          <input
+            v-model="searchQuery"
+            placeholder="用自然语言找接口，如：查一下今天的订单"
+            @keyup.enter="doSearch"
+          >
+          <button class="small" :disabled="searching || !searchQuery.trim()" @click="doSearch">{{ searching ? '检索中…' : '语义检索' }}</button>
+          <button v-if="searchResults" class="small ghost" @click="clearSearch">清空</button>
+        </div>
         <div v-if="isAdmin" class="grant-entry">
           <span>授权管理：</span>
           <select v-if="users.length" v-model="grantUser" @change="openGrant(grantUser)">
@@ -230,13 +338,17 @@ onMounted(() => {
       <div v-else-if="!tools.length" class="empty">
         {{ isAdmin ? '还没有登记接口。左侧登记一个内部接口，AI 就能调用它干活。' : '管理员还没有授权接口给你。' }}
       </div>
+      <div v-else-if="searchError" class="empty">检索失败：{{ searchError }}</div>
+      <div v-else-if="searchResults && !searchResults.length" class="empty">
+        没有命中「{{ searchQuery }}」的接口。换个说法试试，或让管理员在左侧用「AI 语义增强」丰富接口描述。
+      </div>
       <div v-else class="table-wrap">
         <table>
           <thead>
             <tr><th>名称</th><th>描述</th><th>地址</th><th>方法</th><th>鉴权</th><th>操作</th></tr>
           </thead>
           <tbody>
-            <tr v-for="t in tools" :key="t.id">
+            <tr v-for="t in (searchResults || tools)" :key="t.id">
               <td><b>{{ t.name }}</b></td>
               <td class="desc">{{ t.description || '—' }}</td>
               <td class="url">{{ t.endpointUrl }}</td>
@@ -244,6 +356,7 @@ onMounted(() => {
               <td>{{ t.authType }}</td>
               <td>
                 <button class="small" :disabled="testingId === t.id" @click="testTool(t.id)">{{ testingId === t.id ? '测试中…' : '连通测试' }}</button>
+                <button v-if="isAdmin" class="small" :disabled="enhancingId === t.id" @click="enhanceSemantic(t)">{{ enhancingId === t.id ? '增强中…' : 'AI 语义' }}</button>
                 <button v-if="isAdmin" class="small danger" @click="deleteTool(t)">删除</button>
               </td>
             </tr>
@@ -324,6 +437,67 @@ td.desc {
 button.danger {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+.hint-panel {
+  align-content: start;
+}
+
+/* OpenAPI 导入区块 */
+.import-divider {
+  border-top: 1px dashed var(--border, #ddd);
+  padding-top: 10px;
+  color: var(--muted, #888);
+  font-size: 12px;
+  text-align: center;
+}
+
+.file-label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted, #666);
+}
+
+.file-label input[type='file'] {
+  font-size: 12px;
+  padding: 4px;
+}
+
+.import-result {
+  background: var(--bg-soft, #f6f8fa);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.import-result .ok { color: var(--ok, #1a7f37); }
+.danger-text { color: var(--danger, #d1242f); }
+
+button.ghost {
+  background: transparent;
+  color: var(--accent, #0969da);
+}
+
+/* 语义检索条 */
+.search-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.search-entry input {
+  width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+@media (max-width: 1100px) {
+  .search-entry { flex-wrap: wrap; }
+  .search-entry input { width: 100%; }
 }
 
 .hint-panel {

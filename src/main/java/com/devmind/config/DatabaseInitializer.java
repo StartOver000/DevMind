@@ -410,6 +410,24 @@ public class DatabaseInitializer implements ApplicationRunner {
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_grant_unique
                 ON tool_grant(tenant_id, subject_type, subject_id, tool_id)
                 """);
+        // 接口语义化（P1）：OpenAPI 导入后为每个接口生成语义档案文本并向量化，
+        // 支持"自然语言 → 命中对应接口"的语义检索（guide-57 M1 接口语义化）。
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS tool_semantic (
+                    id BIGSERIAL PRIMARY KEY,
+                    tool_id BIGINT NOT NULL,
+                    tenant_id BIGINT NOT NULL DEFAULT 1,
+                    semantic_text TEXT NOT NULL,
+                    embedding vector(%d) NOT NULL,
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uq_tool_semantic_tool UNIQUE (tool_id)
+                )
+                """.formatted(dimensions));
+        jdbcTemplate.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tool_semantic_hnsw
+                ON tool_semantic USING hnsw (embedding vector_cosine_ops)
+                """);;
         // 工作流：业务人员编排的多步骤自动化（M1-T4）
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS workflow (

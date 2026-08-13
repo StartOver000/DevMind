@@ -20,8 +20,6 @@ import com.devmind.retrieval.RetrievalService;
 import com.devmind.skill.SkillMatcher;
 import com.devmind.tool.ToolAccessService;
 import com.devmind.user.UserService;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,10 +34,18 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 /**
- * 研发问答 Agent：ReAct 式执行循环。
+ * 研发问答 Agent：ReAct 式执行循环（编排层）。
  * 模型自主调用工具（kb_search / sql_diagnose 等）→ 工具结果回填 → 再决策，直到输出最终回答。
  * 韧性：模型调用走 {@link ChatRouter}（超时/熔断/降级）；单工具失败回填错误不中断；
  * 全链路失败降级为本地 RAG 回答。
+ *
+ * <p>P2 拆分（职责单一）：本类只做编排（对话循环 + 技能/记忆注入 + 工具构建 + 降级），
+ * 具体职责委托给三个组合组件：
+ * <ul>
+ *   <li>{@link AgentToolExecutor}——工具校验/执行/超时 + Plan-Execute + 4 个内部特判工具</li>
+ *   <li>{@link AgentMemoryManager}——长期记忆提取与 CRUD</li>
+ *   <li>{@link AgentConversationStore}——会话/轨迹持久化</li>
+ * </ul>
  */
 @Service
 public class AgentService {
@@ -48,12 +54,10 @@ public class AgentService {
 
     /** 最大工具调用轮数（防死循环；多步任务 + 重试后仍应在此内收尾） */
     private static final int MAX_TOOL_ROUNDS = 5;
-    /** 工具结果回填给模型的最大字符数 */
-    private static final int MAX_TOOL_RESULT_CHARS = 2000;
-    /** 每次会话结束自动提取长期记忆的最大条数 */
-    private static final int MAX_EXTRACT_ITEMS = 5;
-    private static final int MAX_MEMORY_KEY_CHARS = 20;
-    private static final int MAX_MEMORY_VALUE_CHARS = 100;
+    /** 接口工具全量注入上限：授权的接口工具数超过此值后，改为按语义命中注入（防上下文膨胀） */
+    private static final int MAX_INTERFACE_TOOLS_FULL_INJECT = 20;
+    /** 语义命中注入的接口工具数（P1 接口语义化闭环） */
+    private static final int MAX_INTERFACE_TOOLS_INJECT = 8;
 
     private static final String SYSTEM_PROMPT = """
             你是 DevMind 研发助手 Agent。根据用户问题自主决定调用哪些工具获取信息，再给出最终回答。
@@ -93,134 +97,12 @@ public class AgentService {
                涉及知识库时调用 kb_search 并指定该知识库。联动执行后再给出最终回答。
             """;
 
-    /** 会话结束后自动提取用户长期偏好的提取器提示词 */
-    private static final String MEMORY_EXTRACT_PROMPT = """
-            你是一个用户偏好提取器。根据用户与 AI 助手的对话，提取用户明确表达的长期偏好或关键事实。
-            规则：
-            1. 只提取用户明确表达的内容（如使用的技术栈、语言偏好、回答风格要求、常用工具等），不要猜测或推断。
-            2. 每行一条，格式：key: value。key 简短（不超过 20 字），value 为具体内容（不超过 100 字）。
-            3. 没有可提取的内容时输出空。
-            """;
-
-    /**
-     * Plan-Execute：模型为多步任务提交计划的内部工具名（不注册到 ToolRegistry，由本类特判处理）。
-     * 模型多步任务（如：先检索知识库 → 再诊断 SQL → 再汇总）时调用 plan 提交有序步骤；单步任务无需使用。
-     */
-    public static final String PLAN_TOOL_NAME = "plan";
-    private static final String PLAN_TOOL_DESC = "为多步任务制定执行计划：当任务需要多个步骤（如先检索再诊断再总结）时，按执行顺序提交 steps；每个 step 调用一个工具并说明目标。单步任务无需使用本工具。";
-    private static final String PLAN_TOOL_SCHEMA = """
-            {
-              "type": "object",
-              "properties": {
-                "goal": { "type": "string", "description": "任务目标" },
-                "steps": {
-                  "type": "array",
-                  "description": "有序执行步骤，每步调用一个工具",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "tool": { "type": "string", "description": "要调用的工具名，如 kb_search" },
-                      "args": { "type": "object", "description": "工具参数" },
-                      "goal": { "type": "string", "description": "本步骤目标" }
-                    },
-                    "required": ["tool", "goal"]
-                  }
-                }
-              },
-              "required": ["goal", "steps"]
-            }
-            """;
-
-    /**
-     * 接口工具语义发现：按自然语言问题对接口语义档案做向量检索，返回可注入的接口名集合。
-     * 命中为空或检索失败时回退全量（保持接口可用，语义注入是增强而非必需）。
-     */
-    private Set<String> resolveInterfaceInjection(String question, Long userId, Set<String> interfaceNames) {
-        if (openApiImportService == null) {
-            return interfaceNames;
-        }
-        try {
-            List<com.devmind.tool.ToolSemanticRepository.SemanticHit> hits =
-                    openApiImportService.semanticSearch(question, userId, MAX_INTERFACE_TOOLS_INJECT);
-            Set<String> hitNames = hits.stream()
-                    .map(com.devmind.tool.ToolSemanticRepository.SemanticHit::name)
-                    .filter(interfaceNames::contains)
-                    .collect(java.util.stream.Collectors.toSet());
-            if (!hitNames.isEmpty()) {
-                log.info("接口工具语义发现：授权 {} 个接口，按问题命中注入 {} 个",
-                        interfaceNames.size(), hitNames.size());
-                return hitNames;
-            }
-        } catch (Exception e) {
-            log.warn("接口工具语义发现失败，回退全量注入: {}", e.getMessage());
-        }
-        return interfaceNames;
-    }
-
-    /**
-     * update_skill：对话式修正技能的内部工具（不注册 ToolRegistry，由本类特判处理）。
-     * 用户指出某条技能规范需要调整时，模型调用本工具提交 skillId 与修改指令。
-     */
-    public static final String UPDATE_SKILL_TOOL_NAME = "update_skill";
-    private static final String UPDATE_SKILL_TOOL_DESC = "修正一条技能规范：当用户指出某条技能（system 中带【技能 ID x：名称】）有问题/需要调整时，传入该技能的 ID 和用户的修改要求，本工具会更新技能内容。";
-    private static final String UPDATE_SKILL_TOOL_SCHEMA = """
-            {
-              "type": "object",
-              "properties": {
-                "skillId": { "type": "integer", "description": "要修改的技能 ID" },
-                "instruction": { "type": "string", "description": "用户的修改意见/要求（原话即可）" }
-              },
-              "required": ["skillId", "instruction"]
-            }
-            """;
-
-    /**
-     * load_skill：按需加载技能全文的内部工具（渐进披露）。
-     * system 中【可参考技能清单】只含名称/描述；模型判断当前任务涉及某项时调用本工具获取完整规范。
-     */
-    public static final String LOAD_SKILL_TOOL_NAME = "load_skill";
-    private static final String LOAD_SKILL_TOOL_DESC = "加载一项技能（Skill）的完整规范文本：当 system 中的【可参考技能清单】里某项技能与当前任务相关时，传入其 ID 获取完整规范并遵循。";
-    private static final String LOAD_SKILL_TOOL_SCHEMA = """
-            {
-              "type": "object",
-              "properties": {
-                "skillId": { "type": "integer", "description": "要加载的技能 ID" }
-              },
-              "required": ["skillId"]
-            }
-            """;
-
-    /**
-     * delete_memory：对话式删除长期记忆的内部工具（Guide-52 记忆升级，对标 Coze）。
-     * 用户要求"忘掉/删除某条记忆"时，模型调用本工具删除对应记忆条目。
-     */
-    public static final String DELETE_MEMORY_TOOL_NAME = "delete_memory";
-    private static final String DELETE_MEMORY_TOOL_DESC = "删除一条用户长期记忆：当用户要求忘记/删除某条已记录的用户偏好或记忆（system 中【用户长期记忆】里的条目）时，传入其 ID 删除该条记忆。";
-    private static final String DELETE_MEMORY_TOOL_SCHEMA = """
-            {
-              "type": "object",
-              "properties": {
-                "memoryId": { "type": "integer", "description": "要删除的记忆条目 ID" }
-              },
-              "required": ["memoryId"]
-            }
-            """;
-
-    /**
-     * run_workflow：按 ID 执行工作流的内部工具（Guide-52 #3 技能引用资源联动执行）。
-     * 技能 references 中引用工作流时，模型可调用本工具执行该工作流，复用确定性编排引擎。
-     */
-    public static final String RUN_WORKFLOW_TOOL_NAME = "run_workflow";
-    private static final String RUN_WORKFLOW_TOOL_DESC = "执行一个已保存的工作流（Workflow）：当技能规范中【可联动资源：工作流「名称」(ID x)】指明需执行工作流时，传入其 ID 执行并返回运行结果。";
-    private static final String RUN_WORKFLOW_TOOL_SCHEMA = """
-            {
-              "type": "object",
-              "properties": {
-                "workflowId": { "type": "integer", "description": "要执行的工作流 ID" }
-              },
-              "required": ["workflowId"]
-            }
-            """;
+    // ---- 内部工具名（P2 拆分：定义移至 AgentTools，此处保留 public 转发常量供外部/测试引用）----
+    public static final String PLAN_TOOL_NAME = AgentTools.PLAN_TOOL_NAME;
+    public static final String UPDATE_SKILL_TOOL_NAME = AgentTools.UPDATE_SKILL_TOOL_NAME;
+    public static final String LOAD_SKILL_TOOL_NAME = AgentTools.LOAD_SKILL_TOOL_NAME;
+    public static final String DELETE_MEMORY_TOOL_NAME = AgentTools.DELETE_MEMORY_TOOL_NAME;
+    public static final String RUN_WORKFLOW_TOOL_NAME = AgentTools.RUN_WORKFLOW_TOOL_NAME;
 
     private final ChatRouter chatRouter;
     private final ToolRegistry toolRegistry;
@@ -233,31 +115,16 @@ public class AgentService {
     private final KnowledgeBaseService knowledgeBaseService;
     private final DevMindProperties properties;
     private final MeterRegistry meterRegistry;
-    private final ToolCallValidator toolCallValidator;
     private final ToolAccessService toolAccessService;
     private final ChatFileStore chatFileStore;
     /** 技能匹配器（Guide-51）：可选注入，测试/无技能时不启用 */
     private SkillMatcher skillMatcher;
-    /** 技能服务（对话式修正 update_skill）：可选注入，测试环境不启用 */
-    private com.devmind.skill.SkillService skillService;
-    /** 工作流服务（技能引用工作流联动执行 run_workflow）：可选注入 */
-    private com.devmind.workflow.WorkflowService workflowService;
     /** 接口语义化服务（P1 工具发现）：可选注入，生产环境自动注入；测试/未启用时接口工具全量注入 */
     private com.devmind.tool.OpenApiImportService openApiImportService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
-    /** 单工具执行超时（秒） */
-    private static final int TOOL_TIMEOUT_SECONDS = 20;
-    /** 接口工具全量注入上限：授权的接口工具数超过此值后，改为按语义命中注入（防上下文膨胀） */
-    private static final int MAX_INTERFACE_TOOLS_FULL_INJECT = 20;
-    /** 语义命中注入的接口工具数（P1 接口语义化闭环） */
-    private static final int MAX_INTERFACE_TOOLS_INJECT = 8;
-
-    /** 计划中的一个执行步骤 */
-    private record PlanStep(String tool, String argsJson, String goal) {
-    }
-    /** 工具执行线程池（配合超时熔断） */
-    private final java.util.concurrent.ExecutorService toolExecutor =
-            java.util.concurrent.Executors.newCachedThreadPool();
+    // P2 拆分：组合组件（构造器内创建，职责单一）
+    private final AgentToolExecutor toolExecutor;
+    private final AgentMemoryManager memoryManager;
+    private final AgentConversationStore conversationStore;
 
     public AgentService(
             ChatRouter chatRouter,
@@ -286,32 +153,38 @@ public class AgentService {
         this.knowledgeBaseService = knowledgeBaseService;
         this.properties = properties;
         this.meterRegistry = meterRegistry;
-        this.toolCallValidator = toolCallValidator;
         this.toolAccessService = toolAccessService;
         this.chatFileStore = chatFileStore;
+        // 组合组件：共用本类已注入的依赖，职责单一化
+        this.conversationStore = new AgentConversationStore(conversationRepository, userService);
+        this.memoryManager = new AgentMemoryManager(memoryRepository, chatRouter, userService);
+        this.toolExecutor = new AgentToolExecutor(
+                toolRegistry, toolCallValidator, meterRegistry, conversationStore, memoryRepository, userService);
     }
 
     @jakarta.annotation.PreDestroy
     public void shutdown() {
-        toolExecutor.shutdownNow();
+        toolExecutor.shutdown();
     }
 
     /** 技能匹配器可选注入（避免破坏既有测试构造器；生产环境由 Spring 自动注入） */
     @Autowired(required = false)
     public void setSkillMatcher(SkillMatcher skillMatcher) {
         this.skillMatcher = skillMatcher;
+        // load_skill 命中计数也在执行器内统计
+        this.toolExecutor.setSkillMatcher(skillMatcher);
     }
 
-    /** 技能服务可选注入（对话式修正 update_skill 用） */
+    /** 技能服务可选注入（对话式修正 update_skill / load_skill 用） */
     @Autowired(required = false)
     public void setSkillService(com.devmind.skill.SkillService skillService) {
-        this.skillService = skillService;
+        this.toolExecutor.setSkillService(skillService);
     }
 
     /** 工作流服务可选注入（技能引用工作流联动执行 run_workflow 用） */
     @Autowired(required = false)
     public void setWorkflowService(com.devmind.workflow.WorkflowService workflowService) {
-        this.workflowService = workflowService;
+        this.toolExecutor.setWorkflowService(workflowService);
     }
 
     /** 接口语义化服务可选注入（工具发现用）：接口多时按自然语言语义命中注入候选接口 */
@@ -321,7 +194,6 @@ public class AgentService {
     }
 
     /** 匹配当前请求命中的技能规范（Guide-51 P1）：未注入 matcher 或未命中时返回空 */
-    /** 技能匹配（渐进披露）：返回命中全文 + 可加载清单 */
     private com.devmind.skill.SkillMatcher.MatchResult matchSkills(String question, Long userId) {
         if (skillMatcher == null) {
             return new com.devmind.skill.SkillMatcher.MatchResult(List.of(), List.of());
@@ -376,7 +248,7 @@ public class AgentService {
         // 上传文件注入：fileIds 对应的文本作为分析上下文拼到问题前
         String question = enrichWithFiles(rawQuestion, request.fileIds(), userId);
 
-        Long conversationId = resolveConversation(request.conversationId(), question, userId);
+        Long conversationId = conversationStore.resolveConversation(request.conversationId(), question, userId);
 
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", SYSTEM_PROMPT));
@@ -441,16 +313,12 @@ public class AgentService {
                 .filter(tool -> !interfaceNames.contains(tool.name()) || injectedInterfaceNames.contains(tool.name()))
                 .map(tool -> new AiModelGateway.ToolSpec(tool.name(), tool.description(), tool.parametersJsonSchema()))
                 .toList());
-        // 注入内部计划工具（Plan-Execute）：模型多步任务时先提交计划，由本类特判执行
-        tools.add(new AiModelGateway.ToolSpec(PLAN_TOOL_NAME, PLAN_TOOL_DESC, PLAN_TOOL_SCHEMA));
-        // 注入技能修正工具（对话式调整）：模型发现用户要改技能时特判执行
-        tools.add(new AiModelGateway.ToolSpec(UPDATE_SKILL_TOOL_NAME, UPDATE_SKILL_TOOL_DESC, UPDATE_SKILL_TOOL_SCHEMA));
-        // 注入技能加载工具（渐进披露）：system 只给技能清单，模型按需加载全文
-        tools.add(new AiModelGateway.ToolSpec(LOAD_SKILL_TOOL_NAME, LOAD_SKILL_TOOL_DESC, LOAD_SKILL_TOOL_SCHEMA));
-        // 注入记忆删除工具（可追溯记忆）：用户要求忘记某条记忆时特判执行
-        tools.add(new AiModelGateway.ToolSpec(DELETE_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_DESC, DELETE_MEMORY_TOOL_SCHEMA));
-        // 注入工作流执行工具（技能引用资源联动）：技能 references 引用工作流时按需执行
-        tools.add(new AiModelGateway.ToolSpec(RUN_WORKFLOW_TOOL_NAME, RUN_WORKFLOW_TOOL_DESC, RUN_WORKFLOW_TOOL_SCHEMA));
+        // 注入内部工具（P2 拆分：定义集中在 AgentTools）
+        tools.add(new AiModelGateway.ToolSpec(AgentTools.PLAN_TOOL_NAME, AgentTools.PLAN_TOOL_DESC, AgentTools.PLAN_TOOL_SCHEMA));
+        tools.add(new AiModelGateway.ToolSpec(AgentTools.UPDATE_SKILL_TOOL_NAME, AgentTools.UPDATE_SKILL_TOOL_DESC, AgentTools.UPDATE_SKILL_TOOL_SCHEMA));
+        tools.add(new AiModelGateway.ToolSpec(AgentTools.LOAD_SKILL_TOOL_NAME, AgentTools.LOAD_SKILL_TOOL_DESC, AgentTools.LOAD_SKILL_TOOL_SCHEMA));
+        tools.add(new AiModelGateway.ToolSpec(AgentTools.DELETE_MEMORY_TOOL_NAME, AgentTools.DELETE_MEMORY_TOOL_DESC, AgentTools.DELETE_MEMORY_TOOL_SCHEMA));
+        tools.add(new AiModelGateway.ToolSpec(AgentTools.RUN_WORKFLOW_TOOL_NAME, AgentTools.RUN_WORKFLOW_TOOL_DESC, AgentTools.RUN_WORKFLOW_TOOL_SCHEMA));
         // M4 沉淀复用：命中技能 references 声明的接口工具直接注入（技能明确依赖，不依赖语义检索）
         if (skillMatch.linkedInterfaceTools() != null && !skillMatch.linkedInterfaceTools().isEmpty()) {
             for (String toolName : skillMatch.linkedInterfaceTools()) {
@@ -481,8 +349,8 @@ public class AgentService {
                 List<AiModelGateway.ToolCall> toolCalls = result.toolCalls();
                 if (toolCalls == null || toolCalls.isEmpty()) {
                     String answer = result.content() == null ? "" : result.content();
-                    saveMessages(conversationId, rawQuestion, answer);
-                    extractMemory(userId, rawQuestion, answer);
+                    conversationStore.saveMessages(conversationId, rawQuestion, answer);
+                    memoryManager.extractMemory(userId, rawQuestion, answer);
                     return new AgentChatResponse(conversationId, answer, List.of(), trace);
                 }
                 // 回填 assistant（含 tool_calls）
@@ -501,45 +369,45 @@ public class AgentService {
                 boolean hasPlan = false;
                 boolean planAllOk = true;
                 List<AiModelGateway.ToolCall> parallelCalls = new ArrayList<>();
-                Map<AiModelGateway.ToolCall, java.util.concurrent.Future<ToolExecOutcome>> futures = new LinkedHashMap<>();
+                Map<AiModelGateway.ToolCall, java.util.concurrent.Future<AgentToolExecutor.ToolExecOutcome>> futures = new LinkedHashMap<>();
                 for (AiModelGateway.ToolCall tc : toolCalls) {
-                    if (PLAN_TOOL_NAME.equals(tc.name())) {
+                    if (AgentTools.PLAN_TOOL_NAME.equals(tc.name())) {
                         hasPlan = true;
-                        if (!executePlan(tc, userId, messages, trace, onTrace, conversationId)) {
+                        if (!toolExecutor.executePlan(tc, userId, messages, trace, onTrace, conversationId)) {
                             planAllOk = false;
                         }
-                    } else if (UPDATE_SKILL_TOOL_NAME.equals(tc.name())) {
+                    } else if (AgentTools.UPDATE_SKILL_TOOL_NAME.equals(tc.name())) {
                         // 对话式修正技能：特判执行，结果回填
-                        ToolExecOutcome outcome = executeUpdateSkill(tc, userId);
-                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
-                    } else if (LOAD_SKILL_TOOL_NAME.equals(tc.name())) {
+                        AgentToolExecutor.ToolExecOutcome outcome = toolExecutor.executeUpdateSkill(tc, userId);
+                        trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
+                    } else if (AgentTools.LOAD_SKILL_TOOL_NAME.equals(tc.name())) {
                         // 按需加载技能全文：特判执行，结果回填
-                        ToolExecOutcome outcome = executeLoadSkill(tc, userId);
-                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
-                    } else if (DELETE_MEMORY_TOOL_NAME.equals(tc.name())) {
+                        AgentToolExecutor.ToolExecOutcome outcome = toolExecutor.executeLoadSkill(tc, userId);
+                        trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
+                    } else if (AgentTools.DELETE_MEMORY_TOOL_NAME.equals(tc.name())) {
                         // 对话式删除长期记忆：特判执行，结果回填
-                        ToolExecOutcome outcome = executeDeleteMemory(tc, userId);
-                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
-                    } else if (RUN_WORKFLOW_TOOL_NAME.equals(tc.name())) {
+                        AgentToolExecutor.ToolExecOutcome outcome = toolExecutor.executeDeleteMemory(tc, userId);
+                        trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
+                    } else if (AgentTools.RUN_WORKFLOW_TOOL_NAME.equals(tc.name())) {
                         // 技能引用工作流联动执行：特判执行，结果回填
-                        ToolExecOutcome outcome = executeRunWorkflow(tc, userId);
-                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
+                        AgentToolExecutor.ToolExecOutcome outcome = toolExecutor.executeRunWorkflow(tc, userId);
+                        trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
                     } else {
                         parallelCalls.add(tc);
-                        futures.put(tc, toolExecutor.submit(() -> executeToolCore(tc, userId)));
+                        futures.put(tc, toolExecutor.submitExecute(tc, userId));
                     }
                 }
                 // 并发工具：按 tool_calls 原顺序等待结果并回填，保证 tool 消息与调用一一对应
                 for (AiModelGateway.ToolCall tc : parallelCalls) {
                     try {
-                        ToolExecOutcome outcome = futures.get(tc)
-                                .get(TOOL_TIMEOUT_SECONDS + 5L, java.util.concurrent.TimeUnit.SECONDS);
-                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
+                        AgentToolExecutor.ToolExecOutcome outcome = futures.get(tc)
+                                .get(AgentTools.TOOL_TIMEOUT_SECONDS + 5L, java.util.concurrent.TimeUnit.SECONDS);
+                        trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
                     } catch (Exception ex) {
                         // 理论不可达：executeToolCore 内部已捕获所有异常并返回失败结果
-                        ToolExecOutcome outcome = new ToolExecOutcome(
+                        AgentToolExecutor.ToolExecOutcome outcome = new AgentToolExecutor.ToolExecOutcome(
                                 "{\"error\": \"工具执行异常: " + ex.getMessage() + "\"}", false, 0);
-                        trace.add(backfillTool(tc, outcome, messages, conversationId, onTrace));
+                        trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
                     }
                 }
                 // 计划中有步骤失败：提示模型重新规划（仅一次），下一轮模型可提交新计划或直接回答
@@ -566,9 +434,35 @@ public class AgentService {
                         fallback.toolTrace()
                 );
             }
-            saveMessages(conversationId, rawQuestion, fallback.answer());
+            conversationStore.saveMessages(conversationId, rawQuestion, fallback.answer());
             return fallback;
         }
+    }
+
+    /**
+     * 接口工具语义发现：按自然语言问题对接口语义档案做向量检索，返回可注入的接口名集合。
+     * 命中为空或检索失败时回退全量（保持接口可用，语义注入是增强而非必需）。
+     */
+    private Set<String> resolveInterfaceInjection(String question, Long userId, Set<String> interfaceNames) {
+        if (openApiImportService == null) {
+            return interfaceNames;
+        }
+        try {
+            List<com.devmind.tool.ToolSemanticRepository.SemanticHit> hits =
+                    openApiImportService.semanticSearch(question, userId, MAX_INTERFACE_TOOLS_INJECT);
+            Set<String> hitNames = hits.stream()
+                    .map(com.devmind.tool.ToolSemanticRepository.SemanticHit::name)
+                    .filter(interfaceNames::contains)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!hitNames.isEmpty()) {
+                log.info("接口工具语义发现：授权 {} 个接口，按问题命中注入 {} 个",
+                        interfaceNames.size(), hitNames.size());
+                return hitNames;
+            }
+        } catch (Exception e) {
+            log.warn("接口工具语义发现失败，回退全量注入: {}", e.getMessage());
+        }
+        return interfaceNames;
     }
 
     /** 把上传文件的文本注入为问题上下文（文件分析场景） */
@@ -590,415 +484,29 @@ public class AgentService {
         return sb + "用户问题：" + question;
     }
 
-    /** 工具执行结果（纯执行产物，不含消息回填，可跨线程安全传递） */
-    private record ToolExecOutcome(String output, boolean ok, long costMs) {
-    }
-
-    /**
-     * 执行单个工具调用：先校验（工具名/参数 JSON），非法回填错误不中断；合法则带超时执行。
-     * 不碰共享状态（messages/trace），供并行执行使用。
-     */
-    private ToolExecOutcome executeToolCore(AiModelGateway.ToolCall tc, Long userId) {
-        long start = System.currentTimeMillis();
-        ToolCallValidator.Validation validation = toolCallValidator.validate(tc.name(), tc.argumentsJson());
-        if (!validation.valid()) {
-            meterRegistry.counter("devmind.agent.tool_invalid", "reason", "invalid").increment();
-            log.warn("agent 工具调用校验失败: {}", validation.error());
-            return new ToolExecOutcome("{\"error\": \"工具调用无效: " + validation.error() + "\"}",
-                    false, System.currentTimeMillis() - start);
-        }
-        try {
-            java.util.concurrent.Future<String> future = toolExecutor.submit(() ->
-                    toolRegistry.execute(validation.toolName(), validation.argumentsJson(), userId));
-            String output = future.get(TOOL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
-            return new ToolExecOutcome(output, true, System.currentTimeMillis() - start);
-        } catch (java.util.concurrent.TimeoutException ex) {
-            meterRegistry.counter("devmind.agent.tool_timeout").increment();
-            log.warn("agent 工具 {} 执行超时（{}s）", tc.name(), TOOL_TIMEOUT_SECONDS);
-            return new ToolExecOutcome("{\"error\": \"工具执行超时\"}",
-                    false, System.currentTimeMillis() - start);
-        } catch (Exception ex) {
-            log.warn("agent 工具 {} 执行失败: {}", tc.name(), ex.getMessage());
-            return new ToolExecOutcome("{\"error\": \"工具执行失败: " + ex.getMessage() + "\"}",
-                    false, System.currentTimeMillis() - start);
-        }
-    }
-
-    /**
-     * 把工具执行结果回填到 messages 并记录轨迹（主线程串行调用，保证消息顺序）。
-     * 执行细节：{@link #executeToolCall}
-     */
-    private ToolTraceItem backfillTool(
-            AiModelGateway.ToolCall tc,
-            ToolExecOutcome outcome,
-            List<Map<String, Object>> messages,
-            Long conversationId,
-            Consumer<ToolTraceItem> onTrace
-    ) {
-        String output = truncate(outcome.output(), MAX_TOOL_RESULT_CHARS);
-        messages.add(Map.of(
-                "role", "tool",
-                "tool_call_id", tc.id(),
-                "content", output
-        ));
-        ToolTraceItem item = new ToolTraceItem(
-                tc.name(),
-                truncate(tc.argumentsJson(), 120),
-                outcome.ok(),
-                outcome.costMs()
-        );
-        if (onTrace != null) {
-            onTrace.accept(item);
-        }
-        persistTrace(conversationId, tc.name(), truncate(tc.argumentsJson(), 200), outcome.ok(), outcome.costMs());
-        return item;
-    }
-
-    /**
-     * 执行单个工具调用（校验+超时+回填），返回轨迹项。
-     * 供 Plan-Execute 顺序执行步骤复用；普通多工具并行路径改用 {@link #executeToolCore} + {@link #backfillTool}。
-     */
-    private ToolTraceItem executeToolCall(
-            AiModelGateway.ToolCall tc,
-            Long userId,
-            List<Map<String, Object>> messages,
-            Long conversationId,
-            Consumer<ToolTraceItem> onTrace
-    ) {
-        return backfillTool(tc, executeToolCore(tc, userId), messages, conversationId, onTrace);
-    }
-
-    /**
-     * Plan-Execute 计划执行器：解析 plan 参数 → 逐 step 执行（复用 {@link #executeToolCall}）→
-     * 每个 step 结果回填 messages，失败不中断（供模型重规划）。返回是否全部成功。
-     */
-    private boolean executePlan(
-            AiModelGateway.ToolCall planCall,
-            Long userId,
-            List<Map<String, Object>> messages,
-            List<ToolTraceItem> trace,
-            Consumer<ToolTraceItem> onTrace,
-            Long conversationId
-    ) {
-        List<PlanStep> steps = parsePlan(planCall.argumentsJson());
-        if (steps == null) {
-            messages.add(Map.of(
-                    "role", "tool",
-                    "tool_call_id", planCall.id(),
-                    "content", "{\"error\": \"计划解析失败，请直接回答或逐个调用工具\"}"
-            ));
-            return false;
-        }
-        // 计划本身也计入轨迹，便于前端可视化
-        ToolTraceItem planItem = new ToolTraceItem(
-                PLAN_TOOL_NAME,
-                truncate(planCall.argumentsJson(), 200),
-                true,
-                0
-        );
-        trace.add(planItem);
-        if (onTrace != null) {
-            onTrace.accept(planItem);
-        }
-        boolean allOk = true;
-        int idx = 1;
-        for (PlanStep step : steps) {
-            AiModelGateway.ToolCall stepCall = new AiModelGateway.ToolCall(
-                    planCall.id() + "-s" + idx++,
-                    step.tool(),
-                    step.argsJson() == null ? "{}" : step.argsJson()
-            );
-            ToolTraceItem item = executeToolCall(stepCall, userId, messages, conversationId, onTrace);
-            trace.add(item);
-            if (!item.ok()) {
-                allOk = false;
-            }
-        }
-        meterRegistry.counter("devmind.agent.plan", "result", allOk ? "success" : "partial").increment();
-        return allOk;
-    }
-
-    /**
-     * 对话式修正技能（update_skill 内部工具）：解析 skillId + instruction，
-     * 交给 SkillService 用 LLM 重写技能内容。返回执行结果（供模型告知用户）。
-     */
-    private ToolExecOutcome executeUpdateSkill(AiModelGateway.ToolCall tc, Long userId) {
-        if (skillService == null) {
-            return new ToolExecOutcome(
-                    "{\"error\": \"技能服务不可用，请稍后再试\"}", false, 0);
-        }
-        long start = System.currentTimeMillis();
-        try {
-            JsonNode root = objectMapper.readTree(tc.argumentsJson() == null ? "{}" : tc.argumentsJson());
-            long skillId = root.path("skillId").asLong(0);
-            String instruction = root.path("instruction").asText("").trim();
-            if (skillId <= 0) {
-                return new ToolExecOutcome("{\"error\": \"缺少有效的 skillId\"}", false,
-                        System.currentTimeMillis() - start);
-            }
-            if (instruction.isEmpty()) {
-                return new ToolExecOutcome("{\"error\": \"缺少修改指令 instruction\"}", false,
-                        System.currentTimeMillis() - start);
-            }
-            com.devmind.skill.SkillService.UpdateResult updated =
-                    skillService.updateByInstruction(userId, skillId, instruction);
-            meterRegistry.counter("devmind.agent.skill_update_total").increment();
-            String summary = "已更新技能【" + updated.skill().name() + "】（ID " + updated.skill().id() + "）。\n"
-                    + "【修改前】" + truncate(updated.oldContent(), MAX_TOOL_RESULT_CHARS) + "\n"
-                    + "【修改后】" + truncate(updated.newContent(), MAX_TOOL_RESULT_CHARS) + "\n"
-                    + "请向用户展示修改前后对比，并询问修改是否符合预期；若用户仍不满意，继续引导其说明要求后再次调用 update_skill。";
-            return new ToolExecOutcome(summary, true, System.currentTimeMillis() - start);
-        } catch (Exception ex) {
-            String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-            return new ToolExecOutcome("{\"error\": \"技能更新失败: " + message + "\"}", false,
-                    System.currentTimeMillis() - start);
-        }
-    }
-
-    /**
-     * 按需加载技能全文（load_skill 内部工具，渐进披露）：解析 skillId，
-     * 经 SkillService.get 走可见性校验（个人技能仅本人/团队技能全员）后返回完整规范文本。
-     * 命中即视为一次有效使用，自增 hit_count。
-     */
-    private ToolExecOutcome executeLoadSkill(AiModelGateway.ToolCall tc, Long userId) {
-        if (skillService == null) {
-            return new ToolExecOutcome(
-                    "{\"error\": \"技能服务不可用，请稍后再试\"}", false, 0);
-        }
-        long start = System.currentTimeMillis();
-        try {
-            JsonNode root = objectMapper.readTree(tc.argumentsJson() == null ? "{}" : tc.argumentsJson());
-            long skillId = root.path("skillId").asLong(0);
-            if (skillId <= 0) {
-                return new ToolExecOutcome("{\"error\": \"缺少有效的 skillId\"}", false,
-                        System.currentTimeMillis() - start);
-            }
-            com.devmind.skill.Skill skill = skillService.get(userId, skillId);
-            // 命中一次即自增（与关键词命中同一统计口径，反映技能真实使用热度）
-            try {
-                skillMatcher.recordLoad(userService.tenantIdOf(userId), skillId);
-            } catch (Exception ignored) {
-                // 统计失败不影响主流程
-            }
-            String content = truncate(skill.content(), MAX_TOOL_RESULT_CHARS);
-            String summary = "技能【" + skill.name() + "】（ID " + skill.id() + "，"
-                    + ("personal".equals(skill.scope()) ? "个人" : "团队") + "）完整规范如下：\n" + content
-                    + "\n请遵循该规范完成当前任务。";
-            return new ToolExecOutcome(summary, true, System.currentTimeMillis() - start);
-        } catch (Exception ex) {
-            String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-            return new ToolExecOutcome("{\"error\": \"技能加载失败: " + message + "\"}", false,
-                    System.currentTimeMillis() - start);
-        }
-    }
-
-    /**
-     * 对话式删除长期记忆（delete_memory 内部工具）：解析 memoryId，
-     * 删除对应用户记忆条目。返回执行结果（供模型告知用户）。
-     */
-    private ToolExecOutcome executeDeleteMemory(AiModelGateway.ToolCall tc, Long userId) {
-        long start = System.currentTimeMillis();
-        try {
-            JsonNode root = objectMapper.readTree(tc.argumentsJson() == null ? "{}" : tc.argumentsJson());
-            long memoryId = root.path("memoryId").asLong(0);
-            if (memoryId <= 0) {
-                return new ToolExecOutcome("{\"error\": \"缺少有效的 memoryId\"}", false,
-                        System.currentTimeMillis() - start);
-            }
-            int affected = memoryRepository.deleteById(userId, memoryId);
-            if (affected == 0) {
-                return new ToolExecOutcome("{\"error\": \"记忆不存在或无权删除: " + memoryId + "\"}", false,
-                        System.currentTimeMillis() - start);
-            }
-            meterRegistry.counter("devmind.agent.memory_delete_total").increment();
-            String summary = "已删除长期记忆条目（ID " + memoryId + "）。请告知用户该记忆已删除，不再需要遵循。";
-            return new ToolExecOutcome(summary, true, System.currentTimeMillis() - start);
-        } catch (Exception ex) {
-            String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-            return new ToolExecOutcome("{\"error\": \"记忆删除失败: " + message + "\"}", false,
-                    System.currentTimeMillis() - start);
-        }
-    }
-
-    /**
-     * 执行工作流（run_workflow 内部工具，技能引用资源联动执行）：解析 workflowId，
-     * 交给 WorkflowService.run 复用确定性编排引擎执行（顺序/并行/条件分支），返回运行结果。
-     */
-    private ToolExecOutcome executeRunWorkflow(AiModelGateway.ToolCall tc, Long userId) {
-        if (workflowService == null) {
-            return new ToolExecOutcome(
-                    "{\"error\": \"工作流服务不可用，请稍后再试\"}", false, 0);
-        }
-        long start = System.currentTimeMillis();
-        try {
-            JsonNode root = objectMapper.readTree(tc.argumentsJson() == null ? "{}" : tc.argumentsJson());
-            long workflowId = root.path("workflowId").asLong(0);
-            if (workflowId <= 0) {
-                return new ToolExecOutcome("{\"error\": \"缺少有效的 workflowId\"}", false,
-                        System.currentTimeMillis() - start);
-            }
-            com.devmind.workflow.WorkflowRun run = workflowService.run(workflowId, userId);
-            meterRegistry.counter("devmind.agent.workflow_run_total").increment();
-            String status = run == null ? "UNKNOWN" : run.status();
-            String summary = "工作流已执行完成（workflowId=" + workflowId + "，runId="
-                    + (run == null ? "-" : run.id())
-                    + "，状态=" + status + (run != null && run.error() != null ? "，错误=" + run.error() : "") + "）。"
-                    + "请基于该执行结果向用户汇报；若执行失败，说明失败原因。";
-            return new ToolExecOutcome(summary, "SUCCESS".equals(status), System.currentTimeMillis() - start);
-        } catch (Exception ex) {
-            String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-            return new ToolExecOutcome("{\"error\": \"工作流执行失败: " + message + "\"}", false,
-                    System.currentTimeMillis() - start);
-        }
-    }
-
-    /** 解析 plan 工具参数为有序步骤列表；无法解析（非数组/为空/工具名为空）返回 null */
-    private List<PlanStep> parsePlan(String argumentsJson) {
-        try {
-            JsonNode root = objectMapper.readTree(argumentsJson == null ? "{}" : argumentsJson);
-            JsonNode steps = root.path("steps");
-            if (!steps.isArray() || steps.isEmpty()) {
-                return null;
-            }
-            List<PlanStep> result = new ArrayList<>();
-            for (JsonNode step : steps) {
-                String tool = step.path("tool").asText("");
-                if (tool.isBlank()) {
-                    continue;
-                }
-                String goal = step.path("goal").asText("");
-                JsonNode args = step.path("args");
-                String argsJson = (args == null || args.isMissingNode() || args.isNull())
-                        ? "{}" : objectMapper.writeValueAsString(args);
-                result.add(new PlanStep(tool, argsJson, goal));
-            }
-            return result.isEmpty() ? null : result;
-        } catch (Exception ex) {
-            log.warn("agent 计划解析失败: {}", ex.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * 会话结束后自动从对话中提取用户长期偏好，合并写入 agent_memory。
-     * 完全静默：模型不可用（429/熔断/降级）或输出解析失败都不影响主流程。
-     */
-    private void extractMemory(Long userId, String question, String answer) {
-        if (userId == null) {
-            return;
-        }
-        try {
-            String dialogue = "用户：" + (question == null ? "" : question)
-                    + "\n助手：" + (answer == null ? "" : answer);
-            AiModelGateway.ChatResult result = chatRouter.chat(MEMORY_EXTRACT_PROMPT, dialogue);
-            String content = result == null ? "" : result.content();
-            if (content == null || content.isBlank()) {
-                return;
-            }
-            int count = 0;
-            for (String line : content.split("\\n")) {
-                String trimmed = line.trim();
-                int idx = trimmed.indexOf(':');
-                if (idx <= 0) {
-                    continue;
-                }
-                String key = trimmed.substring(0, idx).trim();
-                String value = trimmed.substring(idx + 1).trim();
-                if (key.isEmpty() || value.isEmpty()) {
-                    continue;
-                }
-                if (key.length() > MAX_MEMORY_KEY_CHARS) {
-                    key = key.substring(0, MAX_MEMORY_KEY_CHARS);
-                }
-                if (value.length() > MAX_MEMORY_VALUE_CHARS) {
-                    value = value.substring(0, MAX_MEMORY_VALUE_CHARS);
-                }
-                memoryRepository.upsert(userId, key, value);
-                count++;
-                if (count >= MAX_EXTRACT_ITEMS) {
-                    break;
-                }
-            }
-            if (count > 0) {
-                log.info("agent 自动提取长期记忆 {} 条（user={}）", count, userId);
-            }
-        } catch (Exception ex) {
-            log.warn("agent 长期记忆自动提取失败（不影响主流程）: {}", ex.getMessage());
-        }
-    }
-
-    /** 查询会话消息（历史展示） */
+    /** 查询会话消息（历史展示，P2：委托会话存储） */
     public List<AgentMessage> messages(Long conversationId, Long userId) {
-        userService.requireUser(userId);
-        if (conversationId == null || !conversationRepository.existsForUser(conversationId, userId)) {
-            throw new ApiException(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在");
-        }
-        return conversationRepository.listMessages(conversationId);
+        return conversationStore.messages(conversationId, userId);
     }
 
-    /** 查询会话工具调用轨迹（历史展示） */
+    /** 查询会话工具调用轨迹（历史展示，P2：委托会话存储） */
     public List<ToolTraceItem> trace(Long conversationId, Long userId) {
-        userService.requireUser(userId);
-        if (conversationId == null || !conversationRepository.existsForUser(conversationId, userId)) {
-            throw new ApiException(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在");
-        }
-        return conversationRepository.listTraces(conversationId);
+        return conversationStore.trace(conversationId, userId);
     }
 
-    /** 查询长期记忆 */
+    /** 查询长期记忆（P2：委托记忆管理） */
     public List<com.devmind.agent.dto.MemoryItem> memory(Long userId) {
-        userService.requireUser(userId);
-        return memoryRepository.listByUser(userId);
+        return memoryManager.memory(userId);
     }
 
-    /** 更新长期记忆（全量覆盖） */
+    /** 更新长期记忆（全量覆盖，P2：委托记忆管理） */
     public void updateMemory(MemoryUpdateRequest request, Long userId) {
-        userService.requireUser(userId);
-        memoryRepository.replaceAll(userId, request == null ? List.of() : request.items());
+        memoryManager.updateMemory(request, userId);
     }
 
-    /** 删除单条长期记忆（可追溯记忆：按 id 删除；不存在时抛错提示） */
+    /** 删除单条长期记忆（P2：委托记忆管理） */
     public void deleteMemory(Long id, Long userId) {
-        userService.requireUser(userId);
-        if (id == null || id <= 0) {
-            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "缺少有效的记忆 ID");
-        }
-        int affected = memoryRepository.deleteById(userId, id);
-        if (affected == 0) {
-            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "记忆不存在或无权删除: " + id);
-        }
-    }
-
-    private void saveMessages(Long conversationId, String question, String answer) {
-        if (conversationId == null || conversationId <= 0) {
-            return;
-        }
-        try {
-            conversationRepository.saveMessage(conversationId, "user", question);
-            conversationRepository.saveMessage(conversationId, "assistant", answer == null ? "" : answer);
-        } catch (Exception ex) {
-            log.warn("agent 消息持久化失败: {}", ex.getMessage());
-        }
-    }
-
-    private void persistTrace(Long conversationId, String tool, String args, boolean ok, long costMs) {
-        if (conversationId == null || conversationId <= 0) {
-            return;
-        }
-        try {
-            conversationRepository.saveTrace(conversationId, tool, args, ok, costMs);
-        } catch (Exception ex) {
-            log.warn("agent 轨迹持久化失败: {}", ex.getMessage());
-        }
-    }
-
-    private Long resolveConversation(Long conversationId, String question, Long userId) {
-        if (conversationId != null && conversationId > 0) {
-            return conversationId;
-        }
-        String title = truncate(question, 100);
-        Long id = conversationRepository.create(userId, title);
-        return id == null ? 0L : id;
+        memoryManager.deleteMemory(id, userId);
     }
 
     private AgentChatResponse fallbackToLocalRag(
@@ -1023,7 +531,7 @@ public class AgentService {
                             r.documentId(),
                             r.documentName(),
                             r.chunkId(),
-                            truncate(r.content(), 300),
+                            AgentTools.truncate(r.content(), 300),
                             round(r.similarityScore()),
                             r.metadata()
                     ))
@@ -1085,13 +593,6 @@ public class AgentService {
         } catch (Exception ex) {
             log.warn("agent 用量记录失败: {}", ex.getMessage());
         }
-    }
-
-    private static String truncate(String text, int max) {
-        if (text == null) {
-            return "";
-        }
-        return text.length() <= max ? text : text.substring(0, max);
     }
 
     private static double round(double value) {

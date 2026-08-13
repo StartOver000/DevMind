@@ -117,6 +117,8 @@ public class AgentService {
     private final MeterRegistry meterRegistry;
     private final ToolAccessService toolAccessService;
     private final ChatFileStore chatFileStore;
+    /** LLM 输入统一防护（八股反推 P1-1）：对话注入检测 */
+    private final com.devmind.security.LlmInputGuard llmInputGuard;
     /** 技能匹配器（Guide-51）：可选注入，测试/无技能时不启用 */
     private SkillMatcher skillMatcher;
     /** 接口语义化服务（P1 工具发现）：可选注入，生产环境自动注入；测试/未启用时接口工具全量注入 */
@@ -140,7 +142,8 @@ public class AgentService {
             MeterRegistry meterRegistry,
             ToolCallValidator toolCallValidator,
             ToolAccessService toolAccessService,
-            ChatFileStore chatFileStore
+            ChatFileStore chatFileStore,
+            com.devmind.security.LlmInputGuard llmInputGuard
     ) {
         this.chatRouter = chatRouter;
         this.toolRegistry = toolRegistry;
@@ -155,6 +158,7 @@ public class AgentService {
         this.meterRegistry = meterRegistry;
         this.toolAccessService = toolAccessService;
         this.chatFileStore = chatFileStore;
+        this.llmInputGuard = llmInputGuard;
         // 组合组件：共用本类已注入的依赖，职责单一化
         this.conversationStore = new AgentConversationStore(conversationRepository, userService);
         this.memoryManager = new AgentMemoryManager(memoryRepository, chatRouter, userService);
@@ -245,6 +249,8 @@ public class AgentService {
         if (rawQuestion.isEmpty()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "问题不能为空");
         }
+        // LLM 输入统一防护（P1-1）：对话内容命中 Prompt 注入模式即拒绝，防止注入指令进入模型
+        llmInputGuard.checkText(rawQuestion);
         // 上传文件注入：fileIds 对应的文本作为分析上下文拼到问题前
         String question = enrichWithFiles(rawQuestion, request.fileIds(), userId);
 
@@ -266,8 +272,10 @@ public class AgentService {
         if (!skillParts.isEmpty()) {
             messages.add(Map.of("role", "system", "content", String.join("\n\n", skillParts)));
         }
-        // 长期记忆：注入用户偏好（跨会话保留）；带 ID 供 delete_memory 定位
-        List<com.devmind.agent.dto.MemoryItem> memory = memoryRepository.listByUser(userId);
+        // 长期记忆：分层注入（P2-1）——核心记忆常驻 + 场景记忆按问题关键词筛选；
+        // 带 ID 供 delete_memory 定位
+        List<com.devmind.agent.dto.MemoryItem> memory =
+                memoryManager.selectForQuestion(memoryRepository.listByUser(userId), question);
         if (memory != null && !memory.isEmpty()) {
             String memoryText = memory.stream()
                     .map(m -> "【记忆 ID " + m.id() + "】" + m.key() + ": " + m.value())

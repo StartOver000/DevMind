@@ -66,7 +66,8 @@ class WorkflowGenerationServiceTest {
             @Override public String execute(String argumentsJson, Long userId) { return "ok"; }
         });
         service = new WorkflowGenerationService(
-                chatRouter, registry, objectMapper, userService, toolAccessService
+                chatRouter, registry, objectMapper, userService, toolAccessService,
+                org.mockito.Mockito.mock(com.devmind.security.LlmInputGuard.class)
         );
         lenient().when(userService.tenantIdOf(1L)).thenReturn(1L);
         lenient().when(toolAccessService.accessibleToolNames(eq(1L), eq(1L)))
@@ -265,7 +266,8 @@ class WorkflowGenerationServiceTest {
     void manyInterfacesOnlyListSemanticHitsInPrompt() {
         ToolRegistry reg = registryWithInterfaceTools(25);
         WorkflowGenerationService svc = new WorkflowGenerationService(
-                chatRouter, reg, objectMapper, userService, toolAccessService);
+                chatRouter, reg, objectMapper, userService, toolAccessService,
+                org.mockito.Mockito.mock(com.devmind.security.LlmInputGuard.class));
         Set<String> allNames = reg.all().stream().map(com.devmind.agent.AgentTool::name).collect(Collectors.toSet());
         when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenReturn(allNames);
         when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(25));
@@ -292,7 +294,8 @@ class WorkflowGenerationServiceTest {
     void manyInterfacesFallBackToAllWhenNoSemanticHit() {
         ToolRegistry reg = registryWithInterfaceTools(25);
         WorkflowGenerationService svc = new WorkflowGenerationService(
-                chatRouter, reg, objectMapper, userService, toolAccessService);
+                chatRouter, reg, objectMapper, userService, toolAccessService,
+                org.mockito.Mockito.mock(com.devmind.security.LlmInputGuard.class));
         Set<String> allNames = reg.all().stream().map(com.devmind.agent.AgentTool::name).collect(Collectors.toSet());
         when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenReturn(allNames);
         when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(25));
@@ -311,7 +314,8 @@ class WorkflowGenerationServiceTest {
     void fewInterfacesListAllWithoutSemanticSearch() {
         ToolRegistry reg = registryWithInterfaceTools(3);
         WorkflowGenerationService svc = new WorkflowGenerationService(
-                chatRouter, reg, objectMapper, userService, toolAccessService);
+                chatRouter, reg, objectMapper, userService, toolAccessService,
+                org.mockito.Mockito.mock(com.devmind.security.LlmInputGuard.class));
         Set<String> allNames = reg.all().stream().map(com.devmind.agent.AgentTool::name).collect(Collectors.toSet());
         when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenReturn(allNames);
         when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(3));
@@ -330,7 +334,8 @@ class WorkflowGenerationServiceTest {
     void withoutSemanticServiceListsAllInterfaces() {
         ToolRegistry reg = registryWithInterfaceTools(25);
         WorkflowGenerationService svc = new WorkflowGenerationService(
-                chatRouter, reg, objectMapper, userService, toolAccessService);
+                chatRouter, reg, objectMapper, userService, toolAccessService,
+                org.mockito.Mockito.mock(com.devmind.security.LlmInputGuard.class));
         Set<String> allNames = reg.all().stream().map(com.devmind.agent.AgentTool::name).collect(Collectors.toSet());
         when(toolAccessService.accessibleToolNames(eq(1L), eq(1L))).thenReturn(allNames);
         when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(25));

@@ -102,6 +102,78 @@ public class AgentMemoryManager {
         return memoryRepository.listByUser(userId);
     }
 
+    /**
+     * 分层记忆选择（P2-1）：核心记忆（source=manual，用户明确编辑）常驻全量注入；
+     * 场景记忆（source=auto，自动提取）按当前问题关键词筛选——避免全量注入导致
+     * 无关偏好稀释当前任务；场景记忆无命中时回退全量（保证用户偏好不漏）。
+     */
+    public List<MemoryItem> selectForQuestion(List<MemoryItem> memory, String question) {
+        if (memory == null || memory.isEmpty()) {
+            return List.of();
+        }
+        List<MemoryItem> core = new java.util.ArrayList<>();
+        List<MemoryItem> context = new java.util.ArrayList<>();
+        for (MemoryItem m : memory) {
+            if ("manual".equals(m.source())) {
+                core.add(m);
+            } else {
+                context.add(m);
+            }
+        }
+        if (context.isEmpty() || question == null || question.isBlank()) {
+            return List.copyOf(core.isEmpty() ? context : core);
+        }
+        // 关键词抽取：英文按空白/标点分词（长度>=2）；中文用 2-gram（覆盖中文无空格分词）
+        String q = question.toLowerCase();
+        java.util.Set<String> keywords = new java.util.HashSet<>();
+        for (String token : q.split("[\\s\\p{Punct}]+")) {
+            String t = token.trim();
+            if (t.length() >= 2) {
+                keywords.add(t);
+            }
+        }
+        // 中文补充：连续中文片段按 2-gram 切，让"订单系统"能匹配"查订单"
+        StringBuilder chinese = new StringBuilder();
+        for (int i = 0; i < q.length(); i++) {
+            char c = q.charAt(i);
+            if (Character.UnicodeScript.of(c) == Character.UnicodeScript.HAN) {
+                chinese.append(c);
+            } else {
+                flushChineseGrams(chinese, keywords);
+                chinese.setLength(0);
+            }
+        }
+        flushChineseGrams(chinese, keywords);
+        List<MemoryItem> matched = new java.util.ArrayList<>();
+        for (MemoryItem m : context) {
+            String hay = ((m.key() == null ? "" : m.key()) + " " + (m.value() == null ? "" : m.value())).toLowerCase();
+            boolean hit = keywords.stream().anyMatch(hay::contains);
+            if (hit) {
+                matched.add(m);
+            }
+        }
+        if (matched.isEmpty()) {
+            // 无命中回退全量（含核心 + 场景），保证偏好不被遗漏
+            return List.copyOf(memory);
+        }
+        java.util.ArrayList<MemoryItem> result = new java.util.ArrayList<>(core);
+        result.addAll(matched);
+        return List.copyOf(result);
+    }
+
+    /** 把连续中文片段按 2-gram 切分加入关键词（如"查订单"→"查订""订单"） */
+    private static void flushChineseGrams(StringBuilder chinese, java.util.Set<String> keywords) {
+        if (chinese.length() < 2) {
+            return;
+        }
+        String seq = chinese.toString();
+        for (int i = 0; i + 2 <= seq.length(); i++) {
+            keywords.add(seq.substring(i, i + 2));
+        }
+        // 整段也加入（长度>2 时覆盖更长匹配）
+        keywords.add(seq);
+    }
+
     /** 更新长期记忆（全量覆盖） */
     public void updateMemory(MemoryUpdateRequest request, Long userId) {
         userService.requireUser(userId);

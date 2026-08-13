@@ -10,6 +10,7 @@ public record RetrievalEvaluationResponse(
         double recall5,
         double recall10,
         double ndcg10,
+        double faithfulness,
         List<EvaluationItem> items,
         List<EvaluationTopicResult> topics
 ) {

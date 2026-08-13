@@ -44,6 +44,8 @@ public class WorkflowGenerationService {
     private final ObjectMapper objectMapper;
     private final UserService userService;
     private final ToolAccessService toolAccessService;
+    /** LLM 输入统一防护（P1-1）：需求描述命中注入模式即拒绝 */
+    private final com.devmind.security.LlmInputGuard llmInputGuard;
     /** 接口语义化服务（M3 工具发现）：可选注入，接口多时按语义命中列出接口 */
     private com.devmind.tool.OpenApiImportService openApiImportService;
 
@@ -52,13 +54,15 @@ public class WorkflowGenerationService {
             ToolRegistry toolRegistry,
             ObjectMapper objectMapper,
             UserService userService,
-            ToolAccessService toolAccessService
+            ToolAccessService toolAccessService,
+            com.devmind.security.LlmInputGuard llmInputGuard
     ) {
         this.chatRouter = chatRouter;
         this.toolRegistry = toolRegistry;
         this.objectMapper = objectMapper;
         this.userService = userService;
         this.toolAccessService = toolAccessService;
+        this.llmInputGuard = llmInputGuard;
     }
 
     /** 接口语义化服务可选注入（接口多时按语义命中列出接口工具） */
@@ -80,6 +84,7 @@ public class WorkflowGenerationService {
         if (description == null || description.isBlank()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "请描述你的需求");
         }
+        llmInputGuard.checkText(description.trim());
         String systemPrompt = buildSystemPrompt(userId, description);
         AiModelGateway.ChatResult result = chatRouter.chat(systemPrompt, description.trim());
         if (result == null || result.content() == null || result.content().isBlank()) {

@@ -38,17 +38,21 @@ public class CapabilityGapService {
     private final OpenApiImportService openApiImportService;
     private final UserService userService;
     private final ObjectMapper objectMapper;
+    /** LLM 输入统一防护（P1-1）：需求描述命中注入模式即拒绝 */
+    private final com.devmind.security.LlmInputGuard llmInputGuard;
 
     public CapabilityGapService(
             ChatRouter chatRouter,
             OpenApiImportService openApiImportService,
             UserService userService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            com.devmind.security.LlmInputGuard llmInputGuard
     ) {
         this.chatRouter = chatRouter;
         this.openApiImportService = openApiImportService;
         this.userService = userService;
         this.objectMapper = objectMapper;
+        this.llmInputGuard = llmInputGuard;
     }
 
     /** 缺失能力建议（covered=false 的步骤） */
@@ -83,6 +87,7 @@ public class CapabilityGapService {
         if (description == null || description.isBlank()) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "请描述你的业务需求");
         }
+        llmInputGuard.checkText(description.trim());
         List<ToolSemanticRepository.SemanticHit> hits =
                 openApiImportService.semanticSearch(description, userId, MATCH_LIMIT);
         List<String> warnings = new ArrayList<>();

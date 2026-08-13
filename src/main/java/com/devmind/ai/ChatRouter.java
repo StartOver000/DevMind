@@ -47,6 +47,8 @@ public class ChatRouter {
 
     private final AiModelGateway primaryGateway;
     private final List<ChatProvider> fallbackProviders;
+    /** 便宜档模型（P2-4b）：简单任务走便宜档省成本；未配置则为 null（全部走主链） */
+    private final AiModelGateway cheapGateway;
     private final CircuitStateStore circuitStateStore;
     private final MeterRegistry meterRegistry;
     private final Timer chatTimer;
@@ -63,6 +65,7 @@ public class ChatRouter {
         this.primaryGateway = primaryGateway;
         this.circuitStateStore = circuitStateStore;
         this.fallbackProviders = buildFallbackProviders(restClientBuilder, properties, secretCipher);
+        this.cheapGateway = buildCheapGateway(restClientBuilder, properties, secretCipher);
         this.meterRegistry = meterRegistry;
         this.chatTimer = Timer.builder("devmind.model.calls.duration")
                 .description("模型聊天调用耗时")
@@ -70,6 +73,42 @@ public class ChatRouter {
         this.failedCounter = Counter.builder("devmind.model.calls.failed")
                 .description("模型聊天调用失败次数")
                 .register(meterRegistry);
+    }
+
+    /** 便宜档模型（未配置返回 null）：简单任务走便宜档，降低整体成本 */
+    private AiModelGateway buildCheapGateway(
+            RestClient.Builder restClientBuilder,
+            DevMindProperties properties,
+            SecretCipher secretCipher
+    ) {
+        if (properties.modelCheapBaseUrl() == null || properties.modelCheapBaseUrl().isBlank()) {
+            return null;
+        }
+        return new OpenAiCompatibleGateway(
+                restClientBuilder,
+                properties.modelCheapBaseUrl(),
+                secretCipher.resolve(properties.modelCheapApiKey()),
+                properties.modelCheapChatModel(),
+                new ObjectMapper()
+        );
+    }
+
+    /**
+     * 便宜档调用（P2-4b 模型分级路由）：简单任务（意图分类/摘要/标题生成）走便宜模型省成本。
+     * 降级策略：便宜档未配置或调用失败时，自动回退主链——不牺牲可用性，只省成本。
+     */
+    public AiModelGateway.ChatResult chatCheap(String systemPrompt, String userPrompt) {
+        if (cheapGateway == null) {
+            return chat(systemPrompt, userPrompt);
+        }
+        try {
+            AiModelGateway.ChatResult result = cheapGateway.chat(systemPrompt, userPrompt);
+            Counter.builder("devmind.model.tier").tag("tier", "cheap").register(meterRegistry).increment();
+            return result;
+        } catch (Exception ex) {
+            log.warn("便宜档模型调用失败，回退主链: {}", ex.getMessage());
+            return chat(systemPrompt, userPrompt);
+        }
     }
 
     /**

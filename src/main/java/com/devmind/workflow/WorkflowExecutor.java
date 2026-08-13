@@ -17,7 +17,6 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -38,13 +37,18 @@ public class WorkflowExecutor {
     private final ObjectMapper objectMapper;
     private final WorkflowConditionEvaluator conditionEvaluator;
     /** 并行组执行线程池（M3-2） */
-    private final ExecutorService parallelExecutor = Executors.newCachedThreadPool();
+    /** 并行组执行线程池：统一有界池，并行步骤有限 */
+    private final ExecutorService parallelExecutor = com.devmind.common.DevMindExecutors.workflowParallel();
     /** 单步工具执行超时（秒）：防止底层调用挂起导致 run 永久 RUNNING（阻塞定时/后续执行） */
     private static final long TOOL_TIMEOUT_SECONDS = 30;
     /** 同一工作流允许的最大排队触发数（超出直接拒绝，防止 webhook 风暴无限堆积） */
     private static final int MAX_QUEUED_PER_WORKFLOW = 10;
     /** 排队等待许可超时（秒）：前一个执行太久时不再干等 */
     private static final long QUEUE_WAIT_SECONDS = 60;
+    /** 步骤级重试次数（P2-3 分级重试）：仅瞬时故障（超时/模型 5xx/限流）重试，其余直接失败 */
+    private static final int STEP_RETRY_MAX = 2;
+    /** 步骤级重试退避（毫秒） */
+    private static final long STEP_RETRY_BACKOFF_MS = 300;
     /** 每工作流执行闸门：permit=1 保证同工作流串行，waiting 统计排队深度 */
     private final ConcurrentHashMap<Long, WorkflowGate> gates = new ConcurrentHashMap<>();
 
@@ -74,8 +78,8 @@ public class WorkflowExecutor {
     public record WorkflowStep(String tool, String paramsJson, String outputVar) {
     }
 
-    /** 执行单元：顺序步骤 / 并行组 / 条件分支（if） */
-    private sealed interface StepUnit permits SequentialUnit, ParallelUnit, IfUnit {
+    /** 执行单元：顺序步骤 / 并行组 / 条件分支（if）/ 循环（loop，P2-2） */
+    private sealed interface StepUnit permits SequentialUnit, ParallelUnit, IfUnit, LoopUnit {
     }
 
     private record SequentialUnit(WorkflowStep step) implements StepUnit {
@@ -86,6 +90,18 @@ public class WorkflowExecutor {
 
     private record IfUnit(String condition, List<StepUnit> thenBranch, List<StepUnit> elseBranch) implements StepUnit {
     }
+
+    /**
+     * 循环单元（P2-2）：条件驱动循环 + 最大轮次上限（安全边界，防死循环）。
+     * 语义：条件为真时执行 body，每轮后重新求值；达到 maxRounds 无条件退出。
+     */
+    private record LoopUnit(String condition, int maxRounds, List<StepUnit> body) implements StepUnit {
+    }
+
+    /** 循环默认最大轮次（未显式配置时的安全边界） */
+    private static final int DEFAULT_LOOP_MAX_ROUNDS = 5;
+    /** 循环配置的最大轮次上限（防配置过大导致失控） */
+    private static final int LOOP_MAX_ROUNDS_CAP = 100;
 
     /**
      * 执行工作流（同步）：逐步骤执行并记录；任一步骤失败则整次 FAILED 停止。
@@ -160,6 +176,29 @@ public class WorkflowExecutor {
         return runRepository.findRun(workflow.tenantId(), runId);
     }
 
+    /**
+     * 循环执行（P2-2）：条件为真执行 body，每轮后重评估；达到 maxRounds 无条件退出。
+     * 防死循环三件套：继续条件（condition）+ 退出条件（condition 为假）+ 安全边界（maxRounds）。
+     */
+    private void executeLoop(LoopUnit loopUnit, Long runId, Map<String, Object> vars, Long userId,
+                             String workflowName, AtomicInteger stepIndex, AtomicReference<String> failure) {
+        int rounds = 0;
+        while (rounds < loopUnit.maxRounds()) {
+            if (failure.get() != null) {
+                return;
+            }
+            boolean continueLoop = conditionEvaluator.evaluate(loopUnit.condition(), vars);
+            if (!continueLoop) {
+                log.info("工作流 {} 循环条件不再满足，退出循环（rounds={}）", workflowName, rounds);
+                return;
+            }
+            rounds++;
+            log.info("工作流 {} 循环第 {} 轮（max={}）", workflowName, rounds, loopUnit.maxRounds());
+            executeUnits(loopUnit.body(), runId, vars, userId, workflowName, stepIndex, failure);
+        }
+        log.warn("工作流 {} 循环达到最大轮次上限 {}，强制退出（防死循环）", workflowName, loopUnit.maxRounds());
+    }
+
     /** 按顺序执行单元列表（条件分支递归） */
     private void executeUnits(List<StepUnit> units, Long runId, Map<String, Object> vars, Long userId,
                               String workflowName, AtomicInteger stepIndex, AtomicReference<String> failure) {
@@ -176,6 +215,8 @@ public class WorkflowExecutor {
                 log.info("工作流 {} 条件 [{}] → {}", workflowName, ifUnit.condition(), matched ? "THEN" : "ELSE");
                 executeUnits(matched ? ifUnit.thenBranch() : ifUnit.elseBranch(),
                         runId, vars, userId, workflowName, stepIndex, failure);
+            } else if (unit instanceof LoopUnit loopUnit) {
+                executeLoop(loopUnit, runId, vars, userId, workflowName, stepIndex, failure);
             }
         }
     }
@@ -199,29 +240,161 @@ public class WorkflowExecutor {
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
     }
 
-    /** 执行单个步骤并记录（失败写入 failure 引用，不抛异常） */
+    /** 执行单个步骤并记录（失败写入 failure 引用，不抛异常）；瞬时故障自动重试（P2-3） */
     private void runStep(WorkflowStep step, int index, Long runId, Map<String, Object> vars, Long userId,
                          String workflowName, AtomicReference<String> failure) {
         String input = fillTemplate(step.paramsJson(), vars);
         long start = System.currentTimeMillis();
-        try {
-            // 提交到线程池执行并带超时（防止底层调用挂起导致 run 永久 RUNNING，阻塞定时/后续执行）
-            String output = executeWithTimeout(step.tool(), input, userId, runId, start);
-            long costMs = System.currentTimeMillis() - start;
-            runRepository.insertStep(runId, index, step.tool(), input, output, "SUCCESS", costMs, null);
-            if (step.outputVar() != null && !step.outputVar().isBlank()) {
-                vars.put(step.outputVar(), output);
-            }
-            log.info("工作流 {} 步骤 {} 成功 (tool={}, cost={}ms)", workflowName, index + 1, step.tool(), costMs);
-        } catch (Exception ex) {
-            long costMs = System.currentTimeMillis() - start;
-            String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-            runRepository.insertStep(runId, index, step.tool(), input, null, "FAILED", costMs, message);
-            log.warn("工作流 {} 步骤 {} 失败 (tool={}): {}", workflowName, index + 1, step.tool(), message);
-            if (failure.get() == null) {
-                failure.set(message);
+        Exception lastError = null;
+        for (int attempt = 0; attempt <= STEP_RETRY_MAX; attempt++) {
+            try {
+                // 提交到线程池执行并带超时（防止底层调用挂起导致 run 永久 RUNNING，阻塞定时/后续执行）
+                String output = executeWithTimeout(step.tool(), input, userId, runId, start);
+                long costMs = System.currentTimeMillis() - start;
+                runRepository.insertStep(runId, index, step.tool(), input, output, "SUCCESS", costMs, null);
+                if (step.outputVar() != null && !step.outputVar().isBlank()) {
+                    vars.put(step.outputVar(), output);
+                }
+                log.info("工作流 {} 步骤 {} 成功 (tool={}, cost={}ms)", workflowName, index + 1, step.tool(), costMs);
+                return;
+            } catch (Exception ex) {
+                lastError = ex;
+                boolean retryable = isRetryable(ex);
+                if (retryable && attempt < STEP_RETRY_MAX) {
+                    log.warn("工作流 {} 步骤 {} 瞬时失败将重试 (attempt={}/{}): {}",
+                            workflowName, index + 1, attempt + 1, STEP_RETRY_MAX,
+                            ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
+                    try {
+                        Thread.sleep(STEP_RETRY_BACKOFF_MS * (attempt + 1));
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                } else {
+                    break;
+                }
             }
         }
+        // 重试耗尽或不可重试：记录 FAILED 并终止本次 run
+        Exception ex = lastError;
+        long costMs = System.currentTimeMillis() - start;
+        String message = ex == null || ex.getMessage() == null
+                ? (ex == null ? "未知错误" : ex.getClass().getSimpleName()) : ex.getMessage();
+        runRepository.insertStep(runId, index, step.tool(), input, null, "FAILED", costMs, message);
+        log.warn("工作流 {} 步骤 {} 失败 (tool={}): {}", workflowName, index + 1, step.tool(), message);
+        if (failure.get() == null) {
+            failure.set(message);
+        }
+    }
+
+    /**
+     * 瞬时故障判定（P2-3 分级重试）：模型调用失败（5xx/网关）、限流（429）可重试；
+     * 网络抖动（连接重置等）可重试。超时挂起不重试（每次重试都要再等完整超时，放大阻塞）；
+     * 业务 4xx（认证/参数/越权）、非幂等写操作失败不重试——重试无用或有资损风险。
+     */
+    private boolean isRetryable(Exception ex) {
+        if (ex instanceof ApiException api) {
+            ErrorCode code = api.getCode();
+            return code == ErrorCode.MODEL_CALL_FAILED
+                    || code == ErrorCode.RATE_LIMITED
+                    || code == ErrorCode.WORKFLOW_BUSY;
+        }
+        String msg = ex.getMessage() == null ? "" : ex.getMessage();
+        // 快速返回的网络瞬时错误可重试；超时（挂起）不重试
+        return msg.contains("Connection reset")
+                || msg.contains("ConnectException")
+                || msg.contains("connect timed out");
+    }
+
+    /**
+     * 断点恢复（P2-3）：对已失败的 run，从首个失败步骤续跑（跳过已成功步骤）。
+     * 已成功步骤的副作用不重复执行；失败点及之后重新执行。
+     */
+    public WorkflowRun resume(Workflow workflow, Long userId, String triggerType,
+                              Map<String, Object> initialVars, Long runId) {
+        List<WorkflowRunStep> steps = runRepository.listSteps(runId);
+        if (steps.isEmpty()) {
+            // 无历史步骤记录：等价于从头执行
+            return executeExistingRun(workflow, userId, triggerType, initialVars, runId);
+        }
+        // 已成功步骤 index 集合（跳过），首个失败 index 作为续跑起点
+        java.util.Set<Integer> successIndexes = new java.util.HashSet<>();
+        int resumeFrom = Integer.MAX_VALUE;
+        for (WorkflowRunStep s : steps) {
+            if ("SUCCESS".equals(s.status())) {
+                successIndexes.add(s.stepIndex());
+            } else if ("FAILED".equals(s.status()) && s.stepIndex() < resumeFrom) {
+                resumeFrom = s.stepIndex();
+            }
+        }
+        List<StepUnit> units = parseUnits(workflow.stepsJson());
+        if (units == null || units.isEmpty()) {
+            runRepository.finishRun(runId, "FAILED", "工作流步骤为空");
+            return runRepository.findRun(workflow.tenantId(), runId);
+        }
+        Map<String, Object> vars = new ConcurrentHashMap<>();
+        if (initialVars != null) {
+            vars.putAll(initialVars);
+        }
+        AtomicInteger stepIndex = new AtomicInteger(0);
+        AtomicReference<String> failure = new AtomicReference<>();
+        executeUnitsResuming(units, runId, vars, userId, workflow.name(),
+                stepIndex, failure, successIndexes, resumeFrom);
+        runRepository.finishRun(runId, failure.get() == null ? "SUCCESS" : "FAILED", failure.get());
+        return runRepository.findRun(workflow.tenantId(), runId);
+    }
+
+    /** 断点恢复专用：跳过程序中已成功步骤的 index，仅从失败点续跑（其余同 executeUnits） */
+    private void executeUnitsResuming(List<StepUnit> units, Long runId, Map<String, Object> vars, Long userId,
+                                      String workflowName, AtomicInteger stepIndex, AtomicReference<String> failure,
+                                      java.util.Set<Integer> successIndexes, int resumeFrom) {
+        for (StepUnit unit : units) {
+            if (failure.get() != null) {
+                break;
+            }
+            if (unit instanceof SequentialUnit sequential) {
+                runStepResuming(sequential.step(), stepIndex.getAndIncrement(), runId, vars, userId,
+                        workflowName, failure, successIndexes, resumeFrom);
+            } else if (unit instanceof ParallelUnit parallel) {
+                runParallelResuming(parallel.steps(), runId, vars, userId, workflowName, stepIndex, failure,
+                        successIndexes, resumeFrom);
+            } else if (unit instanceof IfUnit ifUnit) {
+                boolean matched = conditionEvaluator.evaluate(ifUnit.condition(), vars);
+                executeUnitsResuming(matched ? ifUnit.thenBranch() : ifUnit.elseBranch(),
+                        runId, vars, userId, workflowName, stepIndex, failure, successIndexes, resumeFrom);
+            } else if (unit instanceof LoopUnit loopUnit) {
+                executeLoop(loopUnit, runId, vars, userId, workflowName, stepIndex, failure);
+            }
+        }
+    }
+
+    private void runParallelResuming(List<WorkflowStep> steps, Long runId, Map<String, Object> vars, Long userId,
+                                     String workflowName, AtomicInteger stepIndex, AtomicReference<String> failure,
+                                     java.util.Set<Integer> successIndexes, int resumeFrom) {
+        int[] indexes = new int[steps.size()];
+        for (int i = 0; i < steps.size(); i++) {
+            indexes[i] = stepIndex.getAndIncrement();
+        }
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+        for (int i = 0; i < steps.size(); i++) {
+            final int index = indexes[i];
+            final WorkflowStep step = steps.get(i);
+            futures.add(CompletableFuture.runAsync(
+                    () -> runStepResuming(step, index, runId, vars, userId, workflowName, failure, successIndexes, resumeFrom),
+                    parallelExecutor
+            ));
+        }
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+    }
+
+    private void runStepResuming(WorkflowStep step, int index, Long runId, Map<String, Object> vars, Long userId,
+                                 String workflowName, AtomicReference<String> failure,
+                                 java.util.Set<Integer> successIndexes, int resumeFrom) {
+        // 已成功步骤跳过（不重复执行，避免非幂等副作用）；失败点之前无条件跳过
+        if (index < resumeFrom || successIndexes.contains(index)) {
+            return;
+        }
+        runStep(step, index, runId, vars, userId, workflowName, failure);
     }
 
     /**
@@ -288,6 +461,18 @@ public class WorkflowExecutor {
             return new IfUnit(condition,
                     thenUnits == null ? new ArrayList<>() : thenUnits,
                     elseUnits == null ? new ArrayList<>() : elseUnits);
+        }
+        // 循环：{"loop": "条件", "maxRounds": N, "steps": [...]}
+        String loopCondition = node.path("loop").asText("");
+        if (!loopCondition.isBlank()) {
+            JsonNode stepsNode = node.path("steps");
+            List<StepUnit> body = parseUnitsFromNode(stepsNode);
+            if (body == null) {
+                return null;
+            }
+            int maxRounds = node.path("maxRounds").asInt(DEFAULT_LOOP_MAX_ROUNDS);
+            maxRounds = Math.min(Math.max(maxRounds, 1), LOOP_MAX_ROUNDS_CAP);
+            return new LoopUnit(loopCondition, maxRounds, body);
         }
         // 并行组：{"parallel": [{step}, ...]}
         JsonNode parallel = node.path("parallel");

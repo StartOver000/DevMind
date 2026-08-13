@@ -14,7 +14,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * 定时工作流调度：每分钟扫描启用且 trigger_type=cron 的工作流，
@@ -34,7 +33,8 @@ public class WorkflowScheduler {
     private final WorkflowRunRepository runRepository;
     /** 每个工作流最近一次触发的分钟键（防重复触发） */
     private final Map<Long, String> lastTriggerMinute = new ConcurrentHashMap<>();
-    private final ExecutorService executionPool = Executors.newCachedThreadPool();
+    /** 定时触发执行池：统一有界池 */
+    private final ExecutorService executionPool = com.devmind.common.DevMindExecutors.scheduler();
 
     public WorkflowScheduler(WorkflowRepository repository, WorkflowExecutor executor,
                              WorkflowRunRepository runRepository) {

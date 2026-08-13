@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -45,7 +46,17 @@ class ChatRouterCircuitBreakerTest {
                 "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
                 4, 3, 5000, 5, 60000, 60000, 0.7, 0.3, true, "mock", "mysql", "", "", "", 2000, "heuristic", 5,
                 0.00015, 0.0006, fallbackBaseUrl, "fallback-key", "fallback-model", "", "", "glm-4.7-flash",
-                "embedding-2", 2000, false, true, "", "", ""
+                "embedding-2", 2000, false, true, "", "", "", "", "", ""
+        );
+    }
+
+    /** 带便宜档配置的属性（P2-4b 模型分级路由） */
+    private DevMindProperties cheapProperties(String cheapBaseUrl) {
+        return new DevMindProperties(
+                "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
+                4, 3, 5000, 5, 60000, 60000, 0.7, 0.3, true, "mock", "mysql", "", "", "", 2000, "heuristic", 5,
+                0.00015, 0.0006, "", "fallback-key", "fallback-model", "", "", "glm-4.7-flash",
+                "embedding-2", 2000, false, true, "", "", "", cheapBaseUrl, "cheap-key", "cheap-model"
         );
     }
 
@@ -259,6 +270,74 @@ class ChatRouterCircuitBreakerTest {
 
         // 备用只被调用 1 次（超时快速放弃，而非退避重试 3 次）：server.verify() 在有多余请求时会失败
         server.verify();
+        verify(primaryGateway, times(1)).chat(anyString(), anyString());
+    }
+
+    // ---------- P2-4b 模型分级路由（tier） ----------
+
+    @Test
+    void chatCheapUsesCheapTierWhenConfigured() {
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restClientBuilder).build();
+        server.expect(requestTo("https://cheap.example.com/chat/completions"))
+                .andRespond(withSuccess(
+                        """
+                        {"choices":[{"message":{"content":"分类结果"}}]}
+                        """,
+                        MediaType.APPLICATION_JSON
+                ));
+        when(secretCipher.resolve(anyString())).thenReturn("cheap-secret");
+        router = new ChatRouter(
+                primaryGateway,
+                restClientBuilder,
+                cheapProperties("https://cheap.example.com"),
+                secretCipher,
+                new InMemoryCircuitStateStore(),
+                new SimpleMeterRegistry()
+        );
+
+        AiModelGateway.ChatResult result = router.chatCheap("分类", "这个订单是已发货吗");
+
+        // 便宜档命中，未走主链
+        assertThat(result.content()).isEqualTo("分类结果");
+        server.verify();
+        verify(primaryGateway, never()).chat(anyString(), anyString());
+    }
+
+    @Test
+    void chatCheapFallsBackToPrimaryWhenCheapUnavailable() {
+        // 便宜档未配置 → 直接走主链
+        when(primaryGateway.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult("主链结果", "mock", 0, 0));
+
+        AiModelGateway.ChatResult result = router.chatCheap("分类", "问题");
+
+        assertThat(result.content()).isEqualTo("主链结果");
+        verify(primaryGateway, times(1)).chat(anyString(), anyString());
+    }
+
+    @Test
+    void chatCheapFallsBackToPrimaryWhenCheapFails() {
+        // 配置便宜档但调用失败（网络错误）→ 回退主链，不牺牲可用性
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restClientBuilder).build();
+        server.expect(requestTo("https://cheap.example.com/chat/completions"))
+                .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators
+                        .withServerError());
+        when(secretCipher.resolve(anyString())).thenReturn("cheap-secret");
+        when(primaryGateway.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult("主链兜底", "mock", 0, 0));
+        router = new ChatRouter(
+                primaryGateway,
+                restClientBuilder,
+                cheapProperties("https://cheap.example.com"),
+                secretCipher,
+                new InMemoryCircuitStateStore(),
+                new SimpleMeterRegistry()
+        );
+
+        AiModelGateway.ChatResult result = router.chatCheap("分类", "问题");
+
+        // cheap 失败 → 回退主链
+        assertThat(result.content()).isEqualTo("主链兜底");
         verify(primaryGateway, times(1)).chat(anyString(), anyString());
     }
 }

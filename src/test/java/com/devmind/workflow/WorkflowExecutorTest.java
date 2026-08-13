@@ -458,4 +458,130 @@ class WorkflowExecutorTest {
         verify(runRepository).insertRun(1L, 1L, "manual");
         verify(runRepository).insertRun(2L, 1L, "manual");
     }
+
+    // ---------- P2-3 分级重试 + 断点恢复 ----------
+
+    @Test
+    void retriesTransientNetworkErrorThenSucceeds() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        // 前两次抛连接重置（快速瞬时错误，可重试），第三次成功
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenThrow(new RuntimeException("Connection reset by peer"))
+                .thenThrow(new RuntimeException("Connection reset by peer"))
+                .thenReturn("OK");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"tool":"a","params":{},"output_var":"v"}]
+                """;
+        WorkflowRun result = executor.execute(workflow(stepsJson), 1L, "manual");
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        // 总共尝试 3 次（1 次 + 2 次重试），最终 SUCCESS
+        verify(toolRegistry, times(3)).execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(runRepository).insertStep(eq(100L), eq(0), eq("a"), anyString(), anyString(), eq("SUCCESS"), anyLong(), eq(null));
+    }
+
+    @Test
+    void doesNotRetryBusiness4xxFailure() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        // 认证/业务失败（INVALID_ARGUMENT，4xx）不可重试 → 只尝试 1 次
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenThrow(new ApiException(com.devmind.common.ErrorCode.INVALID_ARGUMENT, "认证失败"));
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "FAILED"));
+
+        String stepsJson = """
+                [{"tool":"a","params":{},"output_var":"v"}]
+                """;
+        WorkflowRun result = executor.execute(workflow(stepsJson), 1L, "manual");
+
+        assertThat(result.status()).isEqualTo("FAILED");
+        verify(toolRegistry, times(1)).execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(runRepository).insertStep(eq(100L), eq(0), eq("a"), anyString(), eq(null), eq("FAILED"), anyLong(), anyString());
+    }
+
+    @Test
+    void resumeSkipsSucceededStepsAndContinuesFromFailure() {
+        when(toolRegistry.execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(200L))).thenReturn("B");
+        // 已有历史：步骤 0 成功、步骤 1 失败（b 之前失败）
+        when(runRepository.listSteps(200L)).thenReturn(List.of(
+                new WorkflowRunStep(1L, 200L, 0, "a", "{}", "A", "SUCCESS", 10L, null, "t1"),
+                new WorkflowRunStep(2L, 200L, 1, "b", "{}", null, "FAILED", 10L, "b 挂了", "t2")
+        ));
+        when(runRepository.findRun(1L, 200L)).thenReturn(run(200L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"tool":"a","params":{},"output_var":"va"},
+                 {"tool":"b","params":{},"output_var":"vb"}]
+                """;
+        WorkflowRun result = executor.resume(workflow(stepsJson), 1L, "manual", null, 200L);
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        // a 已成功跳过不重跑；b 从失败点续跑
+        verify(toolRegistry, never()).execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(200L));
+        verify(toolRegistry).execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(200L));
+        verify(runRepository).finishRun(eq(200L), eq("SUCCESS"), eq(null));
+    }
+
+    // ---------- P2-2 工作流 Loop ----------
+
+    @Test
+    void loopExitsWhenConditionBecomesFalse() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        // 计数器递增：1,2,3 → 第 3 轮后 {{counter}} < 3 为假，正常退出（未达 maxRounds=10）
+        java.util.concurrent.atomic.AtomicInteger counter = new java.util.concurrent.atomic.AtomicInteger(0);
+        org.mockito.Mockito.doAnswer(inv -> String.valueOf(counter.incrementAndGet())).when(toolRegistry)
+                .execute(eq("tick"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"loop":"{{counter}} < 3","maxRounds":10,"steps":[
+                   {"tool":"tick","params":{},"output_var":"counter"}]}]
+                """;
+        WorkflowRun result = executor.execute(workflow(stepsJson), 1L, "manual");
+
+        // 正常退出（3 轮），未触发死循环
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        verify(toolRegistry, times(3)).execute(eq("tick"), anyString(), eq(1L), eq("workflow"), eq(100L));
+    }
+
+    @Test
+    void loopStopsAtMaxRoundsEvenIfConditionStillTrue() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        // 计数器永远为 1 → 条件 {{counter}} < 3 恒真 → 靠 maxRounds 兜底退出
+        org.mockito.Mockito.doAnswer(inv -> "1").when(toolRegistry)
+                .execute(eq("tick"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"loop":"{{counter}} < 3","maxRounds":3,"steps":[
+                   {"tool":"tick","params":{},"output_var":"counter"}]}]
+                """;
+        WorkflowRun result = executor.execute(workflow(stepsJson), 1L, "manual");
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        // 循环 3 轮后强制退出（防死循环兜底）
+        verify(toolRegistry, times(3)).execute(eq("tick"), anyString(), eq(1L), eq("workflow"), eq(100L));
+    }
+
+    @Test
+    void loopNotEnteredWhenConditionInitiallyFalse() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        // {{counter}} 未定义（空）→ 条件为假 → 不进入循环
+        String stepsJson = """
+                [{"loop":"{{counter}} > 3","maxRounds":5,"steps":[
+                   {"tool":"tick","params":{},"output_var":"counter"}]}]
+                """;
+        WorkflowRun result = executor.execute(workflow(stepsJson), 1L, "manual");
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        verify(toolRegistry, never()).execute(eq("tick"), anyString(), eq(1L), eq("workflow"), eq(100L));
+    }
 }

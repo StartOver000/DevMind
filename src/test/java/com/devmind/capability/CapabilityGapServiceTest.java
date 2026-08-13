@@ -38,7 +38,8 @@ class CapabilityGapServiceTest {
         chatRouter = mock(ChatRouter.class);
         openApiImportService = mock(OpenApiImportService.class);
         userService = mock(UserService.class);
-        service = new CapabilityGapService(chatRouter, openApiImportService, userService, new ObjectMapper());
+        service = new CapabilityGapService(chatRouter, openApiImportService, userService, new ObjectMapper(),
+                org.mockito.Mockito.mock(com.devmind.security.LlmInputGuard.class));
         when(userService.tenantIdOf(1L)).thenReturn(1L);
     }
 

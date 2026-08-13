@@ -71,6 +71,7 @@ public class RetrievalEvaluationService {
         double recall5Sum = 0;
         double recall10Sum = 0;
         double ndcg10Sum = 0;
+        double faithfulnessSum = 0;
         for (EvaluationQuestion question : QUESTIONS) {
             topicStats.computeIfAbsent(question.topic(), k -> new int[2]);
             topicStats.get(question.topic())[0]++;
@@ -105,6 +106,11 @@ public class RetrievalEvaluationService {
             recall5Sum += metrics.recall5();
             recall10Sum += metrics.recall10();
             ndcg10Sum += metrics.ndcg10();
+            // 生成质量近似（P2-5）：期望答案的关键事实是否被检索片段覆盖——生成有依据的比例
+            faithfulnessSum += FaithfulnessScorer.score(
+                    question.expected(),
+                    top.stream().map(RetrievalResult::content).toList()
+            );
             items.add(new EvaluationItem(
                     question.question(),
                     question.expected(),
@@ -132,6 +138,7 @@ public class RetrievalEvaluationService {
                 total == 0 ? 0 : recall5Sum / total,
                 total == 0 ? 0 : recall10Sum / total,
                 total == 0 ? 0 : ndcg10Sum / total,
+                total == 0 ? 0 : faithfulnessSum / total,
                 items,
                 topics
         );

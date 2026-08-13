@@ -121,4 +121,40 @@ class AgentMemoryManagerTest {
 
         verify(memoryRepository, never()).upsert(anyLong(), anyString(), anyString());
     }
+
+    // ---------- P2-1 分层记忆选择 ----------
+
+    @Test
+    void selectKeepsManualCoreAlwaysAndFiltersAutoByKeyword() {
+        List<MemoryItem> memory = List.of(
+                new MemoryItem(1L, "语言", "java", "manual", null, null),
+                new MemoryItem(2L, "风格", "简洁", "manual", null, null),
+                new MemoryItem(3L, "项目", "订单系统", "auto", null, null),
+                new MemoryItem(4L, "偏好", "喜欢咖啡", "auto", null, null)
+        );
+
+        List<MemoryItem> selected = manager.selectForQuestion(memory, "帮我查订单");
+
+        // 核心（manual）常驻；auto 只保留命中"订单"的场景记忆
+        assertThat(selected).extracting(item -> item.id()).containsExactlyInAnyOrder(1L, 2L, 3L);
+    }
+
+    @Test
+    void selectFallsBackToAllWhenNoAutoHit() {
+        List<MemoryItem> memory = List.of(
+                new MemoryItem(1L, "语言", "java", "manual", null, null),
+                new MemoryItem(3L, "项目", "订单系统", "auto", null, null)
+        );
+
+        List<MemoryItem> selected = manager.selectForQuestion(memory, "今天天气如何");
+
+        // 无命中 → 回退全量（核心 + 场景），保证偏好不漏
+        assertThat(selected).hasSize(2);
+    }
+
+    @Test
+    void selectReturnsEmptyForEmptyInput() {
+        assertThat(manager.selectForQuestion(List.of(), "问题")).isEmpty();
+        assertThat(manager.selectForQuestion(null, "问题")).isEmpty();
+    }
 }

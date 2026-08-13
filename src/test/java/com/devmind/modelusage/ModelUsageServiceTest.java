@@ -67,4 +67,17 @@ class ModelUsageServiceTest {
         ModelUsageService service = service(new DevMindQuotaProperties(1, 0.0));
         service.record(1L, "evaluation", "model", 10, 5, "prompt", "completion");
     }
+
+    @Test
+    void blocksWhenDailyCostExceeded() {
+        // 日成本上限 0.001；当日已累计 0.001 → 拒绝（callsLimit=0 跳过次数检查，只查成本）
+        ModelUsageService service = service(new DevMindQuotaProperties(0, 0.001));
+        when(jdbcTemplate.queryForObject(anyString(), eq(java.math.BigDecimal.class), any(), any()))
+                .thenReturn(java.math.BigDecimal.valueOf(0.001));
+
+        assertThatThrownBy(() -> service.record(1L, "chat", "model", 10, 5, "p", "c"))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).getCode())
+                .isEqualTo(ErrorCode.QUOTA_EXCEEDED);
+    }
 }

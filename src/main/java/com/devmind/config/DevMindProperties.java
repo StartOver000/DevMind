@@ -48,6 +48,11 @@ public record DevMindProperties(
         // 第二备用模型（如硅基流动免费模型），进一步兜底
         @DefaultValue("") String modelFallback2BaseUrl,
         @DefaultValue("") String modelFallback2ApiKey,
-        @DefaultValue("") String modelFallback2ChatModel
+        @DefaultValue("") String modelFallback2ChatModel,
+        // 便宜档模型（P2-4b 模型分级路由）：简单任务（意图分类/摘要）走便宜档，省成本；
+        // 配置为空则不启用分级（全部走主链）
+        @DefaultValue("") String modelCheapBaseUrl,
+        @DefaultValue("") String modelCheapApiKey,
+        @DefaultValue("") String modelCheapChatModel
 ) {
 }

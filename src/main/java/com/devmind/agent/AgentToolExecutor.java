@@ -33,9 +33,9 @@ public class AgentToolExecutor {
     private final AgentMemoryRepository memoryRepository;
     private final UserService userService;
     private final ObjectMapper objectMapper = new ObjectMapper();
-    /** 工具执行线程池（配合超时熔断） */
+    /** 工具执行线程池（配合超时熔断）：统一有界池，命名线程 + 上限 + 队列 */
     private final java.util.concurrent.ExecutorService toolExecutor =
-            java.util.concurrent.Executors.newCachedThreadPool();
+            com.devmind.common.DevMindExecutors.toolExecutor();
 
     /** 可选注入：技能匹配器（load_skill 命中计数）；测试/未启用为 null */
     private SkillMatcher skillMatcher;

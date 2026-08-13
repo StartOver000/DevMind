@@ -23,7 +23,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * Webhook 触发端点（M3-1）：
@@ -49,8 +48,8 @@ public class WebhookController {
     private final PromptInjectionDetector injectionDetector;
     /** 是否对 webhook payload 做 Prompt 注入检测（P2 安全专项，默认开启） */
     private final boolean injectionCheckEnabled;
-    /** 异步触发的后台执行线程池 */
-    private final ExecutorService asyncExecutor = Executors.newCachedThreadPool();
+    /** 异步触发的后台执行线程池：统一有界池，防外部回调风暴耗尽资源 */
+    private final ExecutorService asyncExecutor = com.devmind.common.DevMindExecutors.webhookAsync();
 
     public WebhookController(
             WorkflowRepository repository,

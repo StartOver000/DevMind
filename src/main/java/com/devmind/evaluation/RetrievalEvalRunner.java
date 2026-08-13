@@ -76,9 +76,10 @@ public class RetrievalEvalRunner implements ApplicationRunner {
                 new EvaluationRequest(EVAL_KB_ID, null, "heuristic"),
                 1L
         );
-        log.info("当前配置（vectorWeight={}）：total={} hitRate={} MRR={} Recall@5={} Recall@10={} NDCG@10={}",
+        log.info("当前配置（vectorWeight={}）：total={} hitRate={} MRR={} Recall@5={} Recall@10={} NDCG@10={} Faithfulness={}",
                 properties.retrievalVectorWeight(), report.total(), round(report.hitRate()),
-                round(report.mrr()), round(report.recall5()), round(report.recall10()), round(report.ndcg10()));
+                round(report.mrr()), round(report.recall5()), round(report.recall10()),
+                round(report.ndcg10()), round(report.faithfulness()));
         writeReport(report);
         if (args.containsOption("update-baseline")) {
             writeBaseline(report);
@@ -102,15 +103,19 @@ public class RetrievalEvalRunner implements ApplicationRunner {
             JsonNode baseline = objectMapper.readTree(Files.readString(base));
             double baseMrr = baseline.path("mrr").asDouble(0);
             double baseRecall10 = baseline.path("recall10").asDouble(0);
+            double baseFaithfulness = baseline.path("faithfulness").asDouble(0);
             boolean regressed = (baseMrr > 0 && report.mrr() < baseMrr * REGRESSION_THRESHOLD)
-                    || (baseRecall10 > 0 && report.recall10() < baseRecall10 * REGRESSION_THRESHOLD);
+                    || (baseRecall10 > 0 && report.recall10() < baseRecall10 * REGRESSION_THRESHOLD)
+                    || (baseFaithfulness > 0 && report.faithfulness() < baseFaithfulness * REGRESSION_THRESHOLD);
             if (regressed) {
                 meterRegistry.counter("devmind.retrieval.regression").increment();
-                log.error("[GUARD] FAIL 检索质量回退：MRR={}（基线 {}）Recall@10={}（基线 {}），请检查检索配置或知识库变更",
-                        round(report.mrr()), baseMrr, round(report.recall10()), baseRecall10);
+                log.error("[GUARD] FAIL 检索/生成质量回退：MRR={}（基线 {}）Recall@10={}（基线 {}）Faithfulness={}（基线 {}），请检查检索配置或知识库变更",
+                        round(report.mrr()), baseMrr, round(report.recall10()), baseRecall10,
+                        round(report.faithfulness()), baseFaithfulness);
             } else {
-                log.info("[GUARD] PASS 检索质量护栏通过：MRR={}（基线 {}），Recall@10={}（基线 {}）",
-                        round(report.mrr()), baseMrr, round(report.recall10()), baseRecall10);
+                log.info("[GUARD] PASS 检索/生成质量护栏通过：MRR={}（基线 {}），Recall@10={}（基线 {}），Faithfulness={}（基线 {}）",
+                        round(report.mrr()), baseMrr, round(report.recall10()), baseRecall10,
+                        round(report.faithfulness()), baseFaithfulness);
             }
         } catch (Exception ex) {
             log.warn("基线对比失败: {}", ex.getMessage());
@@ -132,6 +137,7 @@ public class RetrievalEvalRunner implements ApplicationRunner {
                       "recall5": %.4f,
                       "recall10": %.4f,
                       "ndcg10": %.4f,
+                      "faithfulness": %.4f,
                       "vectorWeight": %s,
                       "updatedAt": "%s"
                     }
@@ -144,6 +150,7 @@ public class RetrievalEvalRunner implements ApplicationRunner {
                     report.recall5(),
                     report.recall10(),
                     report.ndcg10(),
+                    report.faithfulness(),
                     properties.retrievalVectorWeight(),
                     OffsetDateTime.now()
             ));

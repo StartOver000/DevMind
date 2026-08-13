@@ -7,17 +7,17 @@
 
 | 场景 | 并发 | 时长 | 总请求 | 成功率 | QPS | P50 | P95 | Max | 说明 |
 |------|------|------|--------|--------|-----|-----|-----|-----|------|
-| 纯语义检索 `POST /api/knowledge-bases/{id}/search` | 16 | 20s | 3372 | 100% | **167.8** | 94ms | 128ms | 167ms | 向量+关键词混合检索（pgvector HNSW + mock embed），不调 LLM |
+| 纯语义检索 `POST /api/knowledge-bases/{id}/search` | 16 | 30s | 5508 | 100% | **183.1** | 86ms | 119ms | 170ms | 向量+关键词混合检索（pgvector HNSW + mock embed），不调 LLM；已含 L1 内存缓存 + 池 20 优化 |
 | 工作流编排 `POST /api/workflows/{id}/run`（5 个轮流） | 5 | 20s | 4165 | 100% | **208.0** | 21.5ms | 41.2ms | 77.5ms | 并发触发排队串行（per-workflow 闸门），多工作流并行 |
 | CRUD 读 `GET /api/tools` | 16 | 20s | 37700 | 100% | **1885** | 7.7ms | 13.2ms | 125.4ms | 列表查询（含鉴权/限流/审计链路） |
 | RAG 问答端到端 `POST /api/knowledge-bases/{id}/chat` | 8 | 20s | 33 | 100% | 1.4 | 4554ms | 6924ms | 20085ms | 含 mock LLM 全链路（检索+生成+落库），QPS 由 LLM 链路上限决定 |
 
 ## 结论与解读
 
-1. **平台核心链路吞吐**：检索 ~168 QPS / 工作流 ~208 QPS / CRUD ~1885 QPS，均 100% 成功——单机作品场景余量充足。
+1. **平台核心链路吞吐**：检索 ~183 QPS / 工作流 ~208 QPS / CRUD ~1885 QPS，均 100% 成功——单机作品场景余量充足。
 2. **RAG 端到端慢是 LLM 链路主导**（mock 下仍 ~5s/次：检索+生成+多轮上下文+落库全链路），平台自身检索只占 ~95ms。真实模型下该数值取决于 AI 供应商，压测它没有平台价值（这是当初给 chat 场景加 mock 守卫的原因）。
 3. **历史归因纠正**：早前 workflow 压测 3.1% 成功率根因是**全局限流 120/min**（429 RATE_LIMITED），非并发缺陷；调高限流后同参数 100%。
-4. 检索 P50 94ms 的可优化点（若需要）：embedding_cache 命中、SQL 索引、topK 限制——当前基线作为"改动前后对比"的参照。
+4. **检索性能已优化**（`CachedEmbeddingGateway` L1 内存缓存 + Hikari 池 10→20）：QPS 167.8→183.1（+9%）、P50 94→86ms（-12%）、热请求 ~18ms；详细分析见 `report-search.md`。
 
 ## 复现命令
 ```bash

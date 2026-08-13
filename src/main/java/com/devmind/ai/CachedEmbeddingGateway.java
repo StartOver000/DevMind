@@ -4,21 +4,28 @@ import com.devmind.common.HashUtils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 
 /**
  * 模型网关装饰器：
- * 1. Embedding 结果按内容哈希缓存（相同文本不重复调用嵌入模型）；
+ * 1. Embedding 结果按内容哈希缓存（相同文本不重复调用嵌入模型）——两级缓存：
+ *    L1 进程内内存缓存（高频同问题直接命中，省 DB 往返）+ L2 embedding_cache 表（跨实例共享）；
  * 2. 并发信号量限制同时进行的模型调用，缓解上游 429 限流。
  */
 public class CachedEmbeddingGateway implements AiModelGateway {
 
     private static final int MAX_CONCURRENCY = 2;
+    /** L1 内存缓存上限：超过后整体清空（向量集合通常很小，简单可靠；重启即失效） */
+    private static final int MAX_MEMORY_CACHE = 2000;
 
     private final AiModelGateway delegate;
     private final EmbeddingCacheRepository cache;
     private final Semaphore semaphore = new Semaphore(MAX_CONCURRENCY);
+    /** L1 内存缓存：sha256(text) → vector。命中则跳过 DB 查询（检索/问答高频同问题场景显著降低延迟与连接竞争） */
+    private final Map<String, List<Double>> memoryCache = new ConcurrentHashMap<>();
 
     public CachedEmbeddingGateway(AiModelGateway delegate, EmbeddingCacheRepository cache) {
         this.delegate = delegate;
@@ -32,8 +39,17 @@ public class CachedEmbeddingGateway implements AiModelGateway {
         List<Integer> missingIndexes = new ArrayList<>();
         for (int i = 0; i < texts.size(); i++) {
             String text = texts.get(i);
-            Optional<List<Double>> cached = cache.find(HashUtils.sha256(text));
+            String key = HashUtils.sha256(text);
+            // L1：进程内内存命中（高频同问题，零 DB 往返）
+            List<Double> mem = memoryCache.get(key);
+            if (mem != null) {
+                result.add(mem);
+                continue;
+            }
+            // L2：embedding_cache 表（跨实例共享）
+            Optional<List<Double>> cached = cache.find(key);
             if (cached.isPresent()) {
+                memoryCache.put(key, cached.get());
                 result.add(cached.get());
             } else {
                 result.add(null);
@@ -47,6 +63,10 @@ public class CachedEmbeddingGateway implements AiModelGateway {
                 List<Double> vector = computed.get(j);
                 result.set(missingIndexes.get(j), vector);
                 cache.put(HashUtils.sha256(missing.get(j)), vector);
+                memoryCache.put(HashUtils.sha256(missing.get(j)), vector);
+            }
+            if (memoryCache.size() > MAX_MEMORY_CACHE) {
+                memoryCache.clear();
             }
         }
         return result;

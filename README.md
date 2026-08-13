@@ -1,5 +1,7 @@
 # DevMind
 
+[![CI](https://github.com/StartOver000/DevMind/actions/workflows/ci.yml/badge.svg)](https://github.com/StartOver000/DevMind/actions/workflows/ci.yml)
+
 面向研发团队的 AI 知识检索与智能诊断平台。支持文档上传解析与向量入库、RAG 问答与引用溯源、SQL 执行计划诊断、多知识库聚合问答、多租户与团队隔离、模型限流降级与熔断。
 
 ## 功能总览

@@ -55,11 +55,22 @@ public class WorkflowService {
     }
 
     public List<Workflow> list(Long userId) {
-        return repository.listAll(userService.tenantIdOf(userId));
+        Long tenantId = userService.tenantIdOf(userId);
+        List<Workflow> all = repository.listAll(tenantId);
+        if (userService.isAdmin(userId)) {
+            return all;
+        }
+        // private 工作流仅创建者可见（同租户其他用户不可见）
+        return all.stream()
+                .filter(w -> !"private".equals(w.scope()) || w.createdBy().equals(userId))
+                .toList();
     }
 
     public Workflow get(Long id, Long userId) {
-        return requireWorkflow(userService.tenantIdOf(userId), id);
+        Long tenantId = userService.tenantIdOf(userId);
+        Workflow workflow = requireWorkflow(tenantId, id);
+        requireVisible(workflow, userId);
+        return workflow;
     }
 
     @Transactional
@@ -84,6 +95,7 @@ public class WorkflowService {
     public Workflow update(Long id, WorkflowCreateRequest req, Long userId) {
         Long tenantId = userService.tenantIdOf(userId);
         Workflow existing = requireWorkflow(tenantId, id);
+        requireManageable(existing, userId);
         validateSteps(req.stepsJson(), userId);
         validateTrigger(req.triggerType(), req.cronExpr());
         Workflow updated = new Workflow(
@@ -101,7 +113,8 @@ public class WorkflowService {
 
     public void delete(Long id, Long userId) {
         Long tenantId = userService.tenantIdOf(userId);
-        requireWorkflow(tenantId, id);
+        Workflow existing = requireWorkflow(tenantId, id);
+        requireManageable(existing, userId);
         repository.softDelete(tenantId, id);
         log.info("删除工作流 (id={}, by user={})", id, userId);
     }
@@ -110,6 +123,7 @@ public class WorkflowService {
     public WorkflowRun run(Long id, Long userId) {
         Long tenantId = userService.tenantIdOf(userId);
         Workflow workflow = requireWorkflow(tenantId, id);
+        requireVisible(workflow, userId);
         if (!"ENABLED".equals(workflow.status())) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流已停用");
         }
@@ -119,27 +133,31 @@ public class WorkflowService {
 
     public List<WorkflowRun> runList(Long workflowId, int limit, Long userId) {
         Long tenantId = userService.tenantIdOf(userId);
-        requireWorkflow(tenantId, workflowId);
+        Workflow workflow = requireWorkflow(tenantId, workflowId);
+        requireVisible(workflow, userId);
         return runRepository.listRuns(tenantId, workflowId, Math.min(limit, 50));
     }
 
-    /** 运行详情：run + 步骤明细 */
+    /** 运行详情：run + 步骤明细（校验所属工作流可见性） */
     public WorkflowRunDetail runDetail(Long runId, Long userId) {
         Long tenantId = userService.tenantIdOf(userId);
         WorkflowRun run = runRepository.findRun(tenantId, runId);
         if (run == null) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "运行记录不存在: " + runId);
         }
+        Workflow workflow = requireWorkflow(tenantId, run.workflowId());
+        requireVisible(workflow, userId);
         return new WorkflowRunDetail(run, runRepository.listSteps(runId));
     }
 
     public record WorkflowRunDetail(WorkflowRun run, List<WorkflowRunStep> steps) {
     }
 
-    /** 工作流 webhook 触发信息（创建者/同租户可见）：token 与调用 URL */
+    /** 工作流 webhook 触发信息（创建者/admin 可见）：token 与调用 URL */
     public Map<String, Object> webhookInfo(Long workflowId, Long userId) {
         Long tenantId = userService.tenantIdOf(userId);
         Workflow workflow = requireWorkflow(tenantId, workflowId);
+        requireManageable(workflow, userId);
         String token = repository.findWebhookToken(tenantId, workflowId);
         boolean enabled = "webhook".equals(workflow.triggerType());
         return Map.of(
@@ -179,6 +197,23 @@ public class WorkflowService {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流不存在: " + id);
         }
         return workflow;
+    }
+
+    /** 可见性校验：team 工作流同租户可见；private 仅创建者/admin（参照 SkillService.requireVisible） */
+    private void requireVisible(Workflow workflow, Long userId) {
+        if ("private".equals(workflow.scope())
+                && !workflow.createdBy().equals(userId)
+                && !userService.isAdmin(userId)) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "无权查看该工作流");
+        }
+    }
+
+    /** 可管理校验：创建者或 admin 可改/删/查 webhook token（参照 SkillService.requireManageable） */
+    private void requireManageable(Workflow workflow, Long userId) {
+        if (workflow.createdBy().equals(userId) || userService.isAdmin(userId)) {
+            return;
+        }
+        throw new ApiException(ErrorCode.FORBIDDEN, "无权操作该工作流");
     }
 
     /** 校验触发配置：cron 触发时 cron 表达式必填且合法 */

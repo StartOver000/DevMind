@@ -95,12 +95,12 @@ def percentiles(latencies_ms):
 
 def main():
     parser = argparse.ArgumentParser(description="DevMind 压测基线（P2）")
-    parser.add_argument("--endpoint", choices=["chat", "workflow"], required=True,
-                        help="chat=RAG 问答 | workflow=工作流执行")
-    parser.add_argument("--kb-id", type=int, help="知识库 ID（endpoint=chat 必填）")
+    parser.add_argument("--endpoint", choices=["chat", "workflow", "search"], required=True,
+                        help="chat=RAG 问答 | workflow=工作流执行 | search=纯语义检索（不调 LLM）")
+    parser.add_argument("--kb-id", type=int, help="知识库 ID（endpoint=chat/search 必填）")
     parser.add_argument("--workflow-id", help="工作流 ID（endpoint=workflow 必填；逗号分隔可传多个，轮流压测）")
     parser.add_argument("--question", default="深分页为什么慢",
-                        help="RAG 测试问题（endpoint=chat，默认：深分页为什么慢）")
+                        help="测试问题（endpoint=chat/search，默认：深分页为什么慢）")
     parser.add_argument("--base-url", default="http://localhost:8090")
     parser.add_argument("--headers", default='{"X-User-Id":"1"}',
                         help="额外请求头（JSON），默认 X-User-Id=1")
@@ -113,20 +113,22 @@ def main():
     parser.add_argument("--report", help="输出 Markdown 报告文件路径（可选）")
     args = parser.parse_args()
 
-    if args.endpoint == "chat":
-        # 安全守卫：RAG 问答会调用 AI 模型（有成本）。除非显式确认当前是 mock 模式，
-        # 否则拒绝执行，避免误压真实模型导致费用（及污染基线）。
+    if args.endpoint in ("chat", "search"):
+        # 安全守卫：chat 调用完整 AI 链路（生成有成本）；search 也调用 embedding（mock 守卫一致，
+        # 防止真实 embedding 供应商被打）。除非显式确认当前是 mock 模式，否则拒绝执行。
         if not args.confirm_mock_model:
-            log("【安全拦截】chat（RAG 问答）场景会调用 AI 模型产生费用。\n"
+            log("【安全拦截】chat/search 场景会调用 AI（embedding）产生费用。\n"
                 "如确认当前服务为 mock 模式（model-mode=mock，不调用真实 AI），请加 --confirm-mock-model 重试。\n"
                 "注意：仅 spring.profiles.active=mock 不够——.env 等环境变量可能覆盖 model-mode。")
             sys.exit(1)
         if not args.kb_id:
-            log("endpoint=chat 需要 --kb-id")
+            log("endpoint=chat/search 需要 --kb-id")
             sys.exit(1)
-        urls = [f"{args.base_url}/api/knowledge-bases/{args.kb_id}/chat"]
+        path = "chat" if args.endpoint == "chat" else "search"
+        urls = [f"{args.base_url}/api/knowledge-bases/{args.kb_id}/{path}"]
         payloads = [{"question": args.question, "topK": 3}]
-        scenario = f"RAG 问答（KB={args.kb_id}）"
+        scenario = (f"RAG 问答（KB={args.kb_id}）" if args.endpoint == "chat"
+                    else f"纯语义检索（KB={args.kb_id}，不调 LLM）")
     else:
         if not args.workflow_id:
             log("endpoint=workflow 需要 --workflow-id")

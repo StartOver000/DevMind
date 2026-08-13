@@ -15,3 +15,6 @@ frontend/node_modules/
 frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
+
+# 运行日志目录（误跟踪历史文件已解除）
+logs/

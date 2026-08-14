@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,22 +40,34 @@ public class ZhipuRestModelGateway implements AiModelGateway {
         return secretCipher.resolve(properties.zhipuApiKey());
     }
 
+    /** 智谱 embedding-2 单请求 input 数组上限（code 1214） */
+    private static final int EMBED_BATCH_SIZE = 24;
+
     @Override
     public List<List<Double>> embed(List<String> texts) {
-        EmbeddingResponse response = retry(() -> {
-            RestClient client = client();
-            return client.post()
-                    .uri("/embeddings")
-                    .header("Authorization", "Bearer " + apiKey())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(Map.of("model", properties.zhipuEmbeddingModel(), "input", texts))
-                    .retrieve()
-                    .body(EmbeddingResponse.class);
-        });
-        if (response == null || response.data() == null) {
-            throw new IllegalStateException("智谱向量接口返回为空");
+        // 防御一：智谱 embedding 不接受 input 数组含 null（HTTP 400 code 1210），null 统一转空串
+        List<String> cleaned = texts.stream().map(t -> t == null ? "" : t).toList();
+        // 防御二：智谱 embedding-2 单请求 input 数组上限 24 条（code 1214），分批调用后合并
+        List<List<Double>> all = new ArrayList<>();
+        for (int from = 0; from < cleaned.size(); from += EMBED_BATCH_SIZE) {
+            List<String> batch = cleaned.subList(from, Math.min(from + EMBED_BATCH_SIZE, cleaned.size()));
+            List<String> batchCopy = new ArrayList<>(batch);
+            EmbeddingResponse response = retry(() -> {
+                RestClient client = client();
+                return client.post()
+                        .uri("/embeddings")
+                        .header("Authorization", "Bearer " + apiKey())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(Map.of("model", properties.zhipuEmbeddingModel(), "input", batchCopy))
+                        .retrieve()
+                        .body(EmbeddingResponse.class);
+            });
+            if (response == null || response.data() == null) {
+                throw new IllegalStateException("智谱向量接口返回为空");
+            }
+            all.addAll(response.data().stream().map(EmbeddingResponse.Data::embedding).toList());
         }
-        return response.data().stream().map(EmbeddingResponse.Data::embedding).toList();
+        return all;
     }
 
     @Override

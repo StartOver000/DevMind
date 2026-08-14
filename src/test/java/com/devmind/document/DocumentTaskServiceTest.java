@@ -13,6 +13,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -142,6 +143,44 @@ class DocumentTaskServiceTest {
         verify(documentRepository).updateStatus(10L, "COMPLETED", null);
         verify(taskRepository).markSucceeded(1L);
         verify(chunkRepository).updateChunksIncremental(eq(10L), any(), any(), any(), any());
+    }
+
+    @Test
+    void nullChunkContentIsSentAsEmptyStringToEmbed(@TempDir Path tempDir) throws Exception {
+        DocumentTaskService service = new DocumentTaskService(
+                taskRepository,
+                documentRepository,
+                parserRegistry,
+                chunkerFactory,
+                chunkRepository,
+                modelGateway,
+                new InMemoryTaskQueue(taskExecutor),
+                taskScheduler,
+                properties,
+                meterRegistry
+        );
+        Path file = tempDir.resolve("b.md");
+        Files.writeString(file, "hello");
+        DocumentTask task = new DocumentTask(1L, 10L, "PENDING", 0, 3, null, null, null);
+        Document document = new Document(
+                10L, 1L, "b.md", "markdown", 5L, file.toString(), "hash", "UPLOADED", null, null, null, null, Map.of()
+        );
+        when(taskRepository.findById(1L)).thenReturn(Optional.of(task));
+        when(taskRepository.claimForProcessing(1L)).thenReturn(true);
+        when(documentRepository.findById(10L)).thenReturn(Optional.of(document));
+        when(parserRegistry.parse(anyString(), anyString(), any(byte[].class))).thenReturn("hello");
+        // 分片产生 content=null 的 chunk（模拟解析异常）——以前会触发智谱 embedding 400（code 1210）
+        when(textChunker.chunk("hello")).thenReturn(List.of(new TextChunk(0, null, "title")));
+        when(chunkRepository.findHashSetByDocument(any())).thenReturn(new java.util.HashSet<>());
+        when(modelGateway.embed(anyList())).thenReturn(List.of(List.of(1.0, 0.0)));
+
+        service.processTask(1L);
+
+        // embed 收到的列表不含 null（防御转空串），智谱不会 400
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> captor = ArgumentCaptor.forClass(List.class);
+        verify(modelGateway).embed(captor.capture());
+        assertThat(captor.getValue()).containsExactly("");
     }
 
     @Test

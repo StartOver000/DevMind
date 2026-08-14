@@ -116,17 +116,23 @@ public class DocumentTaskService {
             List<TextChunk> changedChunks = new ArrayList<>();
             List<String> removedHashes = new ArrayList<>();
             for (TextChunk chunk : chunks) {
-                String hash = HashUtils.sha256(chunk.content());
+                // 防御：content 为 null 的 chunk（解析异常产物）在哈希/embedding 前转空串，避免 NPE 与智谱 400
+                String content = chunk.content() == null ? "" : chunk.content();
+                String hash = HashUtils.sha256(content);
                 if (existingHashes.remove(hash)) {
                     meterRegistry.counter("devmind.document.reused").increment();
                 } else {
-                    changedChunks.add(chunk);
+                    changedChunks.add(new TextChunk(chunk.index(), content, chunk.heading()));
                 }
             }
             removedHashes.addAll(existingHashes);
             List<List<Double>> embeddings = changedChunks.isEmpty()
                     ? List.of()
-                    : modelGateway.embed(changedChunks.stream().map(TextChunk::content).toList());
+                    : modelGateway.embed(changedChunks.stream()
+                            .map(TextChunk::content)
+                            // 防御：智谱 embedding 不接受 input 数组含 null（HTTP 400 code 1210），null 统一转空串
+                            .map(content -> content == null ? "" : content)
+                            .toList());
             chunkRepository.updateChunksIncremental(
                     document.id(),
                     changedChunks,

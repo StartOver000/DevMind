@@ -104,6 +104,84 @@ class ChatServiceTest {
     }
 
     @Test
+    void conversationTitleGeneratedViaAutoTier() {
+        DevMindProperties properties = new DevMindProperties(
+                "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
+                4, 3, 5000, 5, 60000, 60000, 0.7, 0.3, true, "mock", "mysql", "", "", "", 2000, "heuristic", 5,
+                0.00015, 0.0006, "", "", "", "", "", "glm-4.7-flash", "embedding-2", 2000, false, true, "", "", "", "", "", ""
+        );
+        ChatService service = new ChatService(
+                knowledgeBaseService,
+                chatRepository,
+                retrievalService,
+                reranker,
+                modelGateway,
+                chatRouter,
+                auditLogService,
+                modelUsageService,
+                userService,
+                properties,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry(),
+                io.micrometer.observation.ObservationRegistry.create()
+        );
+        KnowledgeBase knowledgeBase = new KnowledgeBase(1L, "kb", null, "ENABLED", 1L, null, null, null);
+        when(knowledgeBaseService.requireEnabledKnowledgeBaseAccess(1L, 1L)).thenReturn(knowledgeBase);
+        when(modelGateway.embed(anyList())).thenReturn(List.of(List.of(1.0, 0.0)));
+        when(retrievalService.searchHybrid(
+                any(), any(), any(), anyInt(), anyDouble(), anyDouble(), anyDouble(), anyBoolean(), any()
+        )).thenReturn(List.of());
+        when(reranker.rerank(anyString(), anyList(), anyInt())).thenReturn(List.of());
+        // G8：会话标题走自动选档（便宜档生成）
+        when(chatRouter.chatAuto(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult("查询订单状态", "cheap", 0, 0));
+        when(chatRepository.createConversation(eq(1L), eq("查询订单状态"), eq(1L))).thenReturn(100L);
+
+        service.chat(1L, new ChatRequest("帮我查一下订单状态", null, null, null), 1L);
+
+        // 标题用的是便宜档生成的结果，不是截断
+        verify(chatRepository).createConversation(eq(1L), eq("查询订单状态"), eq(1L));
+    }
+
+    @Test
+    void conversationTitleFallsBackToTruncationOnAutoTierFailure() {
+        DevMindProperties properties = new DevMindProperties(
+                "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
+                4, 3, 5000, 5, 60000, 60000, 0.7, 0.3, true, "mock", "mysql", "", "", "", 2000, "heuristic", 5,
+                0.00015, 0.0006, "", "", "", "", "", "glm-4.7-flash", "embedding-2", 2000, false, true, "", "", "", "", "", ""
+        );
+        ChatService service = new ChatService(
+                knowledgeBaseService,
+                chatRepository,
+                retrievalService,
+                reranker,
+                modelGateway,
+                chatRouter,
+                auditLogService,
+                modelUsageService,
+                userService,
+                properties,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry(),
+                io.micrometer.observation.ObservationRegistry.create()
+        );
+        KnowledgeBase knowledgeBase = new KnowledgeBase(1L, "kb", null, "ENABLED", 1L, null, null, null);
+        when(knowledgeBaseService.requireEnabledKnowledgeBaseAccess(1L, 1L)).thenReturn(knowledgeBase);
+        when(modelGateway.embed(anyList())).thenReturn(List.of(List.of(1.0, 0.0)));
+        when(retrievalService.searchHybrid(
+                any(), any(), any(), anyInt(), anyDouble(), anyDouble(), anyDouble(), anyBoolean(), any()
+        )).thenReturn(List.of());
+        when(reranker.rerank(anyString(), anyList(), anyInt())).thenReturn(List.of());
+        // 便宜档生成失败 → 标题回退截断（不阻塞问答）
+        when(chatRouter.chatAuto(anyString(), anyString()))
+                .thenThrow(new RuntimeException("cheap down"));
+        when(chatRepository.createConversation(eq(1L), eq("帮我查一下订单状态"), eq(1L))).thenReturn(100L);
+
+        service.chat(1L, new ChatRequest("帮我查一下订单状态", null, null, null), 1L);
+
+        // 失败回退：标题为问题截断
+        verify(chatRepository).createConversation(eq(1L), eq("帮我查一下订单状态"), eq(1L));
+    }
+
+    @Test
     void degradesToLocalRagWhenModelFails() {
         DevMindProperties properties = new DevMindProperties(
                 "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,

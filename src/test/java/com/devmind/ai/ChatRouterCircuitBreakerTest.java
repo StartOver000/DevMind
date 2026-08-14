@@ -340,4 +340,56 @@ class ChatRouterCircuitBreakerTest {
         assertThat(result.content()).isEqualTo("主链兜底");
         verify(primaryGateway, times(1)).chat(anyString(), anyString());
     }
+
+    // ---------- G8 按任务复杂度自动选档（chatAuto） ----------
+
+    @Test
+    void chatAutoRoutesSimpleTaskToCheapTier() {
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restClientBuilder).build();
+        server.expect(requestTo("https://cheap.example.com/chat/completions"))
+                .andRespond(withSuccess(
+                        """
+                        {"choices":[{"message":{"content":"查询订单状态"}}]}
+                        """,
+                        MediaType.APPLICATION_JSON
+                ));
+        when(secretCipher.resolve(anyString())).thenReturn("cheap-secret");
+        router = new ChatRouter(
+                primaryGateway,
+                restClientBuilder,
+                cheapProperties("https://cheap.example.com"),
+                secretCipher,
+                new InMemoryCircuitStateStore(),
+                new SimpleMeterRegistry()
+        );
+
+        // 短 system prompt、无工具/JSON 特征 → 判为简单任务走便宜档
+        AiModelGateway.ChatResult result = router.chatAuto("你是标题生成器。压缩成标题。", "查询订单状态");
+
+        assertThat(result.content()).isEqualTo("查询订单状态");
+        server.verify();
+        verify(primaryGateway, never()).chat(anyString(), anyString());
+    }
+
+    @Test
+    void chatAutoRoutesComplexTaskToPrimary() {
+        when(primaryGateway.chat(anyString(), anyString()))
+                .thenReturn(new AiModelGateway.ChatResult("复杂结果", "mock", 0, 0));
+        router = new ChatRouter(
+                primaryGateway,
+                restClientBuilder,
+                cheapProperties("https://cheap.example.com"),
+                secretCipher,
+                new InMemoryCircuitStateStore(),
+                new SimpleMeterRegistry()
+        );
+
+        // 含工具清单/JSON/输出要求 → 判为复杂任务走主链（即使配置了便宜档）
+        AiModelGateway.ChatResult result = router.chatAuto(
+                "你是 Agent 编排器。可用工具：kb_search、sql_diagnose。输出 JSON 步骤数组。输出要求：严格遵守格式。",
+                "把订单流程编排成工作流");
+
+        assertThat(result.content()).isEqualTo("复杂结果");
+        verify(primaryGateway, times(1)).chat(anyString(), anyString());
+    }
 }

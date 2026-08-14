@@ -112,6 +112,37 @@ public class ChatRouter {
     }
 
     /**
+     * 自动选档（G8 按任务复杂度分级路由）：根据系统提示特征判断任务复杂度，
+     * 简单任务（意图分类/标题生成/短摘要）走便宜档，复杂任务（Agent/编排/工具调用）走主链。
+     * 便宜档未配置或调用失败自动回退主链——只省成本，不牺牲可用性。
+     * 调用方也可显式走 {@link #chatCheap} 或 {@link #chat} 覆盖自动决策。
+     */
+    public AiModelGateway.ChatResult chatAuto(String systemPrompt, String userPrompt) {
+        if (isSimpleTask(systemPrompt)) {
+            return chatCheap(systemPrompt, userPrompt);
+        }
+        return chat(systemPrompt, userPrompt);
+    }
+
+    /**
+     * 简单任务启发式：系统提示短（<300 字符）且不含工具/JSON/编排指令特征。
+     * 面向"意图分类/标题生成/短摘要"这类输入输出短、效果不敏感的任务；
+     * 复杂任务（Agent 编排/工具 schema/严格输出格式）必须走主链。
+     */
+    private boolean isSimpleTask(String systemPrompt) {
+        if (systemPrompt == null || systemPrompt.length() > 300) {
+            return false;
+        }
+        String lower = systemPrompt.toLowerCase();
+        return !lower.contains("工具")
+                && !lower.contains("json")
+                && !lower.contains("输出要求")
+                && !lower.contains("step")
+                && !lower.contains("步骤")
+                && !lower.contains("schema");
+    }
+
+    /**
      * 从配置构建备用 Provider 列表。
      * 顺序即降级顺序：先国内直连（硅基流动，上线无需梯子），再海外（OpenRouter，最后兜底）。
      */

@@ -250,10 +250,28 @@ public class ChatService {
         return cleaned.isEmpty() ? Map.of() : Map.of("tags", cleaned);
     }
 
+    /**
+     * 会话标题（G8 自动选档）：走便宜档生成一句话标题（简单任务，省成本）；
+     * 便宜档未配置/生成失败/结果异常时回退截断——标题生成不影响主流程可用性。
+     */
+    private String buildTitle(String question) {
+        try {
+            AiModelGateway.ChatResult result = chatRouter.chatAuto(
+                    "你是标题生成器。把用户问题压缩成 20 字以内的一句话标题，只输出标题本身，不要引号、不要解释。",
+                    question);
+            String title = result == null || result.content() == null ? "" : result.content().trim();
+            if (!title.isEmpty() && title.length() <= 50) {
+                return title;
+            }
+        } catch (Exception ex) {
+            log.warn("会话标题生成失败，回退截断: {}", ex.getMessage());
+        }
+        return question.length() <= 50 ? question : question.substring(0, 50);
+    }
+
     private Long resolveConversation(Long knowledgeBaseId, String question, Long conversationId, Long userId) {
         if (conversationId == null) {
-            String title = question.length() <= 50 ? question : question.substring(0, 50);
-            return chatRepository.createConversation(knowledgeBaseId, title, userId);
+            return chatRepository.createConversation(knowledgeBaseId, buildTitle(question), userId);
         }
         Conversation conversation = chatRepository.findConversationById(conversationId)
                 .orElseThrow(() -> new ApiException(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在"));

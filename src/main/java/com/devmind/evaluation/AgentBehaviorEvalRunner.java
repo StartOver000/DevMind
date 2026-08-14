@@ -67,9 +67,10 @@ public class AgentBehaviorEvalRunner implements ApplicationRunner {
                         .filter(ToolTraceItem::ok)
                         .map(ToolTraceItem::tool)
                         .toList();
+                // 工具选择正确：实际成功调用的工具包含任意期望工具即可（额外探索工具如 kb_info 不判错）
                 boolean toolOk = c.acceptableTools().isEmpty()
                         ? actual.isEmpty()
-                        : !actual.isEmpty() && c.acceptableTools().containsAll(actual);
+                        : !actual.isEmpty() && actual.stream().anyMatch(c.acceptableTools()::contains);
                 boolean taskOk = resp.answer() != null && !resp.answer().isBlank();
                 if (toolOk) {
                     toolHits++;

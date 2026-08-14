@@ -41,6 +41,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -174,6 +175,37 @@ class AgentServiceTest {
         verify(conversationRepository).saveTrace(eq(100L), eq("kb_search"), anyString(), eq(true), anyLong());
         verify(conversationRepository).saveMessage(eq(100L), eq("user"), anyString());
         verify(conversationRepository).saveMessage(eq(100L), eq("assistant"), anyString());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void injectsConvergenceHintOnRepeatedToolCall() {
+        AgentTool tool = kbTool();
+        when(tool.execute(anyString(), any())).thenReturn(
+                "[{\"documentName\":\"a.md\",\"content\":\"RAG 是检索增强生成\",\"similarityScore\":0.9}]"
+        );
+        AgentService service = service(new ToolRegistry(List.of(tool)));
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        // 第 1、2 次都调用 kb_search（重复），第 3 次直接回答——真实模型反复调同一工具的场景
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("c1", "kb_search", "{\"question\":\"什么是 RAG\"}"))),
+                        new AiModelGateway.ChatResult("", "m", 0, 0,
+                                List.of(new AiModelGateway.ToolCall("c2", "kb_search", "{\"question\":\"什么是 RAG\"}"))),
+                        new AiModelGateway.ChatResult("RAG 是检索增强生成。", "m", 0, 0)
+                );
+
+        AgentChatResponse response = service.chat(new AgentChatRequest(0L, "什么是 RAG？", null), 1L);
+
+        assertThat(response.answer()).contains("检索增强生成");
+        // 第 2 次调用时 messages 已注入收敛提示（防止真实模型兜圈子耗尽轮数）
+        ArgumentCaptor<List<Map<String, Object>>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatRouter, times(3)).chatWithTools(anyString(), captor.capture(), anyList());
+        boolean hintInjected = captor.getAllValues().stream().anyMatch(msgs -> msgs.stream().anyMatch(m ->
+                "system".equals(m.get("role"))
+                        && String.valueOf(m.get("content")).contains("不要重复调用同一工具")));
+        assertThat(hintInjected).isTrue();
     }
 
     @Test

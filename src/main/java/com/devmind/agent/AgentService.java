@@ -343,6 +343,8 @@ public class AgentService {
         try {
             // 计划失败后是否还能引导模型重规划（限 1 次，避免死循环）
             boolean replanAllowed = true;
+            // 上一轮工具名（重复调用收敛检测：真实模型下防止兜圈子耗尽轮数）
+            List<String> lastToolNames = List.of();
             for (int round = 0; round <= MAX_TOOL_ROUNDS; round++) {
                 AiModelGateway.ChatResult result = chatRouter.chatWithTools(SYSTEM_PROMPT, messages, tools);
                 if (result == null) {
@@ -418,6 +420,16 @@ public class AgentService {
                         trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
                     }
                 }
+                // 重复工具调用收敛：连续调用相同工具时注入提示（真实模型下防止兜圈子耗尽轮数）
+                if (isRepeatToolCall(toolCalls, lastToolNames)) {
+                    meterRegistry.counter("devmind.agent.repeat_hint").increment();
+                    log.warn("agent 重复调用工具 {}，注入收敛提示", lastToolNames);
+                    messages.add(Map.of(
+                            "role", "system",
+                            "content", "【提示】你已经调用过相同工具并拿到了结果（见上方工具返回）。请直接基于已有结果回答用户问题，不要重复调用同一工具。"
+                    ));
+                }
+                lastToolNames = toolCalls.stream().map(AiModelGateway.ToolCall::name).toList();
                 // 计划中有步骤失败：提示模型重新规划（仅一次），下一轮模型可提交新计划或直接回答
                 if (hasPlan && !planAllOk && replanAllowed) {
                     meterRegistry.counter("devmind.agent.replan_total").increment();
@@ -515,6 +527,22 @@ public class AgentService {
     /** 删除单条长期记忆（P2：委托记忆管理） */
     public void deleteMemory(Long id, Long userId) {
         memoryManager.deleteMemory(id, userId);
+    }
+
+    /**
+     * 重复工具调用检测（收敛）：本轮工具名集合与上一轮相同（未引入新工具）且非空 → 判定重复。
+     * 用于注入"不要重复调用同一工具"提示，给模型一次收敛机会，避免真实模型兜圈子耗尽轮数。
+     */
+    private boolean isRepeatToolCall(List<AiModelGateway.ToolCall> toolCalls, List<String> lastToolNames) {
+        if (toolCalls == null || toolCalls.isEmpty() || lastToolNames.isEmpty()) {
+            return false;
+        }
+        for (AiModelGateway.ToolCall tc : toolCalls) {
+            if (!lastToolNames.contains(tc.name())) {
+                return false; // 本轮引入新工具，不算重复
+            }
+        }
+        return true;
     }
 
     private AgentChatResponse fallbackToLocalRag(

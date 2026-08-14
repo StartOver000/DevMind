@@ -72,7 +72,11 @@ public class RetrievalEvaluationService {
         double recall10Sum = 0;
         double ndcg10Sum = 0;
         double faithfulnessSum = 0;
-        for (EvaluationQuestion question : QUESTIONS) {
+        // 按知识库过滤：每个评估集只测对应知识库的题（2026-08-14 黄金评估集改造）
+        List<EvaluationQuestion> kbQuestions = QUESTIONS.stream()
+                .filter(q -> knowledgeBaseId.equals(q.knowledgeBaseId()))
+                .toList();
+        for (EvaluationQuestion question : kbQuestions) {
             topicStats.computeIfAbsent(question.topic(), k -> new int[2]);
             topicStats.get(question.topic())[0]++;
             List<Double> vector = modelGateway.embed(List.of(question.question())).get(0);
@@ -128,7 +132,7 @@ public class RetrievalEvaluationService {
                         entry.getValue()[0] == 0 ? 0 : (double) entry.getValue()[1] / entry.getValue()[0]
                 ))
                 .toList();
-        int total = questions().size();
+        int total = kbQuestions.size();
         double hitRate = total == 0 ? 0 : (double) hits / total;
         return new RetrievalEvaluationResponse(
                 total,
@@ -144,67 +148,63 @@ public class RetrievalEvaluationService {
         );
     }
 
-    private List<EvaluationQuestion> questions() {
-        return QUESTIONS;
-    }
-
-    record EvaluationQuestion(String question, String expected, String topic) {
+    record EvaluationQuestion(Long knowledgeBaseId, String question, String expected, String topic) {
+        /** 兼容旧 3 参构造：默认知识库 19（AI 八股） */
+        EvaluationQuestion(String question, String expected, String topic) {
+            this(19L, question, expected, topic);
+        }
     }
 
     static final List<EvaluationQuestion> QUESTIONS = List.of(
-            // ===== MySQL 索引与深分页（20 条，覆盖 MySQL索引专题.md） =====
-            new EvaluationQuestion("MySQL 深分页为什么会慢", "深分页", "MySQL索引"),
-            new EvaluationQuestion("深分页怎么优化", "深分页", "MySQL索引"),
-            new EvaluationQuestion("延迟关联是什么", "延迟关联", "MySQL索引"),
-            new EvaluationQuestion("索引失效有哪些场景", "索引失效", "MySQL索引"),
-            new EvaluationQuestion("左模糊查询为什么慢", "左模糊", "MySQL索引"),
-            new EvaluationQuestion("对索引列使用函数会怎样", "索引", "MySQL索引"),
-            new EvaluationQuestion("隐式类型转换导致什么问题", "索引", "MySQL索引"),
-            new EvaluationQuestion("最左前缀原则是什么意思", "最左前缀", "MySQL索引"),
-            new EvaluationQuestion("联合索引怎么用", "联合索引", "MySQL索引"),
-            new EvaluationQuestion("EXPLAIN 看哪些字段", "执行计划", "MySQL索引"),
-            new EvaluationQuestion("type=ALL 是什么问题", "全表扫描", "MySQL索引"),
-            new EvaluationQuestion("Using filesort 怎么解决", "filesort", "MySQL索引"),
-            new EvaluationQuestion("Using temporary 怎么优化", "临时表", "MySQL索引"),
-            new EvaluationQuestion("覆盖索引有什么好处", "覆盖索引", "MySQL索引"),
-            new EvaluationQuestion("order by 为什么慢", "索引", "MySQL索引"),
-            new EvaluationQuestion("group by 为什么慢", "索引", "MySQL索引"),
-            new EvaluationQuestion("join 太慢怎么排查", "执行计划", "MySQL索引"),
-            new EvaluationQuestion("慢查询怎么定位", "执行计划", "MySQL索引"),
-            new EvaluationQuestion("索引基数是什么", "索引", "MySQL索引"),
-            new EvaluationQuestion("count 大表怎么优化", "索引", "MySQL索引"),
-            // ===== SQL 优化场景（10 条） =====
-            new EvaluationQuestion("LIMIT OFFSET 大偏移量为什么慢", "深分页", "SQL优化"),
-            new EvaluationQuestion("游标分页怎么做", "深分页", "SQL优化"),
-            new EvaluationQuestion("回表查询是什么", "索引", "SQL优化"),
-            new EvaluationQuestion("前缀索引怎么用", "索引", "SQL优化"),
-            new EvaluationQuestion("复合索引顺序怎么定", "联合索引", "SQL优化"),
-            new EvaluationQuestion("排序为什么走 filesort", "filesort", "SQL优化"),
-            new EvaluationQuestion("为什么会产生临时表", "临时表", "SQL优化"),
-            new EvaluationQuestion("全表扫描什么时候会触发", "全表扫描", "SQL优化"),
-            new EvaluationQuestion("如何避免 select 全列扫描", "覆盖索引", "SQL优化"),
-            new EvaluationQuestion("建索引要考虑哪些因素", "索引", "SQL优化"),
-            // ===== RAG 与检索（10 条，知识库平台能力） =====
-            new EvaluationQuestion("向量检索的原理是什么", "向量", "RAG检索"),
-            new EvaluationQuestion("混合检索有什么好处", "混合", "RAG检索"),
-            new EvaluationQuestion("什么是 RAG", "RAG", "RAG检索"),
-            new EvaluationQuestion("embedding 是什么", "Embedding", "RAG检索"),
-            new EvaluationQuestion("切块大小影响检索效果吗", "切块", "RAG检索"),
-            new EvaluationQuestion("重排序能提升检索精度吗", "Rerank", "RAG检索"),
-            new EvaluationQuestion("知识库文档怎么入库", "文档", "RAG检索"),
-            new EvaluationQuestion("检索相似度阈值怎么设置", "检索", "RAG检索"),
-            new EvaluationQuestion("关键词检索和向量检索区别", "混合", "RAG检索"),
-            new EvaluationQuestion("检索评估怎么看命中率", "评估", "RAG检索"),
-            // ===== 运维与容量（10 条） =====
-            new EvaluationQuestion("PostgreSQL 怎么建向量索引", "索引", "运维容量"),
-            new EvaluationQuestion("pgvector 支持哪些索引", "索引", "运维容量"),
-            new EvaluationQuestion("数据库备份怎么恢复", "备份", "运维容量"),
-            new EvaluationQuestion("日志文件怎么按天切割", "日志", "运维容量"),
-            new EvaluationQuestion("服务异常退出怎么自动重启", "重启", "运维容量"),
-            new EvaluationQuestion("Nginx 反代怎么配 HTTPS", "Nginx", "运维容量"),
-            new EvaluationQuestion("监控指标看哪些", "监控", "运维容量"),
-            new EvaluationQuestion("数据库连接池满了怎么办", "连接", "运维容量"),
-            new EvaluationQuestion("容器重启策略怎么配置", "重启", "运维容量"),
-            new EvaluationQuestion("生产环境数据怎么备份", "备份", "运维容量")
+            // ===== 知识库 19：AI 工程八股（JavaGuide-AI 专题，20 条；expected 均为库内真实关键词）=====
+            new EvaluationQuestion(19L, "向量检索的原理是什么", "向量", "RAG检索"),
+            new EvaluationQuestion(19L, "什么是 RAG", "RAG", "RAG检索"),
+            new EvaluationQuestion(19L, "embedding 是什么", "Embedding", "RAG检索"),
+            new EvaluationQuestion(19L, "混合检索有什么好处", "混合", "RAG检索"),
+            new EvaluationQuestion(19L, "切块大小影响检索效果吗", "切块", "RAG检索"),
+            new EvaluationQuestion(19L, "重排序能提升检索精度吗", "Rerank", "RAG检索"),
+            new EvaluationQuestion(19L, "知识库文档怎么入库", "文档", "RAG检索"),
+            new EvaluationQuestion(19L, "关键词检索和向量检索区别", "混合", "RAG检索"),
+            new EvaluationQuestion(19L, "检索评估怎么看命中率", "评估", "RAG检索"),
+            new EvaluationQuestion(19L, "RAG 怎么减少幻觉", "幻觉", "RAG优化"),
+            new EvaluationQuestion(19L, "RAG 检索质量怎么评估", "评估", "RAG优化"),
+            new EvaluationQuestion(19L, "Prompt 工程有哪些技巧", "Prompt", "Prompt工程"),
+            new EvaluationQuestion(19L, "Agent 的记忆怎么设计", "记忆", "Agent"),
+            new EvaluationQuestion(19L, "Function Calling 是什么", "Function", "Agent"),
+            new EvaluationQuestion(19L, "结构化输出怎么实现", "结构化", "Agent"),
+            new EvaluationQuestion(19L, "MCP 是什么", "MCP", "MCP"),
+            new EvaluationQuestion(19L, "LLM 网关是什么", "网关", "LLM网关"),
+            new EvaluationQuestion(19L, "LLM 评估有哪些指标", "评估", "LLM评估"),
+            new EvaluationQuestion(19L, "GraphRAG 是什么", "GraphRAG", "GraphRAG"),
+            new EvaluationQuestion(19L, "pgvector 支持哪些索引", "索引", "向量库"),
+            // ===== 知识库 20：Java 后端八股（JavaGuide 精选，28 条；expected 均为库内真实关键词）=====
+            new EvaluationQuestion(20L, "ThreadLocal 的原理是什么", "ThreadLocal", "Java并发"),
+            new EvaluationQuestion(20L, "ThreadLocal 会内存泄漏吗", "ThreadLocal", "Java并发"),
+            new EvaluationQuestion(20L, "synchronized 和 volatile 的区别", "synchronized", "Java并发"),
+            new EvaluationQuestion(20L, "volatile 能保证原子性吗", "volatile", "Java并发"),
+            new EvaluationQuestion(20L, "CAS 是什么", "CAS", "Java并发"),
+            new EvaluationQuestion(20L, "AQS 是什么", "AQS", "Java并发"),
+            new EvaluationQuestion(20L, "什么是死锁怎么避免", "死锁", "Java并发"),
+            new EvaluationQuestion(20L, "线程池的核心参数有哪些", "线程池", "Java并发"),
+            new EvaluationQuestion(20L, "线程池拒绝策略有哪些", "线程池", "Java并发"),
+            new EvaluationQuestion(20L, "HashMap 的底层结构", "HashMap", "Java集合"),
+            new EvaluationQuestion(20L, "ConcurrentHashMap 为什么线程安全", "ConcurrentHashMap", "Java集合"),
+            new EvaluationQuestion(20L, "ArrayList 和 LinkedList 区别", "ArrayList", "Java集合"),
+            new EvaluationQuestion(20L, "CopyOnWriteArrayList 的原理", "CopyOnWrite", "Java集合"),
+            new EvaluationQuestion(20L, "JVM 内存区域有哪些", "JVM", "JVM"),
+            new EvaluationQuestion(20L, "垃圾回收算法有哪些", "垃圾回收", "JVM"),
+            new EvaluationQuestion(20L, "类加载过程是什么", "类加载", "JVM"),
+            new EvaluationQuestion(20L, "双亲委派模型是什么", "双亲委派", "JVM"),
+            new EvaluationQuestion(20L, "JMM 是什么", "JMM", "JVM"),
+            new EvaluationQuestion(20L, "MySQL 索引为什么会失效", "索引", "数据库"),
+            new EvaluationQuestion(20L, "什么情况下会走慢查询", "慢查询", "数据库"),
+            new EvaluationQuestion(20L, "数据库事务隔离级别有哪些", "事务", "数据库"),
+            new EvaluationQuestion(20L, "Redis 缓存穿透怎么解决", "Redis", "Redis"),
+            new EvaluationQuestion(20L, "Redis 数据过期策略有哪些", "Redis", "Redis"),
+            new EvaluationQuestion(20L, "Spring 事务失效场景有哪些", "事务", "Spring"),
+            new EvaluationQuestion(20L, "Spring AOP 的实现原理", "AOP", "Spring"),
+            new EvaluationQuestion(20L, "RabbitMQ 消息丢失怎么解决", "RabbitMQ", "消息队列"),
+            new EvaluationQuestion(20L, "Kafka 为什么快", "Kafka", "消息队列"),
+            new EvaluationQuestion(20L, "RocketMQ 事务消息原理", "RocketMQ", "消息队列")
     );
 }

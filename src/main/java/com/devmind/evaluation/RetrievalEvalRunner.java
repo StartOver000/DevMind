@@ -38,6 +38,8 @@ public class RetrievalEvalRunner implements ApplicationRunner {
 
     /** 评估使用的知识库（JavaGuide 专题库） */
     private static final long EVAL_KB_ID = 19L;
+    /** 当前评估知识库：默认 19，可用 --kb=<id> 指定（如知识库 20 Java 八股） */
+    private long evalKbId = EVAL_KB_ID;
     private static final double[] ALPHA_CANDIDATES = {0.1, 0.3, 0.5, 0.7, 0.9};
     /** 回退告警阈值：低于基线 5% 即告警 */
     private static final double REGRESSION_THRESHOLD = 0.95;
@@ -71,9 +73,19 @@ public class RetrievalEvalRunner implements ApplicationRunner {
         if (!args.containsOption("eval")) {
             return;
         }
-        log.info("=== 离线检索评估开始（知识库 {}）===", EVAL_KB_ID);
+        if (args.containsOption("kb")) {
+            List<String> v = args.getOptionValues("kb");
+            if (v != null && !v.isEmpty()) {
+                try {
+                    evalKbId = Long.parseLong(v.get(0));
+                } catch (NumberFormatException ex) {
+                    log.warn("--kb 参数无效，使用默认知识库 {}: {}", EVAL_KB_ID, ex.getMessage());
+                }
+            }
+        }
+        log.info("=== 离线检索评估开始（知识库 {}）===", evalKbId);
         RetrievalEvaluationResponse report = evaluationService.evaluate(
-                new EvaluationRequest(EVAL_KB_ID, null, "heuristic"),
+                new EvaluationRequest(evalKbId, null, "heuristic"),
                 1L
         );
         log.info("当前配置（vectorWeight={}）：total={} hitRate={} MRR={} Recall@5={} Recall@10={} NDCG@10={} Faithfulness={}",
@@ -162,7 +174,11 @@ public class RetrievalEvalRunner implements ApplicationRunner {
 
     /** α 网格寻优：同一批问题只 embed 一次，换混合权重跑检索，取 MRR 最优 */
     private void runAlphaSearch() {
-        List<RetrievalEvaluationService.EvaluationQuestion> questions = RetrievalEvaluationService.QUESTIONS;
+        // 只评估当前知识库的题（2026-08-14 黄金评估集改造：避免其他知识库的题稀释 MRR 导致 α 恒等假象）
+        List<RetrievalEvaluationService.EvaluationQuestion> questions =
+                RetrievalEvaluationService.QUESTIONS.stream()
+                        .filter(q -> q.knowledgeBaseId() == evalKbId)
+                        .toList();
         Map<String, List<Double>> vectorCache = new HashMap<>();
         for (RetrievalEvaluationService.EvaluationQuestion q : questions) {
             try {
@@ -183,7 +199,7 @@ public class RetrievalEvalRunner implements ApplicationRunner {
                     continue;
                 }
                 List<RetrievalResult> results = retrievalService.searchHybrid(
-                        EVAL_KB_ID,
+                        evalKbId,
                         vector,
                         q.question(),
                         10,

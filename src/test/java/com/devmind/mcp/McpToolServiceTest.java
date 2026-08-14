@@ -1,6 +1,7 @@
 package com.devmind.mcp;
 
 import com.devmind.agent.ToolRegistry;
+import com.devmind.config.McpSecurityProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -13,6 +14,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -32,7 +34,8 @@ class McpToolServiceTest {
     @BeforeEach
     void setUp() {
         registry = new ToolRegistry(List.of());
-        service = new McpToolService(repository, registry, new ObjectMapper()) {
+        service = new McpToolService(repository, registry, new ObjectMapper(),
+                new McpSecurityProperties("npx,node,python,uvx")) {
             @Override
             protected McpSyncClient createClient(McpServerDefinition def) {
                 return client;
@@ -75,5 +78,53 @@ class McpToolServiceTest {
         assertThat(registry.has("mcp_demo_echo")).isFalse();
         assertThat(service.isConnected(1L)).isFalse();
         verify(client).close();
+    }
+
+    // ---- P3-1 命令治理：白名单 + 参数校验 ----
+
+    @Test
+    void validateCommandAllowsWhitelistedCommandWithPlainArgs() {
+        // npx 在白名单，args 为包名/flag，无元字符
+        service.validateCommand(stdioDef(1L, "demo"));
+    }
+
+    @Test
+    void validateCommandRejectsCommandOutsideWhitelist() {
+        McpServerDefinition def = new McpServerDefinition(1L, 1L, "bad", "stdio", "bash",
+                "[\"-c\",\"rm -rf /\"]", null, "ENABLED", 1L, null);
+
+        assertThatThrownBy(() -> service.validateCommand(def))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("允许列表");
+    }
+
+    @Test
+    void validateCommandRejectsShellMetacharactersInArgs() {
+        McpServerDefinition def = new McpServerDefinition(1L, 1L, "bad", "stdio", "npx",
+                "[\"-y\",\"pkg; rm -rf /\"]", null, "ENABLED", 1L, null);
+
+        assertThatThrownBy(() -> service.validateCommand(def))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shell 元字符");
+    }
+
+    @Test
+    void validateCommandRejectsOversizedArg() {
+        McpServerDefinition def = new McpServerDefinition(1L, 1L, "bad", "stdio", "npx",
+                "[\"" + "a".repeat(300) + "\"]", null, "ENABLED", 1L, null);
+
+        assertThatThrownBy(() -> service.validateCommand(def))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("过长");
+    }
+
+    @Test
+    void validateCommandRejectsEmptyArg() {
+        McpServerDefinition def = new McpServerDefinition(1L, 1L, "bad", "stdio", "npx",
+                "[\"\"]", null, "ENABLED", 1L, null);
+
+        assertThatThrownBy(() -> service.validateCommand(def))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("参数不能为空");
     }
 }

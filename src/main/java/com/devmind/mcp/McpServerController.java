@@ -95,6 +95,14 @@ public class McpServerController {
         McpServerDefinition def = McpServerDefinition.forInsert(
                 tenantId, request.name(), transport, request.command(), argsJson, request.url(), operatorId
         );
+        if ("stdio".equals(transport)) {
+            // 命令治理（P3-1）：登记时即校验白名单 + 参数安全，提前拒绝非法命令
+            try {
+                toolService.validateCommand(def);
+            } catch (IllegalArgumentException ex) {
+                throw new ApiException(ErrorCode.INVALID_ARGUMENT, ex.getMessage());
+            }
+        }
         Long id = repository.insert(def);
         return Map.of("id", id, "name", def.name(), "created", true);
     }

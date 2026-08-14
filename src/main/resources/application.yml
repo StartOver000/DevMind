@@ -98,6 +98,9 @@ devmind:
   sql-diagnosis-max-sql-length: ${DEVMIND_SQL_MAX_LENGTH:2000}
   rerank-mode: ${DEVMIND_RERANK_MODE:heuristic}
   evaluation-top-k: ${DEVMIND_EVALUATION_TOP_K:5}
+  # MCP 接入安全（P3-1）：stdio 命令白名单，登记/执行 stdio MCP Server 时校验命令与参数
+  mcp:
+    allowed-commands: ${DEVMIND_MCP_ALLOWED_COMMANDS:npx,node,python,python3,uvx,docker}
   local-rag-fallback: ${DEVMIND_LOCAL_RAG_FALLBACK:true}
   cost-prompt-per-1k: ${DEVMIND_COST_PROMPT_PER_1K:0.00015}
   cost-completion-per-1k: ${DEVMIND_COST_COMPLETION_PER_1K:0.0006}

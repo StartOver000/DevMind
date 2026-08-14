@@ -262,6 +262,9 @@ public class OpenApiImportService {
         if ((description == null || description.isBlank()) && !op.description().isBlank()) {
             description = op.description();
         }
+        // tool_definition.description 列 VARCHAR(500)：真实 API（如 eBay/Stripe）描述常超长，
+        // 截断防导入失败（语义档案 semanticText 用完整描述，不受影响）
+        description = truncate(description, 500);
         String schema = buildRequestSchema(op);
         return new ToolCreateRequest(
                 name,
@@ -274,6 +277,14 @@ public class OpenApiImportService {
                 null,
                 null
         );
+    }
+
+    /** 截断到指定长度（DB 列宽容错；真实 API 描述常超长） */
+    private String truncate(String s, int max) {
+        if (s == null) {
+            return "";
+        }
+        return s.length() <= max ? s : s.substring(0, max);
     }
 
     /** 从 path/query/header 参数 + 请求体生成 JSON Schema（给 Agent 的参数说明） */

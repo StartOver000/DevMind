@@ -101,6 +101,33 @@ class OpenApiImportServiceTest {
     }
 
     @Test
+    void longDescriptionIsTruncatedToFitDbColumn() {
+        when(userService.isAdmin(1L)).thenReturn(true);
+        String longSummary = "A".repeat(800); // 真实 API（如 eBay）描述常超 DB 列上限
+        when(parser.parse(anyString(), anyString())).thenReturn(new OpenApiParser.ParsedDocument(
+                "长描述服务", "https://api.example.com",
+                List.of(op("GET", "/policies", "getPolicies", longSummary)),
+                List.of()));
+        when(toolService.create(any(), anyLong())).thenAnswer(inv -> {
+            ToolCreateRequest req = inv.getArgument(0);
+            return new ToolResponse(1L, req.name(), req.description(), "interface",
+                    req.endpointUrl(), req.httpMethod(), req.requestSchemaJson(), null,
+                    "none", null, "READY", 1L);
+        });
+        when(modelGateway.embed(anyList())).thenReturn(List.of(List.of(0.1, 0.2)));
+
+        MockMultipartFile file = new MockMultipartFile("file", "long.json", "application/json",
+                "{}".getBytes(StandardCharsets.UTF_8));
+        OpenApiImportService.ImportResult result = service.importOpenApi(file, 1L);
+
+        assertThat(result.failed()).isZero();
+        org.mockito.ArgumentCaptor<ToolCreateRequest> captor = org.mockito.ArgumentCaptor.forClass(ToolCreateRequest.class);
+        verify(toolService).create(captor.capture(), anyLong());
+        // DB description 列 VARCHAR(500)：超长描述截断防导入失败
+        assertThat(captor.getValue().description().length()).isLessThanOrEqualTo(500);
+    }
+
+    @Test
     void duplicateNameIsSkippedIdempotently() {
         when(userService.isAdmin(1L)).thenReturn(true);
         when(parser.parse(anyString(), anyString())).thenReturn(new OpenApiParser.ParsedDocument(

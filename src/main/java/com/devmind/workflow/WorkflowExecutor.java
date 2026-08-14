@@ -74,8 +74,11 @@ public class WorkflowExecutor {
         parallelExecutor.shutdownNow();
     }
 
-    /** 工作流中的一个步骤 */
-    public record WorkflowStep(String tool, String paramsJson, String outputVar) {
+    /** 工作流中的一个步骤；outputAppend=true 时结果追加到 outputVar（字段级 Append，G6） */
+    public record WorkflowStep(String tool, String paramsJson, String outputVar, boolean outputAppend) {
+        public WorkflowStep(String tool, String paramsJson, String outputVar) {
+            this(tool, paramsJson, outputVar, false);
+        }
     }
 
     /** 执行单元：顺序步骤 / 并行组 / 条件分支（if）/ 循环（loop，P2-2） */
@@ -240,6 +243,19 @@ public class WorkflowExecutor {
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
     }
 
+    /**
+     * State 更新策略（G6）：默认 Replace（覆盖）；output_append=true 时字段级 Append（追加）。
+     * 用 ConcurrentHashMap.compute 保证读改写原子；Append 语义下并发写同一变量按到达顺序拼接，
+     * 顺序由并行调度决定——这是八股里 Append 更新策略的固有不确定性（与 Replace 不同）。
+     */
+    private void writeOutput(Map<String, Object> vars, String outputVar, String output, boolean append) {
+        if (!append) {
+            vars.put(outputVar, output);
+            return;
+        }
+        vars.compute(outputVar, (k, existing) -> existing == null ? output : existing + "\n" + output);
+    }
+
     /** 执行单个步骤并记录（失败写入 failure 引用，不抛异常）；瞬时故障自动重试（P2-3） */
     private void runStep(WorkflowStep step, int index, Long runId, Map<String, Object> vars, Long userId,
                          String workflowName, AtomicReference<String> failure) {
@@ -253,7 +269,7 @@ public class WorkflowExecutor {
                 long costMs = System.currentTimeMillis() - start;
                 runRepository.insertStep(runId, index, step.tool(), input, output, "SUCCESS", costMs, null);
                 if (step.outputVar() != null && !step.outputVar().isBlank()) {
-                    vars.put(step.outputVar(), output);
+                    writeOutput(vars, step.outputVar(), output, step.outputAppend());
                 }
                 log.info("工作流 {} 步骤 {} 成功 (tool={}, cost={}ms)", workflowName, index + 1, step.tool(), costMs);
                 return;
@@ -514,7 +530,8 @@ public class WorkflowExecutor {
             JsonNode params = node.path("params");
             String paramsJson = (params == null || params.isMissingNode() || params.isNull())
                     ? "{}" : objectMapper.writeValueAsString(params);
-            return new WorkflowStep(tool, paramsJson, node.path("output_var").asText(""));
+            return new WorkflowStep(tool, paramsJson, node.path("output_var").asText(""),
+                    node.path("output_append").asBoolean(false));
         } catch (Exception ex) {
             log.warn("步骤参数序列化失败: {}", ex.getMessage());
             return null;

@@ -237,6 +237,52 @@ class WorkflowExecutorTest {
     }
 
     @Test
+    void sequentialAppendAccumulatesIntoVariable() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("A");
+        when(toolRegistry.execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("B");
+        when(toolRegistry.execute(eq("d"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("D");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"tool":"a","params":{},"output_var":"acc","output_append":true},
+                 {"tool":"b","params":{},"output_var":"acc","output_append":true},
+                 {"tool":"d","params":{"summary":"{{acc}}"}}]
+                """;
+        executor.execute(workflow(stepsJson), 1L, "manual");
+
+        // 顺序执行 append 顺序确定：acc = "A\nB"
+        ArgumentCaptor<String> dInput = ArgumentCaptor.forClass(String.class);
+        verify(toolRegistry).execute(eq("d"), dInput.capture(), eq(1L), eq("workflow"), eq(100L));
+        assertThat(dInput.getValue()).isEqualTo("{\"summary\":\"A\\nB\"}");
+    }
+
+    @Test
+    void parallelAppendMergesOutputsIntoSingleVariable() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("A");
+        when(toolRegistry.execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("B");
+        when(toolRegistry.execute(eq("d"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("D");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        String stepsJson = """
+                [{"parallel":[
+                   {"tool":"a","params":{},"output_var":"merged","output_append":true},
+                   {"tool":"b","params":{},"output_var":"merged","output_append":true}
+                 ]},
+                 {"tool":"d","params":{"summary":"{{merged}}"}}]
+                """;
+        executor.execute(workflow(stepsJson), 1L, "manual");
+
+        // 并行 append 顺序不定，但两个输出都合进同一变量
+        ArgumentCaptor<String> dInput = ArgumentCaptor.forClass(String.class);
+        verify(toolRegistry).execute(eq("d"), dInput.capture(), eq(1L), eq("workflow"), eq(100L));
+        assertThat(dInput.getValue()).contains("A").contains("B");
+    }
+
+    @Test
     void ifBranchExecutesThenWhenConditionTrue() {
         when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
         when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);

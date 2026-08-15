@@ -177,4 +177,78 @@ class OpenApiParserTest {
         assertThat(ops.get(0).method()).isEqualTo("GET");
         assertThat(ops.get(1).method()).isEqualTo("POST");
     }
+
+    @Test
+    void extractsSchemaFromFormUrlencodedRequestBody() {
+        // 回归：Stripe 等 API 用 application/x-www-form-urlencoded 请求体，
+        // 修复前只认 application/json，form schema 为空导致 Agent 无法传参
+        String json = """
+                {
+                  "openapi": "3.0.1",
+                  "info": { "title": "支付服务" },
+                  "paths": {
+                    "/v1/customers": {
+                      "post": {
+                        "operationId": "createCustomer",
+                        "summary": "创建客户",
+                        "requestBody": {
+                          "required": true,
+                          "content": {
+                            "application/x-www-form-urlencoded": {
+                              "schema": {
+                                "type": "object",
+                                "properties": {
+                                  "name": { "type": "string" },
+                                  "email": { "type": "string" }
+                                },
+                                "required": ["name"]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                """;
+
+        OpenApiParser.ParsedDocument doc = parser.parse(json, "stripe.json");
+        OpenApiOperation op = doc.operations().get(0);
+        assertThat(op.requestBodyJson()).contains("name");
+        assertThat(op.requestBodyJson()).contains("email");
+        assertThat(op.requestBodyJson()).doesNotContain("$ref");
+    }
+
+    @Test
+    void prefersJsonOverFormWhenBothPresent() {
+        String json = """
+                {
+                  "openapi": "3.0.1",
+                  "info": { "title": "双格式" },
+                  "paths": {
+                    "/x": {
+                      "post": {
+                        "operationId": "doX",
+                        "summary": "操作",
+                        "requestBody": {
+                          "content": {
+                            "application/x-www-form-urlencoded": {
+                              "schema": { "type": "object", "properties": { "f": { "type": "string" } } }
+                            },
+                            "application/json": {
+                              "schema": { "type": "object", "properties": { "j": { "type": "string" } } }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                """;
+
+        OpenApiParser.ParsedDocument doc = parser.parse(json, "x.json");
+        OpenApiOperation op = doc.operations().get(0);
+        assertThat(op.requestBodyJson()).contains("\"j\"");
+        assertThat(op.requestBodyJson()).doesNotContain("\"f\"");
+    }
 }

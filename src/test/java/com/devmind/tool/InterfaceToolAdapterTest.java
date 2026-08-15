@@ -143,4 +143,51 @@ class InterfaceToolAdapterTest {
         assertThat(adapter.description()).isEqualTo("查询客户列表");
         assertThat(adapter.parametersJsonSchema()).contains("\"days\"");
     }
+
+    @Test
+    void replacesPathParamsBeforeUriParsing() {
+        // 回归：路径占位符 {param} 必须在 URI 解析前替换，否则 URI.create 报 Illegal character in path
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("http://api.example.com/invoices/in_123"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("{\"id\":\"in_123\"}", MediaType.APPLICATION_JSON));
+
+        InterfaceToolAdapter adapter = adapter(def(
+                "get_invoice", "http://api.example.com/invoices/{invoice}", "GET", "none", null, null));
+
+        assertThat(adapter.execute("{\"invoice\":\"in_123\"}", 1L)).isEqualTo("{\"id\":\"in_123\"}");
+        server.verify();
+    }
+
+    @Test
+    void pathParamValueContainingSpecialCharsIsEncodedSafely() {
+        // 路径参数值含特殊字符时不应抛异常，且替换发生在 URI 解析前（之前会因 { } 非法字符直接抛）
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("http://api.example.com/orders/ORD-2026/001"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+        InterfaceToolAdapter adapter = adapter(def(
+                "get_order", "http://api.example.com/orders/{orderId}", "GET", "none", null, null));
+
+        String result = adapter.execute("{\"orderId\":\"ORD-2026/001\"}", 1L);
+        assertThat(result).doesNotContain("Illegal character");
+        server.verify();
+    }
+
+    @Test
+    void pathParamIsExcludedFromPostBody() {
+        // 路径参数替换后不应再进入请求 body
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("http://api.example.com/customers/cus_9"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("{\"ok\":true}", MediaType.APPLICATION_JSON));
+
+        InterfaceToolAdapter adapter = adapter(def(
+                "update_customer", "http://api.example.com/customers/{id}", "POST", "none", null, null));
+
+        String result = adapter.execute("{\"id\":\"cus_9\",\"name\":\"新客户\"}", 1L);
+        assertThat(result).contains("\"ok\":true");
+        server.verify();
+    }
 }

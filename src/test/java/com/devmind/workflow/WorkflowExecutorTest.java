@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -105,6 +106,45 @@ class WorkflowExecutorTest {
         verify(runRepository).insertStep(eq(100L), eq(0), eq("customer_query"), anyString(), eq(null), eq("FAILED"), anyLong(), anyString());
         verify(toolRegistry, never()).execute(eq("ai_generate"), anyString(), eq(1L), eq("workflow"), eq(100L));
         verify(runRepository).finishRun(eq(100L), eq("FAILED"), anyString());
+    }
+
+    @Test
+    void marksStepFailedWhenToolReturnsErrorJsonInsteadOfThrowing() {
+        // 回归：接口工具 401/404 时返回 {"error":...} 而不是抛异常，
+        // 修复前此类输出被记为 SUCCESS，后续步骤拿错误输出继续编排
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("stripe_create"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenReturn("{\"error\":\"HTTP 调用失败: 401 Unauthorized\"}");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "FAILED"));
+
+        String stepsJson = """
+                [{"tool":"stripe_create","params":{},"output_var":"c"},
+                 {"tool":"stripe_pay","params":{"customer":"{{c}}"}}]
+                """;
+        WorkflowRun result = executor.execute(workflow(stepsJson), 1L, "manual");
+
+        assertThat(result.status()).isEqualTo("FAILED");
+        // 错误输出步骤记录 FAILED，后续步骤不执行
+        verify(runRepository).insertStep(eq(100L), eq(0), eq("stripe_create"), anyString(), contains("error"), eq("FAILED"), anyLong(), anyString());
+        verify(toolRegistry, never()).execute(eq("stripe_pay"), anyString(), eq(1L), eq("workflow"), eq(100L));
+    }
+
+    @Test
+    void marksStepFailedWhenToolReturnsTimeoutMarker() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("slow_tool"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenReturn("工具执行超时，请稍后重试");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "FAILED"));
+
+        String stepsJson = """
+                [{"tool":"slow_tool","params":{}}]
+                """;
+        WorkflowRun result = executor.execute(workflow(stepsJson), 1L, "manual");
+
+        assertThat(result.status()).isEqualTo("FAILED");
+        verify(runRepository).insertStep(eq(100L), eq(0), eq("slow_tool"), anyString(), contains("超时"), eq("FAILED"), anyLong(), anyString());
     }
 
     @Test

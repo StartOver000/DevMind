@@ -118,9 +118,10 @@ class AgentServiceTest {
 
     private AgentTool kbTool() {
         AgentTool tool = org.mockito.Mockito.mock(AgentTool.class);
-        when(tool.name()).thenReturn("kb_search");
-        when(tool.description()).thenReturn("检索知识库");
-        when(tool.parametersJsonSchema()).thenReturn("{}");
+        // lenient：kbTool 是共享 helper，部分测试（如纯函数反射测试）不会触发其 stub
+        lenient().when(tool.name()).thenReturn("kb_search");
+        lenient().when(tool.description()).thenReturn("检索知识库");
+        lenient().when(tool.parametersJsonSchema()).thenReturn("{}");
         return tool;
     }
 
@@ -925,5 +926,65 @@ class AgentServiceTest {
         // 语义检索失败 → 回退全量（接口能力不丢失）
         assertThat(injected).anyMatch(t -> t.name().equals("api_tool_0"));
         assertThat(injected).anyMatch(t -> t.name().equals("api_tool_24"));
+    }
+
+    @Test
+    void splitIntentsSplitsCompoundQuestion() throws Exception {
+        // 回归：复合句（多个步骤意图）不拆句时中间步骤接口被挤出 top-K，
+        // 修复后按连接词/标点拆分，保证每个步骤的接口都能被发现
+        AgentService service = service(new ToolRegistry(manyInterfaceTools(3)));
+        java.lang.reflect.Method m = AgentService.class.getDeclaredMethod("splitIntents", String.class);
+        m.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<String> parts = (List<String>) m.invoke(service, "先创建客户，然后创建订单并支付");
+        assertThat(parts).hasSizeGreaterThanOrEqualTo(2);
+        // 两个业务意图都被拆出（不依赖具体切分位置，连接词"先/然后"本身可能成为独立子句）
+        assertThat(parts).anyMatch(p -> p.contains("创建客户"));
+        assertThat(parts).anyMatch(p -> p.contains("创建订单"));
+
+        // 无连接词 → 单一意图
+        @SuppressWarnings("unchecked")
+        List<String> single = (List<String>) m.invoke(service, "查询客户订单");
+        assertThat(single).hasSize(1);
+
+        // 空/空白 → 空列表
+        @SuppressWarnings("unchecked")
+        List<String> blank = (List<String>) m.invoke(service, "   ");
+        assertThat(blank).isEmpty();
+    }
+
+    @Test
+    void compoundQuestionInjectsInterfacesFromEachSubIntent() {
+        AgentService service = service(new ToolRegistry(manyInterfaceTools(25)));
+        when(toolAccessService.accessibleDynamicTools(eq(1L), eq(1L))).thenReturn(interfaceDefinitions(25));
+        OpenApiImportService openApi = org.mockito.Mockito.mock(OpenApiImportService.class);
+        when(openApi.semanticSearch(anyString(), eq(1L), anyInt())).thenAnswer(inv -> {
+            String q = inv.getArgument(0);
+            if (q.contains("创建客户")) {
+                return List.of(new ToolSemanticRepository.SemanticHit(4L, "api_tool_3", "创建客户", "http://x/3", "POST", 0.9));
+            }
+            if (q.contains("创建订单")) {
+                return List.of(new ToolSemanticRepository.SemanticHit(7L, "api_tool_6", "创建订单", "http://x/6", "POST", 0.88));
+            }
+            return List.of();
+        });
+        service.setOpenApiImportService(openApi);
+        when(conversationRepository.create(any(), anyString())).thenReturn(100L);
+        when(chatRouter.chatWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(new AiModelGateway.ChatResult("回答", "m", 0, 0));
+
+        service.chat(new AgentChatRequest(0L, "先创建客户，然后创建订单", null), 1L);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<AiModelGateway.ToolSpec>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatRouter).chatWithTools(anyString(), anyList(), captor.capture());
+        List<AiModelGateway.ToolSpec> injected = captor.getValue();
+
+        // 两个子意图的接口都被注入（拆句后各自命中）
+        assertThat(injected).anyMatch(t -> t.name().equals("api_tool_3"));
+        assertThat(injected).anyMatch(t -> t.name().equals("api_tool_6"));
+        // 至少按两个子意图分别检索
+        verify(openApi, org.mockito.Mockito.atLeast(2)).semanticSearch(anyString(), eq(1L), anyInt());
     }
 }

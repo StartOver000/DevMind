@@ -85,3 +85,23 @@ groups:
         annotations:
           summary: "检索质量回退"
           description: "离线评估显示检索质量低于基线 5% 以上，请检查检索配置或知识库变更"
+
+      - alert: DevMindAgentRegression
+        # Agent 行为回退：--agent-eval 工具选择准确率 / 任务完成率低于基线 5% 以上
+        expr: rate(devmind_agent_regression_total[10m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent 行为回退"
+          description: "Agent 评估工具选择准确率低于基线 5% 以上，请检查工具描述/模型链路/Agent 配置"
+
+      - alert: DevMindAnswerRegression
+        # 回答质量回退：--answer-audit 出现空回答 / 本地降级，或平均引用骤降
+        expr: rate(devmind_answer_regression_total[10m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "回答质量回退"
+          description: "回答质量抽检出现空回答/降级或引用骤降，请检查检索配置/知识库/模型链路"

@@ -187,6 +187,38 @@ function parsePlanSteps(t) {
   }
 }
 
+/** Agent 轨迹可视化（P2-1）：工具类型 → 图标 */
+function toolIcon(t) {
+  const name = t && t.tool ? t.tool : '';
+  if (name === 'plan') return '📋';
+  if (name === 'kb_search' || name === 'kb_info') return '🔍';
+  if (name === 'sql_diagnose') return '🩺';
+  if (name === 'web_search') return '🌐';
+  if (name === 'chat' || name === 'generate') return '💬';
+  return '⚙️';
+}
+
+/** 轨迹总耗时 */
+function traceTotalMs(traces) {
+  return (traces || []).reduce((sum, t) => sum + (t.costMs || 0), 0);
+}
+
+/** 轨迹成功步数 */
+function traceOkCount(traces) {
+  return (traces || []).filter((t) => t.ok).length;
+}
+
+/** 工具参数摘要（截断 + JSON 美化）；plan 类型返回空（走计划卡片） */
+function traceArgs(t) {
+  if (!t || !t.args || t.tool === 'plan') return '';
+  const s = String(t.args);
+  try {
+    return JSON.stringify(JSON.parse(s), null, 1).slice(0, 200);
+  } catch (e) {
+    return s.slice(0, 120);
+  }
+}
+
 async function ensureKbs() {
   try {
     await kbsStore.load();
@@ -666,26 +698,35 @@ onBeforeUnmount(() => {
               </details>
             </div>
             <div v-if="m.trace && m.trace.length" class="tool-trace">
-              <details>
-                <summary>Agent 执行轨迹（{{ m.trace.length }} 步）</summary>
-                <div v-for="(t, j) in m.trace" :key="j" class="tool-trace-item" :class="{ fail: !t.ok, plan: t.tool === 'plan' }">
-                  <template v-if="t.tool === 'plan'">
-                    <span class="tt-icon">📋</span>
-                    <span class="tt-name">计划</span>
-                    <div class="plan-steps">
-                      <div v-for="(s, si) in (parsePlanSteps(t)?.steps || [])" :key="si" class="plan-step">
-                        <span class="ps-no">{{ si + 1 }}</span>
-                        <span class="ps-tool">{{ s.tool }}</span>
-                        <span class="ps-goal">{{ s.goal }}</span>
+              <details open>
+                <summary>
+                  🛠 Agent 执行轨迹
+                  <span class="tt-summary">
+                    {{ m.trace.length }} 步 · 共 {{ traceTotalMs(m.trace) }}ms · {{ traceOkCount(m.trace) }}/{{ m.trace.length }} 成功
+                  </span>
+                </summary>
+                <div class="trace-timeline">
+                  <div v-for="(t, j) in m.trace" :key="j" class="trace-step" :class="{ fail: !t.ok, plan: t.tool === 'plan' }">
+                    <span class="ts-dot"></span>
+                    <div class="ts-body">
+                      <div class="ts-head">
+                        <span class="ts-icon">{{ toolIcon(t) }}</span>
+                        <span class="ts-name">{{ t.tool === 'plan' ? '制定计划' : t.tool }}</span>
+                        <span class="ts-badge" :class="t.ok ? 'ok' : 'fail'">{{ t.ok ? '成功' : '失败' }}</span>
+                        <span class="ts-time">{{ t.costMs }}ms</span>
                       </div>
+                      <template v-if="t.tool === 'plan'">
+                        <div class="plan-steps">
+                          <div v-for="(s, si) in (parsePlanSteps(t)?.steps || [])" :key="si" class="plan-step">
+                            <span class="ps-no">{{ si + 1 }}</span>
+                            <span class="ps-tool">{{ s.tool }}</span>
+                            <span class="ps-goal">{{ s.goal }}</span>
+                          </div>
+                        </div>
+                      </template>
+                      <pre v-else-if="traceArgs(t)" class="ts-args">{{ traceArgs(t) }}</pre>
                     </div>
-                  </template>
-                  <template v-else>
-                    <span class="tt-icon">{{ t.ok ? '✓' : '✗' }}</span>
-                    <span class="tt-name">{{ t.tool }}</span>
-                    <span class="tt-args">{{ t.args }}</span>
-                    <span class="tt-time">{{ t.costMs }}ms</span>
-                  </template>
+                  </div>
                 </div>
               </details>
             </div>
@@ -1309,12 +1350,12 @@ button.link.danger:hover {
   padding: 10px 22px;
 }
 
-/* ---- Agent 轨迹 ---- */
+/* ---- Agent 轨迹（时间线可视化，P2-1） ---- */
 .tool-trace {
   margin-bottom: 10px;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: 8px;
+  padding: 8px 12px;
   background: var(--alt-bg);
 }
 
@@ -1325,49 +1366,134 @@ button.link.danger:hover {
   font-weight: 600;
 }
 
-.tool-trace-item {
+.tool-trace summary .tt-summary {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+  margin-left: 8px;
+}
+
+/* 时间线主体：左侧竖线 + 圆点 */
+.trace-timeline {
+  margin-top: 10px;
+  padding-left: 4px;
+}
+
+.trace-step {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  padding: 0 0 14px 0;
+}
+
+.trace-step:last-child {
+  padding-bottom: 2px;
+}
+
+/* 竖线 */
+.trace-step::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 18px;
+  bottom: 0;
+  width: 2px;
+  background: var(--line);
+}
+
+.trace-step:last-child::before {
+  display: none;
+}
+
+.ts-dot {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 50%;
+  background: var(--ok, #2e7d32);
+  border: 2px solid var(--bg, #fff);
+  box-shadow: 0 0 0 2px rgba(46, 125, 50, 0.2);
+}
+
+.trace-step.fail .ts-dot {
+  background: var(--danger, #e53935);
+  box-shadow: 0 0 0 2px rgba(229, 57, 53, 0.2);
+}
+
+.trace-step.plan .ts-dot {
+  background: var(--accent, #1565c0);
+  box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.2);
+}
+
+.ts-body {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.ts-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 2px;
   font-size: 12px;
-  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
 }
 
-.tool-trace-item:last-child {
-  border-bottom: 0;
+.ts-icon {
+  font-size: 14px;
 }
 
-.tt-icon {
-  width: 16px;
-  color: var(--ok);
-}
-
-.tool-trace-item.fail .tt-icon {
-  color: var(--danger);
-}
-
-.tool-trace-item.fail .tt-name {
-  color: var(--danger);
-}
-
-.tt-name {
+.ts-name {
   font-weight: 600;
   color: var(--text);
+  font-size: 12px;
 }
 
-.tt-args {
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 45%;
+.ts-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 8px;
 }
 
-.tt-time {
+.ts-badge.ok {
+  background: rgba(46, 125, 50, 0.12);
+  color: var(--ok, #2e7d32);
+}
+
+.ts-badge.fail {
+  background: rgba(229, 57, 53, 0.12);
+  color: var(--danger, #e53935);
+}
+
+.ts-time {
   margin-left: auto;
   color: var(--muted);
   flex-shrink: 0;
+  font-size: 11px;
+}
+
+.ts-args {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg, #fff);
+  border-radius: 4px;
+  padding: 4px 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+/* 计划卡片（plan trace） */
+.trace-step.plan .plan-steps {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
 }
 
 /* 模型原生思考过程面板 */

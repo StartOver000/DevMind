@@ -11,10 +11,12 @@ fi
 DUMP="$1"
 TARGET_DB="${2:-devmind}"
 
-# 1) 文件数据恢复（配套 .files.tar.gz 存在时，还原 data/files 目录结构）
+# 1) 文件数据恢复（配套 .files.tar.gz 存在时，还原到 data/files 目录结构；
+#    注意 -C data：备份用 `tar -C data files` 打包，恢复必须解压到 data/ 下）
 FILES="${DUMP%.dump}.files.tar.gz"
 if [ -f "$FILES" ]; then
-  tar -xzf "$FILES" -C .
+  mkdir -p data
+  tar -xzf "$FILES" -C data
   echo "files restored from $FILES"
 else
   echo "未找到配套文件备份: $FILES（仅恢复数据库）"

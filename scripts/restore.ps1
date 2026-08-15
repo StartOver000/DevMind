@@ -9,10 +9,12 @@ if (-not (Test-Path $File)) {
     throw "备份文件不存在: $File"
 }
 
-# 1) 文件数据恢复（配套 .files.tar.gz 存在时，还原 data/files 目录结构）
+# 1) 文件数据恢复（配套 .files.tar.gz 存在时，还原到 data/files 目录结构；
+#    注意 -C data：备份用 tar -C data files 打包，恢复必须解压到 data/ 下）
 $files = [System.IO.Path]::ChangeExtension($File, '.files.tar.gz')
 if (Test-Path $files) {
-    tar -xzf $files -C .
+    New-Item -ItemType Directory -Force -Path 'data' | Out-Null
+    tar -xzf $files -C data
     Write-Host "files restored from $files"
 }
 else {

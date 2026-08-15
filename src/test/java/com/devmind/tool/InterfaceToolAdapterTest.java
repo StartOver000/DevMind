@@ -35,7 +35,7 @@ class InterfaceToolAdapterTest {
     }
 
     private InterfaceToolAdapter adapter(ToolDefinition def) {
-        return new InterfaceToolAdapter(def, builder, secretCipher, objectMapper);
+        return new InterfaceToolAdapter(def, builder, secretCipher, objectMapper, false, "");
     }
 
     private ToolDefinition def(String name, String url, String method, String authType, String authEnc, String mask) {

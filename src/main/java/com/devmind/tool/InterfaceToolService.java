@@ -4,6 +4,7 @@ import com.devmind.agent.ToolRegistry;
 import com.devmind.ai.AiModelGateway;
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
+import com.devmind.config.DevMindProperties;
 import com.devmind.security.SecretCipher;
 import com.devmind.tool.dto.ToolCreateRequest;
 import com.devmind.tool.dto.ToolResponse;
@@ -44,6 +45,7 @@ public class InterfaceToolService implements ApplicationRunner {
     private final ToolAccessService toolAccessService;
     private final AiModelGateway modelGateway;
     private final ToolSemanticRepository semanticRepository;
+    private final DevMindProperties properties;
 
     public InterfaceToolService(
             ToolDefinitionRepository repository,
@@ -54,7 +56,8 @@ public class InterfaceToolService implements ApplicationRunner {
             UserService userService,
             ToolAccessService toolAccessService,
             AiModelGateway modelGateway,
-            ToolSemanticRepository semanticRepository
+            ToolSemanticRepository semanticRepository,
+            DevMindProperties properties
     ) {
         this.repository = repository;
         this.toolRegistry = toolRegistry;
@@ -65,6 +68,7 @@ public class InterfaceToolService implements ApplicationRunner {
         this.toolAccessService = toolAccessService;
         this.modelGateway = modelGateway;
         this.semanticRepository = semanticRepository;
+        this.properties = properties;
     }
 
     /**
@@ -177,7 +181,8 @@ public class InterfaceToolService implements ApplicationRunner {
         Long tenantId = userService.tenantIdOf(userId);
         requireAccessible(tenantId, userId, id);
         ToolDefinition existing = requireTool(tenantId, id);
-        InterfaceToolAdapter adapter = new InterfaceToolAdapter(existing, restClientBuilder, secretCipher, objectMapper);
+        InterfaceToolAdapter adapter = new InterfaceToolAdapter(existing, restClientBuilder, secretCipher, objectMapper,
+                properties.interfaceToolSsrfEnabled(), properties.interfaceToolSsrfAllowedHosts());
         String result = adapter.execute("{} ", null);
         return !result.startsWith("{\"error\"");
     }
@@ -239,6 +244,7 @@ public class InterfaceToolService implements ApplicationRunner {
     }
 
     private void registerAdapter(ToolDefinition def) {
-        toolRegistry.register(new InterfaceToolAdapter(def, restClientBuilder, secretCipher, objectMapper));
+        toolRegistry.register(new InterfaceToolAdapter(def, restClientBuilder, secretCipher, objectMapper,
+                properties.interfaceToolSsrfEnabled(), properties.interfaceToolSsrfAllowedHosts()));
     }
 }

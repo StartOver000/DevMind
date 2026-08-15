@@ -53,6 +53,10 @@ public record DevMindProperties(
         // 配置为空则不启用分级（全部走主链）
         @DefaultValue("") String modelCheapBaseUrl,
         @DefaultValue("") String modelCheapApiKey,
-        @DefaultValue("") String modelCheapChatModel
+        @DefaultValue("") String modelCheapChatModel,
+        // 接口工具 SSRF 防护：拦截私有/保留/链路本地 IP 与 localhost/host.docker.internal 等
+        // 敏感主机名（默认开启；本地仿真/开发需要时可用 allowed-hosts 白名单放行）
+        @DefaultValue("true") boolean interfaceToolSsrfEnabled,
+        @DefaultValue("") String interfaceToolSsrfAllowedHosts
 ) {
 }

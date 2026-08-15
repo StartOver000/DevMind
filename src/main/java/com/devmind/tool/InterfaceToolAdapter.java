@@ -12,6 +12,8 @@ import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.net.InetAddress;
+import java.net.URI;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -34,17 +36,33 @@ public class InterfaceToolAdapter implements AgentTool {
     private final RestClient client;
     private final SecretCipher secretCipher;
     private final ObjectMapper objectMapper;
+    /** SSRF 防护开关与白名单（可配置，本地仿真/开发可放行 host.docker.internal） */
+    private final boolean ssrfEnabled;
+    private final java.util.Set<String> allowedHosts;
 
     public InterfaceToolAdapter(
             ToolDefinition def,
             RestClient.Builder restClientBuilder,
             SecretCipher secretCipher,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            boolean ssrfEnabled,
+            String ssrfAllowedHosts
     ) {
         this.def = def;
         this.client = restClientBuilder.build();
         this.secretCipher = secretCipher;
         this.objectMapper = objectMapper;
+        this.ssrfEnabled = ssrfEnabled;
+        java.util.Set<String> hosts = new java.util.HashSet<>();
+        if (ssrfAllowedHosts != null) {
+            for (String h : ssrfAllowedHosts.split(",")) {
+                String t = h.trim().toLowerCase(java.util.Locale.ROOT);
+                if (!t.isEmpty()) {
+                    hosts.add(t);
+                }
+            }
+        }
+        this.allowedHosts = hosts;
     }
 
     @Override
@@ -103,6 +121,11 @@ public class InterfaceToolAdapter implements AgentTool {
         String lowerEndpoint = resolvedEndpoint.toLowerCase();
         if (!lowerEndpoint.startsWith("http://") && !lowerEndpoint.startsWith("https://")) {
             return "{\"error\": \"接口地址仅支持 http/https\"}";
+        }
+        // SSRF 防护：拦截内网/私有/保留地址与敏感主机名（在路径替换之后、URI 解析之前校验）
+        String ssrfError = validateEndpoint(resolvedEndpoint);
+        if (ssrfError != null) {
+            return ssrfError;
         }
         // 鉴权（解密后注入）
         Map<String, String> authHeaders = new LinkedHashMap<>();
@@ -183,7 +206,54 @@ public class InterfaceToolAdapter implements AgentTool {
         }
     }
 
-    /** 解析鉴权配置（解密后）并注入 header/query；仅支持 none/api_key/basic */
+    /**
+     * SSRF 防护：解析 host 并拦截
+     * 1) 敏感主机名字面（localhost / *.localhost / host.docker.internal / kubernetes.docker.internal）；
+     * 2) 解析后 IP 落在回环/站点本地/链路本地/任意地址（覆盖 127.x、10.x、172.16-31.x、
+     *    192.168.x、169.254.x 含 169.254.169.254 metadata、::1、fc00::/7、fe80::/10）。
+     * 配置白名单的主机（allowedHosts，如本地仿真 host.docker.internal）放行。
+     */
+    private String validateEndpoint(String endpoint) {
+        if (!ssrfEnabled) {
+            return null;
+        }
+        try {
+            URI uri = URI.create(endpoint);
+            String host = uri.getHost();
+            if (host == null || host.isBlank()) {
+                return "{\"error\": \"接口地址缺少主机名\"}";
+            }
+            String lower = host.toLowerCase(java.util.Locale.ROOT);
+            boolean allowed = false;
+            for (String h : allowedHosts) {
+                if (h.equals(lower) || lower.endsWith("." + h)) {
+                    allowed = true;
+                    break;
+                }
+            }
+            if (allowed) {
+                return null;
+            }
+            if ("localhost".equals(lower) || lower.endsWith(".localhost")
+                    || "host.docker.internal".equals(lower)
+                    || "kubernetes.docker.internal".equals(lower)) {
+                return "{\"error\": \"接口地址指向内网/本机主机名，已按 SSRF 防护拦截: " + host + "\"}";
+            }
+            InetAddress[] addrs = InetAddress.getAllByName(host);
+            for (InetAddress addr : addrs) {
+                if (addr.isAnyLocalAddress() || addr.isLoopbackAddress()
+                        || addr.isSiteLocalAddress() || addr.isLinkLocalAddress()) {
+                    return "{\"error\": \"接口地址指向内网/保留地址，已按 SSRF 防护拦截: " + host
+                            + " (" + addr.getHostAddress() + ")\"}";
+                }
+            }
+        } catch (Exception ex) {
+            return "{\"error\": \"接口地址解析失败: " + sanitize(ex.getMessage()) + "\"}";
+        }
+        return null;
+    }
+
+    /** 鉴权配置解析（解密后注入 header/query）；仅支持 none/api_key/basic */
     private void applyAuth(Map<String, String> headers, Map<String, String> query) {
         String authType = def.authType() == null ? "none" : def.authType();
         if ("none".equals(authType) || def.authConfigEncrypted() == null || def.authConfigEncrypted().isBlank()) {

@@ -3,6 +3,7 @@ package com.devmind.tool;
 import com.devmind.agent.ToolRegistry;
 import com.devmind.ai.AiModelGateway;
 import com.devmind.common.ApiException;
+import com.devmind.config.DevMindProperties;
 import com.devmind.security.SecretCipher;
 import com.devmind.tool.dto.ToolCreateRequest;
 import com.devmind.tool.dto.ToolResponse;
@@ -48,6 +49,9 @@ class InterfaceToolServiceTest {
     @Mock
     private ToolSemanticRepository semanticRepository;
 
+    @Mock
+    private DevMindProperties properties;
+
     private ToolRegistry registry;
     private InterfaceToolService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -55,9 +59,12 @@ class InterfaceToolServiceTest {
     @BeforeEach
     void setUp() {
         registry = new ToolRegistry(List.of());
+        // 测试默认关闭 SSRF，避免 mock 构造的接口地址（如 http://crm.example.com）被误拦
+        lenient().when(properties.interfaceToolSsrfEnabled()).thenReturn(false);
+        lenient().when(properties.interfaceToolSsrfAllowedHosts()).thenReturn("");
         service = new InterfaceToolService(
                 repository, registry, RestClient.builder(), secretCipher, objectMapper,
-                userService, toolAccessService, modelGateway, semanticRepository
+                userService, toolAccessService, modelGateway, semanticRepository, properties
         );
         // 语义档案同步默认成功（避免 mock 干扰主流程断言）
         lenient().when(modelGateway.embed(any())).thenReturn(List.of(List.of(0.1, 0.2, 0.3)));
@@ -132,7 +139,7 @@ class InterfaceToolServiceTest {
     void deleteSoftDeletesAndUnregisters() {
         when(repository.findById(eq(1L), eq(5L))).thenReturn(savedDef(5L, "customer_query", "http://x"));
         registry.register(new InterfaceToolAdapter(savedDef(5L, "customer_query", "http://x"),
-                RestClient.builder(), secretCipher, objectMapper));
+                RestClient.builder(), secretCipher, objectMapper, false, ""));
         assertThat(registry.has("customer_query")).isTrue();
 
         service.delete(5L, 1L);

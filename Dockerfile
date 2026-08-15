@@ -14,5 +14,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/target/devmind-0.1.0-SNAPSHOT.jar app.jar
+# 容器安全加固（多角色审视-安全/SRE）：应用进程以非 root 运行（最小权限原则）。
+# 方案：启动期以 root 初始化挂载点权限（兼容 bind mount），随后经 docker-entrypoint.sh
+# 降权为 devmind 用户执行 java。生产建议改用命名卷（可进一步去除 root 初始化阶段）。
+RUN useradd -r -u 10001 -m -s /bin/sh devmind \
+    && mkdir -p /app/data /app/logs \
+    && chown -R devmind:devmind /app
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["docker-entrypoint.sh"]

@@ -222,7 +222,12 @@ onBeforeUnmount(() => {
             <span class="cost">{{ s.costMs }}ms</span>
           </div>
           <div v-if="s.error" class="err">错误：{{ s.error }}</div>
-          <pre v-if="s.outputJson" class="out">{{ s.outputJson }}</pre>
+          <!-- 长输出默认折叠：避免巨型 JSON（如 kb_search 检索结果）一次性全量渲染拖垮页面 -->
+          <details v-if="s.outputJson && s.outputJson.length > 400" class="out">
+            <summary>输出（{{ s.outputJson.length }} 字符）</summary>
+            <pre class="out-body">{{ s.outputJson }}</pre>
+          </details>
+          <pre v-else-if="s.outputJson" class="out">{{ s.outputJson }}</pre>
         </div>
       </template>
       <template v-else-if="run">
@@ -294,6 +299,8 @@ onBeforeUnmount(() => {
 .status.pending, .status.running { background: #fff3e0; color: #ef6c00; }
 .err { color: #c62828; font-size: 12px; white-space: pre-wrap; }
 .out { font-size: 11px; background: #f5f5f5; padding: 6px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; }
+details.out summary { cursor: pointer; color: #1565c0; font-size: 12px; }
+details.out pre.out-body { font-size: 11px; background: #f5f5f5; padding: 6px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; margin-top: 6px; }
 .cost { color: var(--muted, #888); font-size: 11px; }
 .approval-panel {
   border: 1px dashed #ef6c00;

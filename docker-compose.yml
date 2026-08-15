@@ -91,6 +91,8 @@ services:
     environment:
       <<: *app-env
       LOG_FILE: app.log
+      # JVM 堆上限（默认按宿主 25% 会到 ~8GB，多容器共存易挤爆内存；1.5G 对当前负载充裕）
+      JAVA_TOOL_OPTIONS: -Xmx1536m
     ports:
       - "8080:8080"
     volumes:
@@ -120,6 +122,7 @@ services:
       <<: *app-env
       SERVER_PORT: "8081"
       LOG_FILE: app2.log
+      JAVA_TOOL_OPTIONS: -Xmx1536m
     ports:
       - "8081:8081"
     volumes:

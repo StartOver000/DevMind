@@ -632,7 +632,12 @@ onMounted(load);
               <span class="cost">{{ s.costMs }}ms</span>
             </div>
             <div v-if="s.error" class="err">错误：{{ s.error }}</div>
-            <div v-if="s.outputJson" class="out">{{ s.outputJson }}</div>
+            <!-- 长输出默认折叠：避免巨型 JSON（如 kb_search 检索结果）一次性全量渲染拖垮页面 -->
+            <details v-if="s.outputJson && s.outputJson.length > 400" class="out">
+              <summary>输出（{{ s.outputJson.length }} 字符）</summary>
+              <pre class="out-body">{{ s.outputJson }}</pre>
+            </details>
+            <pre v-else-if="s.outputJson" class="out">{{ s.outputJson }}</pre>
           </div>
         </div>
       </template>
@@ -910,6 +915,23 @@ td.err {
   word-break: break-word;
   max-height: 120px;
   overflow-y: auto;
+}
+
+/* 长输出折叠（details）：summary 可点击展开，巨型 JSON 默认不渲染 */
+.step-row details.out summary {
+  cursor: pointer;
+  color: #1565c0;
+  font-size: 12px;
+}
+.step-row details.out pre.out-body {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono, monospace);
+  word-break: break-word;
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow-y: auto;
+  margin-top: 6px;
 }
 
 .cost {

@@ -48,8 +48,14 @@ public class AgentBehaviorEvalRunner implements ApplicationRunner {
         this.meterRegistry = meterRegistry;
     }
 
-    /** 评测用例：任务描述 + 可接受的工具集合（真实模型选到其中任意一个即算工具选择正确） */
-    private record AgentEvalCase(String name, String question, List<String> acceptableTools) {
+    /**
+     * 评测用例：任务描述 + 可接受的工具集合（选到任意一个即算对）+ 必调工具集合（复合任务全部调用才算对）。
+     * requiredTools 非空时判定更严：实际成功调用必须包含全部必调工具（验证复合句拆句 + 连续多工具选择）。
+     */
+    private record AgentEvalCase(String name, String question, List<String> acceptableTools, List<String> requiredTools) {
+        AgentEvalCase(String name, String question, List<String> acceptableTools) {
+            this(name, question, acceptableTools, List.of());
+        }
     }
 
     private List<AgentEvalCase> cases() {
@@ -59,6 +65,11 @@ public class AgentBehaviorEvalRunner implements ApplicationRunner {
                         List.of("sql_diagnose")),
                 new AgentEvalCase("文档检索", "知识库里有关于线程池的文档吗？帮我找一下", List.of("doc_search", "kb_search")),
                 new AgentEvalCase("直接回答", "你好", List.of()),
+                // 复合任务（拆句 + 连续多工具选择）：两个子意图都必须被调用（内置工具，不受接口 401 影响）
+                new AgentEvalCase("复合任务",
+                        "先诊断这条 SQL 慢在哪：SELECT * FROM orders WHERE user_id = 1 ORDER BY created_at，然后再查一下知识库里什么是 RAG",
+                        List.of("sql_diagnose", "kb_search"),
+                        List.of("sql_diagnose", "kb_search")),
                 // 接口工具选择（P1 接口语义化）：问题需语义命中注入的接口候选，再选对工具
                 new AgentEvalCase("Stripe 余额", "查一下 Stripe 账户的当前余额是多少", List.of("GetBalance")),
                 new AgentEvalCase("Stripe 交易", "列出 Stripe 的余额交易记录", List.of("GetBalanceTransactions")),
@@ -86,10 +97,15 @@ public class AgentBehaviorEvalRunner implements ApplicationRunner {
                         .filter(ToolTraceItem::ok)
                         .map(ToolTraceItem::tool)
                         .toList();
-                // 工具选择正确：实际成功调用的工具包含任意期望工具即可（额外探索工具如 kb_info 不判错）
-                boolean toolOk = c.acceptableTools().isEmpty()
-                        ? actual.isEmpty()
-                        : !actual.isEmpty() && actual.stream().anyMatch(c.acceptableTools()::contains);
+                // 工具选择正确：复合任务（必调集合非空）须全部调用；否则选到任意期望工具即可（额外探索工具不判错）
+                boolean toolOk;
+                if (!c.requiredTools().isEmpty()) {
+                    toolOk = !actual.isEmpty() && actual.containsAll(c.requiredTools());
+                } else if (c.acceptableTools().isEmpty()) {
+                    toolOk = actual.isEmpty();
+                } else {
+                    toolOk = !actual.isEmpty() && actual.stream().anyMatch(c.acceptableTools()::contains);
+                }
                 boolean taskOk = resp.answer() != null && !resp.answer().isBlank();
                 if (toolOk) {
                     toolHits++;
@@ -98,7 +114,8 @@ public class AgentBehaviorEvalRunner implements ApplicationRunner {
                     tasksDone++;
                 }
                 report.add(String.format("  [%s] 期望工具=%s 实际=%s 工具选择%s 任务完成%s 回答=%s",
-                        c.name(), c.acceptableTools(), actual, toolOk ? "✓" : "✗",
+                        c.name(), c.requiredTools().isEmpty() ? c.acceptableTools() : "必调" + c.requiredTools(),
+                        actual, toolOk ? "✓" : "✗",
                         taskOk ? "✓" : "✗", truncate(resp.answer(), 60)));
             } catch (Exception ex) {
                 report.add(String.format("  [%s] 执行异常: %s", c.name(),

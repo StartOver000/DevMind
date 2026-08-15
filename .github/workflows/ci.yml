@@ -71,6 +71,45 @@ jobs:
       - name: Package backend jar
         run: mvn -B -DskipTests package
 
+      # 应用冒烟 + 检索护栏（mock 模型，不依赖外部 API/密钥）：
+      # 启动 jar → 健康检查 → 知识库 API → 创建临时库 → 检索链路探活。
+      # 拦截"启动崩溃 / 配置错误 / DB 连接 / 检索链路断裂"类回归（P1-1 轻量版：
+      # mock 模型跑 mock 链路，无 mock/真实 baseline 冲突；真实护栏仍本地手动跑）。
+      - name: App smoke + retrieval guard (mock)
+        run: |
+          java -jar target/devmind-0.1.0-SNAPSHOT.jar \
+            --devmind.model-mode=mock \
+            --devmind.embedding-dimensions=8 \
+            --devmind.retrieval-min-score=0.0 \
+            --server.port=18081 \
+            --spring.datasource.url=jdbc:postgresql://localhost:5432/devmind \
+            --spring.datasource.username=devmind \
+            --spring.datasource.password=devmind123 \
+            > app-smoke.log 2>&1 &
+          APP_PID=$!
+          # 等待应用健康（最多 90s）；18081 避开本地 mock_stripe 约定端口 18080
+          for i in $(seq 1 45); do
+            if curl -sf http://localhost:18081/actuator/health >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          # 1) 健康检查必须 UP
+          curl -sf http://localhost:18081/actuator/health | grep -q '"status":"UP"'
+          # 2) 知识库列表可访问（DB 连接 + 建表正常）
+          curl -sf http://localhost:18081/api/knowledge-bases -H 'X-User-Id: 1' >/dev/null
+          # 3) 创建临时知识库（验证写路径 + 认证/租户链路）
+          KB_ID=$(curl -sf -X POST http://localhost:18081/api/knowledge-bases \
+            -H 'Content-Type: application/json' -H 'X-User-Id: 1' \
+            -d '{"name":"CI-smoke"}' | sed -E 's/.*"id":([0-9]+).*/\1/')
+          test -n "$KB_ID"
+          # 4) 检索链路探活（mock 模型 + 空库 → 返回 200 即链路通）
+          curl -sf -X POST "http://localhost:18081/api/performance/retrieval" \
+            -H 'Content-Type: application/json' -H 'X-User-Id: 1' \
+            -d "{\"knowledgeBaseId\":$KB_ID,\"question\":\"smoke\",\"iterations\":1}" >/dev/null
+          kill $APP_PID || true
+          echo "app smoke + retrieval guard OK"
+
   # docker 与 test 并行：docker 是独立的多阶段构建（不消费 test 产物），
   # 无需串行等待 test，总耗时从 ~3.5min 降到 ~1.8min
   docker:

@@ -578,6 +578,30 @@ public class DatabaseInitializer implements ApplicationRunner {
                 """);
         jdbcTemplate.execute("ALTER TABLE skill ADD COLUMN IF NOT EXISTS hit_count BIGINT NOT NULL DEFAULT 0");
         jdbcTemplate.execute("ALTER TABLE skill ADD COLUMN IF NOT EXISTS \"references\" TEXT NOT NULL DEFAULT '[]'");;
+        validateEmbeddingDimension(dimensions);
         log.info("database initialized, embedding dimension={}", dimensions);
+    }
+
+    /**
+     * 维度一致性护栏（多角色审视-DBA/健壮性）：
+     * document_chunk.embedding 列维度必须与 devmind.embedding-dimensions 一致，
+     * 否则运行期检索会报 "expected N dimensions, not M" 的 500 错误（难排查）。
+     * 此处启动即校验，错配给清晰报错；新库由建表保证一致，仅老库/配置误改时触发。
+     */
+    private void validateEmbeddingDimension(int dimensions) {
+        Integer columnDim = jdbcTemplate.queryForObject("""
+                SELECT atttypmod FROM pg_attribute
+                WHERE attrelid = 'document_chunk'::regclass AND attname = 'embedding'
+                """, Integer.class);
+        if (columnDim == null) {
+            // 表不存在（异常场景），跳过——检索前建表必然已创建
+            return;
+        }
+        if (columnDim != dimensions) {
+            throw new IllegalStateException(String.format(
+                    "embedding 维度不匹配：document_chunk.embedding 是 %d 维，但 devmind.embedding-dimensions=%d。"
+                            + "请调整配置与库一致，或开启 devmind.rebuild-vectors-on-start=true 按当前维度重灌向量。",
+                    columnDim, dimensions));
+        }
     }
 }

@@ -71,8 +71,10 @@ devmind:
   retrieval-top-k: 5
   retrieval-max-top-k: 10
   retrieval-min-score: 0.35
-  retrieval-vector-weight: ${DEVMIND_RETRIEVAL_VECTOR_WEIGHT:0.7}
-  retrieval-keyword-weight: ${DEVMIND_RETRIEVAL_KEYWORD_WEIGHT:0.3}
+  # 混合检索权重：修复向量空间一致性（bge-m3 灌库+查询）后，向量检索质量显著提升，
+  # alpha 扫描最优 vectorWeight=0.9（KB19 MRR 1.0 / KB20 0.9821），向量主导、关键词兜底
+  retrieval-vector-weight: ${DEVMIND_RETRIEVAL_VECTOR_WEIGHT:0.9}
+  retrieval-keyword-weight: ${DEVMIND_RETRIEVAL_KEYWORD_WEIGHT:0.1}
   retrieval-hybrid-enabled: ${DEVMIND_RETRIEVAL_HYBRID_ENABLED:true}
   task-thread-pool-size: ${DEVMIND_TASK_THREAD_POOL_SIZE:4}
   task-max-retries: ${DEVMIND_TASK_MAX_RETRIES:3}

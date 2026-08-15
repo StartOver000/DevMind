@@ -23,13 +23,20 @@ public class CachedEmbeddingGateway implements AiModelGateway {
 
     private final AiModelGateway delegate;
     private final EmbeddingCacheRepository cache;
+    /** 模型标识：缓存 key 必须带上，否则切换 embedding 模型（如 embedding-2 → bge-m3）后旧向量污染检索 */
+    private final String modelKey;
     private final Semaphore semaphore = new Semaphore(MAX_CONCURRENCY);
-    /** L1 内存缓存：sha256(text) → vector。命中则跳过 DB 查询（检索/问答高频同问题场景显著降低延迟与连接竞争） */
+    /** L1 内存缓存：sha256(modelKey+text) → vector。命中则跳过 DB 查询（检索/问答高频同问题场景显著降低延迟与连接竞争） */
     private final Map<String, List<Double>> memoryCache = new ConcurrentHashMap<>();
 
-    public CachedEmbeddingGateway(AiModelGateway delegate, EmbeddingCacheRepository cache) {
+    public CachedEmbeddingGateway(AiModelGateway delegate, EmbeddingCacheRepository cache, String modelKey) {
         this.delegate = delegate;
         this.cache = cache;
+        this.modelKey = modelKey;
+    }
+
+    private String cacheKey(String text) {
+        return HashUtils.sha256(modelKey + "\n" + text);
     }
 
     @Override
@@ -39,7 +46,7 @@ public class CachedEmbeddingGateway implements AiModelGateway {
         List<Integer> missingIndexes = new ArrayList<>();
         for (int i = 0; i < texts.size(); i++) {
             String text = texts.get(i);
-            String key = HashUtils.sha256(text);
+            String key = cacheKey(text);
             // L1：进程内内存命中（高频同问题，零 DB 往返）
             List<Double> mem = memoryCache.get(key);
             if (mem != null) {
@@ -62,8 +69,9 @@ public class CachedEmbeddingGateway implements AiModelGateway {
             for (int j = 0; j < missing.size(); j++) {
                 List<Double> vector = computed.get(j);
                 result.set(missingIndexes.get(j), vector);
-                cache.put(HashUtils.sha256(missing.get(j)), vector);
-                memoryCache.put(HashUtils.sha256(missing.get(j)), vector);
+                String key = cacheKey(missing.get(j));
+                cache.put(key, vector);
+                memoryCache.put(key, vector);
             }
             if (memoryCache.size() > MAX_MEMORY_CACHE) {
                 memoryCache.clear();

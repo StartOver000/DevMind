@@ -24,15 +24,24 @@ public class AiModelConfig {
     public AiModelGateway springAiModelGateway(
             EmbeddingModel embeddingModel,
             ChatModel chatModel,
-            EmbeddingCacheRepository cache
+            EmbeddingCacheRepository cache,
+            @Value("${spring.ai.openai.embedding.options.model:openai}") String embeddingModelName
     ) {
-        return new CachedEmbeddingGateway(new SpringAiModelGateway(embeddingModel, chatModel), cache);
+        return new CachedEmbeddingGateway(
+                new SpringAiModelGateway(embeddingModel, chatModel),
+                cache,
+                "openai:" + embeddingModelName
+        );
     }
 
     @Bean
     @ConditionalOnProperty(name = "devmind.model-mode", havingValue = "mock")
     public AiModelGateway mockAiModelGateway(DevMindProperties properties, EmbeddingCacheRepository cache) {
-        return new CachedEmbeddingGateway(new MockAiModelGateway(properties.embeddingDimensions()), cache);
+        return new CachedEmbeddingGateway(
+                new MockAiModelGateway(properties.embeddingDimensions()),
+                cache,
+                "mock:dim" + properties.embeddingDimensions()
+        );
     }
 
     @Bean
@@ -49,7 +58,8 @@ public class AiModelConfig {
     ) {
         AiModelGateway gateway = new CachedEmbeddingGateway(
                 new ZhipuRestModelGateway(restClientBuilder, properties, secretCipher, objectMapper),
-                cache
+                cache,
+                "zhipu:" + properties.zhipuEmbeddingModel() + "@" + properties.zhipuBaseUrl()
         );
         // 配置了备用 embedding（如硅基流动 bge-m3）时，主 embedding 失败自动切换
         if (embeddingFallbackBaseUrl != null && !embeddingFallbackBaseUrl.isBlank()) {

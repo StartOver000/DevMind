@@ -215,25 +215,20 @@ public class ChunkRepository {
 
         List<RetrievalResult> keywordResults = searchByKeywords(knowledgeBaseId, keywords, topK * 2, metadataFilter);
         Map<Long, RetrievalResult> merged = new LinkedHashMap<>();
+        // 统一量纲：仅向量命中 → vectorWeight * 向量分；仅关键词命中 → keywordWeight * 关键词分；
+        // 两者都命中 → 加权和。修复前仅关键词命中的 chunk 直接用原始 keywordScore（可达 1.0）
+        // 参与排序，会把向量相关但关键词命中少的 chunk（如英文标题的 ## Rerank）挤出 top-K。
         for (RetrievalResult result : vectorResults) {
-            merged.put(result.chunkId(), result);
+            merged.put(result.chunkId(), withScore(result, vectorWeight * result.similarityScore()));
         }
         for (RetrievalResult result : keywordResults) {
             RetrievalResult existing = merged.get(result.chunkId());
             if (existing == null) {
-                merged.put(result.chunkId(), result);
+                merged.put(result.chunkId(), withScore(result, keywordWeight * result.similarityScore()));
             } else {
-                double combined = vectorWeight * existing.similarityScore()
+                double combined = existing.similarityScore()
                         + keywordWeight * result.similarityScore();
-                merged.put(result.chunkId(), new RetrievalResult(
-                        existing.chunkId(),
-                        existing.documentId(),
-                        existing.documentName(),
-                        existing.chunkIndex(),
-                        existing.content(),
-                        existing.metadata(),
-                        combined
-                ));
+                merged.put(result.chunkId(), withScore(existing, combined));
             }
         }
 
@@ -242,6 +237,18 @@ public class ChunkRepository {
                 .sorted(Comparator.comparingDouble(RetrievalResult::similarityScore).reversed())
                 .limit(topK)
                 .toList();
+    }
+
+    private static RetrievalResult withScore(RetrievalResult r, double score) {
+        return new RetrievalResult(
+                r.chunkId(),
+                r.documentId(),
+                r.documentName(),
+                r.chunkIndex(),
+                r.content(),
+                r.metadata(),
+                score
+        );
     }
 
     public List<RetrievalResult> searchByKeywords(

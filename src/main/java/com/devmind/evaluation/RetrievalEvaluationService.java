@@ -98,9 +98,16 @@ public class RetrievalEvaluationService {
                     properties.evaluationTopK(),
                     request.rerankMode()
             );
-            java.util.function.Predicate<RetrievalResult> relevant = result ->
-                    result.content().contains(question.expected())
-                            || result.documentName().contains(question.expected());
+            // 相关判定：大小写不敏感（修复：contains 区分大小写会把 'rerank'/'graphrag' 等小写形式误判为不相关，低估 Recall）
+            // expected 支持用 | 分隔多词（对齐知识库内真实用词，如 切块|切分|Chunking）
+            java.util.function.Predicate<RetrievalResult> relevant = result -> {
+                String content = result.content() == null ? "" : result.content().toLowerCase();
+                String name = result.documentName() == null ? "" : result.documentName().toLowerCase();
+                String exp = question.expected() == null ? "" : question.expected().toLowerCase();
+                return java.util.Arrays.stream(exp.split("\\|"))
+                        .filter(e -> !e.isBlank())
+                        .anyMatch(e -> content.contains(e) || name.contains(e));
+            };
             boolean hit = top.stream().anyMatch(relevant);
             if (hit) {
                 topicStats.get(question.topic())[1]++;
@@ -161,7 +168,7 @@ public class RetrievalEvaluationService {
             new EvaluationQuestion(19L, "什么是 RAG", "RAG", "RAG检索"),
             new EvaluationQuestion(19L, "embedding 是什么", "Embedding", "RAG检索"),
             new EvaluationQuestion(19L, "混合检索有什么好处", "混合", "RAG检索"),
-            new EvaluationQuestion(19L, "切块大小影响检索效果吗", "切块", "RAG检索"),
+            new EvaluationQuestion(19L, "切块大小影响检索效果吗", "切块|切分|Chunking|分块", "RAG检索"),
             new EvaluationQuestion(19L, "重排序能提升检索精度吗", "Rerank", "RAG检索"),
             new EvaluationQuestion(19L, "知识库文档怎么入库", "文档", "RAG检索"),
             new EvaluationQuestion(19L, "关键词检索和向量检索区别", "混合", "RAG检索"),

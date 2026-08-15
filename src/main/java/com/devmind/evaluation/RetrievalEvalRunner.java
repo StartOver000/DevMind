@@ -92,6 +92,11 @@ public class RetrievalEvalRunner implements ApplicationRunner {
                 properties.retrievalVectorWeight(), report.total(), round(report.hitRate()),
                 round(report.mrr()), round(report.recall5()), round(report.recall10()),
                 round(report.ndcg10()), round(report.faithfulness()));
+        // 逐题明细：诊断 Recall 漏召回（2026-08-15 召回分析）
+        for (var item : report.items()) {
+            log.info("EVAL_ITEM question={} expected={} hit={} topChunks={}",
+                    item.question(), item.expectedKeyword(), item.hit(), item.chunkIds());
+        }
         writeReport(report);
         if (args.containsOption("update-baseline")) {
             writeBaseline(report);
@@ -210,8 +215,14 @@ public class RetrievalEvalRunner implements ApplicationRunner {
                         Map.of()
                 );
                 List<RetrievalResult> top = rerankService.rerank(q.question(), results, properties.evaluationTopK(), "heuristic");
-                java.util.function.Predicate<RetrievalResult> relevant = r ->
-                        r.content().contains(q.expected()) || r.documentName().contains(q.expected());
+                java.util.function.Predicate<RetrievalResult> relevant = r -> {
+                    String content = r.content() == null ? "" : r.content().toLowerCase();
+                    String name = r.documentName() == null ? "" : r.documentName().toLowerCase();
+                    String exp = q.expected() == null ? "" : q.expected().toLowerCase();
+                    return java.util.Arrays.stream(exp.split("\\|"))
+                            .filter(e -> !e.isBlank())
+                            .anyMatch(e -> content.contains(e) || name.contains(e));
+                };
                 mrrSum += RetrievalMetricsCalculator.compute(top, relevant).mrr();
                 n++;
             }

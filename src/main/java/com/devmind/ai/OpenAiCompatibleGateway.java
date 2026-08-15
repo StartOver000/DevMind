@@ -23,6 +23,7 @@ public class OpenAiCompatibleGateway implements AiModelGateway {
     private static final Logger log = LoggerFactory.getLogger(OpenAiCompatibleGateway.class);
 
     private final RestClient client;
+    private final String baseUrl;
     private final String apiKey;
     private final String chatModel;
     private final ObjectMapper objectMapper;
@@ -35,6 +36,7 @@ public class OpenAiCompatibleGateway implements AiModelGateway {
             ObjectMapper objectMapper
     ) {
         this.client = restClientBuilder.baseUrl(baseUrl).build();
+        this.baseUrl = baseUrl;
         this.apiKey = apiKey;
         this.chatModel = chatModel;
         this.objectMapper = objectMapper;
@@ -108,6 +110,26 @@ public class OpenAiCompatibleGateway implements AiModelGateway {
                 null,
                 null,
                 toolCalls
+        );
+    }
+
+    /**
+     * 流式聊天（token 级）：备用 Provider 也是真流式（复用 {@link SseChatStreamer}），
+     * 主模型降级时流式体验不退化（不再拆块模拟）。
+     */
+    @Override
+    public void streamChat(String systemPrompt, String userPrompt, java.util.function.Consumer<String> onToken) {
+        SseChatStreamer.streamChatCompletions(
+                baseUrl,
+                apiKey,
+                chatModel,
+                List.of(
+                        Map.of("role", "system", "content", systemPrompt),
+                        Map.of("role", "user", "content", userPrompt)
+                ),
+                Map.of("temperature", 0.2),
+                objectMapper,
+                onToken
         );
     }
 

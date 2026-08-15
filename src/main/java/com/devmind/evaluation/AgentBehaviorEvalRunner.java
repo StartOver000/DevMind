@@ -4,12 +4,18 @@ import com.devmind.agent.AgentService;
 import com.devmind.agent.dto.AgentChatRequest;
 import com.devmind.agent.dto.AgentChatResponse;
 import com.devmind.agent.dto.ToolTraceItem;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -28,11 +34,18 @@ import java.util.List;
 public class AgentBehaviorEvalRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(AgentBehaviorEvalRunner.class);
+    /** 回退告警阈值：低于基线 5% 即告警（与检索护栏一致） */
+    private static final double REGRESSION_THRESHOLD = 0.95;
+    /** 基线文件：data/eval/agent-baseline.json */
+    private static final Path BASELINE_PATH = Path.of("data/eval/agent-baseline.json");
 
     private final AgentService agentService;
+    private final MeterRegistry meterRegistry;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public AgentBehaviorEvalRunner(AgentService agentService) {
+    public AgentBehaviorEvalRunner(AgentService agentService, MeterRegistry meterRegistry) {
         this.agentService = agentService;
+        this.meterRegistry = meterRegistry;
     }
 
     /** 评测用例：任务描述 + 可接受的工具集合（真实模型选到其中任意一个即算工具选择正确） */
@@ -99,9 +112,69 @@ public class AgentBehaviorEvalRunner implements ApplicationRunner {
                 toolHits, cases.size(), cases.size() == 0 ? 0 : toolHits * 100.0 / cases.size(),
                 tasksDone, cases.size(), cases.size() == 0 ? 0 : tasksDone * 100.0 / cases.size());
         System.out.println(summary);
+        // 护栏：与基线对比（首次用 --update-baseline 建立基线），工具选择准确率回退超 5% 告警
+        if (args.containsOption("update-baseline")) {
+            writeBaseline(toolHits, tasksDone, cases.size());
+        } else {
+            checkBaseline(toolHits, tasksDone, cases.size());
+        }
         log.info("=== Agent 行为级评测结束 ===");
         // 离线 CLI：评估完成后显式退出 JVM
         System.exit(0);
+    }
+
+    /** Agent 质量护栏：与基线对比，工具选择准确率 / 任务完成率回退超 5% 记 devmind.agent.regression 并告警 */
+    private void checkBaseline(int toolHits, int tasksDone, int caseCount) {
+        try {
+            if (!Files.exists(BASELINE_PATH)) {
+                log.warn("[GUARD] NO_BASELINE 未发现基线 {}，首次运行请加 --update-baseline 建立基线", BASELINE_PATH);
+                return;
+            }
+            JsonNode base = objectMapper.readTree(Files.readString(BASELINE_PATH));
+            double baseToolAcc = base.path("toolAccuracy").asDouble(0);
+            double baseTaskRate = base.path("taskRate").asDouble(0);
+            double toolAcc = caseCount == 0 ? 0 : toolHits * 100.0 / caseCount / 100.0;
+            double taskRate = caseCount == 0 ? 0 : tasksDone * 100.0 / caseCount / 100.0;
+            boolean regressed = (baseToolAcc > 0 && toolAcc < baseToolAcc * REGRESSION_THRESHOLD)
+                    || (baseTaskRate > 0 && taskRate < baseTaskRate * REGRESSION_THRESHOLD);
+            if (regressed) {
+                meterRegistry.counter("devmind.agent.regression").increment();
+                log.error("[GUARD] FAIL Agent 行为回退：工具选择准确率={}%%（基线 {}）任务完成率={}%%（基线 {}），请检查 Agent 配置/工具描述/模型链路",
+                        roundPct(toolAcc), roundPct(baseToolAcc), roundPct(taskRate), roundPct(baseTaskRate));
+            } else {
+                log.info("[GUARD] PASS Agent 行为护栏通过：工具选择准确率={}%%（基线 {}），任务完成率={}%%（基线 {}）",
+                        roundPct(toolAcc), roundPct(baseToolAcc), roundPct(taskRate), roundPct(baseTaskRate));
+            }
+        } catch (Exception ex) {
+            log.warn("基线对比失败: {}", ex.getMessage());
+        }
+    }
+
+    /** 把当前结果写为基线（--update-baseline） */
+    private void writeBaseline(int toolHits, int tasksDone, int caseCount) {
+        try {
+            Files.createDirectories(BASELINE_PATH.getParent());
+            double toolAcc = caseCount == 0 ? 0 : toolHits * 100.0 / caseCount / 100.0;
+            double taskRate = caseCount == 0 ? 0 : tasksDone * 100.0 / caseCount / 100.0;
+            Files.writeString(BASELINE_PATH, """
+                    {
+                      "caseCount": %d,
+                      "toolHits": %d,
+                      "tasksDone": %d,
+                      "toolAccuracy": %.4f,
+                      "taskRate": %.4f,
+                      "updatedAt": "%s"
+                    }
+                    """.formatted(
+                    caseCount, toolHits, tasksDone, toolAcc, taskRate, OffsetDateTime.now()));
+            log.info("Agent 质量基线已写入 {}（工具选择准确率={}%%）", BASELINE_PATH, roundPct(toolAcc));
+        } catch (Exception ex) {
+            log.warn("基线写盘失败: {}", ex.getMessage());
+        }
+    }
+
+    private double roundPct(double ratio) {
+        return Math.round(ratio * 1000) / 10.0;
     }
 
     private String truncate(String s, int n) {

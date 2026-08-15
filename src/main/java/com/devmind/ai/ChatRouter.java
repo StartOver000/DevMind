@@ -144,7 +144,7 @@ public class ChatRouter {
 
     /**
      * 从配置构建备用 Provider 列表。
-     * 顺序即降级顺序：先国内直连（硅基流动，上线无需梯子），再海外（OpenRouter，最后兜底）。
+     * 顺序即降级顺序：硅基流动(主) → DeepSeek 官方（国内直连）→ OpenRouter（海外兜底）。
      */
     private List<ChatProvider> buildFallbackProviders(
             RestClient.Builder restClientBuilder,
@@ -152,16 +152,16 @@ public class ChatRouter {
             SecretCipher secretCipher
     ) {
         List<ChatProvider> providers = new ArrayList<>();
-        // 第一备用：硅基流动等国内直连（上线场景用户无需挂梯子）
+        // 第一备用：DeepSeek 官方（国内直连，质量与主渠道同源；主渠道硅基流动超时/限流时接管）
         if (properties.modelFallback2BaseUrl() != null && !properties.modelFallback2BaseUrl().isBlank()) {
-            OpenAiCompatibleGateway siliconflow = new OpenAiCompatibleGateway(
+            OpenAiCompatibleGateway deepseek = new OpenAiCompatibleGateway(
                     restClientBuilder,
                     properties.modelFallback2BaseUrl(),
                     secretCipher.resolve(properties.modelFallback2ApiKey()),
                     properties.modelFallback2ChatModel(),
                     new ObjectMapper()
             );
-            providers.add(new ChatProvider("siliconflow", siliconflow, true));
+            providers.add(new ChatProvider("deepseek", deepseek, true));
         }
         // 第二备用：OpenRouter（海外，需梯子，仅作最后兜底）
         if (properties.modelFallbackBaseUrl() != null && !properties.modelFallbackBaseUrl().isBlank()) {

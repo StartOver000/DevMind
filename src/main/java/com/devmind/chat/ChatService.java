@@ -38,6 +38,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 @Service
 public class ChatService {
@@ -295,6 +296,38 @@ public class ChatService {
     }
 
     private String callModel(Long userId, String question, List<RetrievalResult> results, List<ChatMessage> history) {
+        String userPrompt = buildUserPrompt(question, results, history);
+        try {
+            AiModelGateway.ChatResult result = chatRouter.chat(SYSTEM_PROMPT, userPrompt);
+            modelUsageService.record(
+                    userId,
+                    "chat",
+                    result.model(),
+                    result.promptTokens(),
+                    result.completionTokens(),
+                    userPrompt,
+                    result.content()
+            );
+            return result.content();
+        } catch (ApiException ex) {
+            if (ex.getCode() == ErrorCode.MODEL_CALL_FAILED && properties.localRagFallback()) {
+                log.warn("模型调用失败，降级为本地 RAG 回答: {}", ex.getMessage());
+                meterRegistry.counter("devmind.rag.degraded").increment();
+                return LocalRagAnswerer.answer(question, results);
+            }
+            throw ex;
+        } catch (Exception ex) {
+            if (properties.localRagFallback()) {
+                log.warn("模型调用异常，降级为本地 RAG 回答: {}", ex.getMessage());
+                meterRegistry.counter("devmind.rag.degraded").increment();
+                return LocalRagAnswerer.answer(question, results);
+            }
+            throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型调用失败: " + ex.getMessage());
+        }
+    }
+
+    /** 组装用户提示词（历史 + 问题 + 参考资料），非流式与流式共用 */
+    private String buildUserPrompt(String question, List<RetrievalResult> results, List<ChatMessage> history) {
         StringBuilder userPrompt = new StringBuilder();
         if (history != null && !history.isEmpty()) {
             userPrompt.append("历史对话：\n");
@@ -315,32 +348,96 @@ public class ChatService {
             }
             userPrompt.append('\n').append(result.content()).append('\n');
         }
+        return userPrompt.toString();
+    }
+
+    /** 流式会话句柄：检索与会话准备完成，待 {@link #streamAnswer} 推送 token 并持久化 */
+    public record StreamSession(
+            Long conversationId,
+            Long knowledgeBaseId,
+            String question,
+            String userPrompt,
+            List<Reference> references,
+            List<RetrievalResult> results,
+            Long userId
+    ) {
+    }
+
+    /**
+     * 流式问答第一步：检索 + 会话准备（存用户消息、多轮改写、召回），返回可流式句柄。
+     * 与 {@link #chat} 共用检索链路，保证流式/非流式回答一致。
+     */
+    public StreamSession prepareStream(Long knowledgeBaseId, ChatRequest request, Long userId) {
+        knowledgeBaseService.requireEnabledKnowledgeBaseAccess(knowledgeBaseId, userId);
+        String question = request.question().trim();
+        int topK = request.topK() == null
+                ? properties.retrievalTopK()
+                : Math.min(Math.max(request.topK(), 1), properties.retrievalMaxTopK());
+        Long conversationId = resolveConversation(knowledgeBaseId, question, request.conversationId(), userId);
+        chatRepository.insertMessage(conversationId, "user", question, null, null);
+        List<ChatMessage> history = recentHistory(conversationId);
+        List<String> historyQuestions = history.stream()
+                .filter(m -> "user".equals(m.role()))
+                .map(ChatMessage::content)
+                .toList();
+        String searchQuery = QueryRewriter.rewrite(question, historyQuestions);
+        QueryRouter.Route route = QueryRouter.route(searchQuery);
+        List<RetrievalResult> results = Observation.createNotStarted("devmind.retrieval", observationRegistry)
+                .observe(() -> searchWithFallback(
+                        knowledgeBaseId,
+                        searchQuery,
+                        topK,
+                        route.vectorWeight(),
+                        route.keywordWeight(),
+                        buildMetadataFilter(request.tags())
+                ));
+        List<Reference> references = toReferences(results);
+        String userPrompt = buildUserPrompt(question, results, history);
+        return new StreamSession(conversationId, knowledgeBaseId, question, userPrompt, references, results, userId);
+    }
+
+    /**
+     * 流式问答第二步：模型 token 流推送给 onToken，结束后持久化完整回答与审计。
+     * 主/备模型均失败时降级本地 RAG（拆块推送，与回答质量护栏的降级判定一致）。
+     */
+    public void streamAnswer(StreamSession session, Consumer<String> onToken) {
+        StringBuilder full = new StringBuilder();
         try {
-            AiModelGateway.ChatResult result = chatRouter.chat(SYSTEM_PROMPT, userPrompt.toString());
-            modelUsageService.record(
-                    userId,
-                    "chat",
-                    result.model(),
-                    result.promptTokens(),
-                    result.completionTokens(),
-                    userPrompt.toString(),
-                    result.content()
-            );
-            return result.content();
+            // token 流：既累积完整回答（持久化用），又实时转发给调用方（SSE 推送）
+            chatRouter.streamChat(SYSTEM_PROMPT, session.userPrompt(), chunk -> {
+                full.append(chunk);
+                onToken.accept(chunk);
+            });
         } catch (ApiException ex) {
             if (ex.getCode() == ErrorCode.MODEL_CALL_FAILED && properties.localRagFallback()) {
-                log.warn("模型调用失败，降级为本地 RAG 回答: {}", ex.getMessage());
-                meterRegistry.counter("devmind.rag.degraded").increment();
-                return LocalRagAnswerer.answer(question, results);
+                streamLocalFallback(session, full, onToken);
+            } else {
+                throw ex;
             }
-            throw ex;
         } catch (Exception ex) {
             if (properties.localRagFallback()) {
-                log.warn("模型调用异常，降级为本地 RAG 回答: {}", ex.getMessage());
-                meterRegistry.counter("devmind.rag.degraded").increment();
-                return LocalRagAnswerer.answer(question, results);
+                log.warn("模型流式调用异常，降级为本地 RAG 回答: {}", ex.getMessage());
+                streamLocalFallback(session, full, onToken);
+            } else {
+                throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型流式调用失败: " + ex.getMessage());
             }
-            throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型调用失败: " + ex.getMessage());
+        }
+        // 完整回答持久化（流式结束后的最终文本入消息表，供会话历史/审计复用）
+        chatRepository.insertMessage(session.conversationId(), "assistant", full.toString(), null, null);
+        auditLogService.log(session.userId(), "CHAT", "knowledge_base", session.knowledgeBaseId(), session.question());
+        log.info("stream chat answered, kb={}, questionLen={}, answerLen={}",
+                session.knowledgeBaseId(), session.question().length(), full.length());
+    }
+
+    /** 本地 RAG 降级：回答分块推送（模拟流式），保证流式端到端不中断 */
+    private void streamLocalFallback(StreamSession session, StringBuilder full, Consumer<String> onToken) {
+        meterRegistry.counter("devmind.rag.degraded").increment();
+        String answer = LocalRagAnswerer.answer(session.question(), session.results());
+        full.setLength(0);
+        for (int i = 0; i < answer.length(); i += 8) {
+            int end = Math.min(i + 8, answer.length());
+            full.append(answer, i, end);
+            onToken.accept(answer.substring(i, end));
         }
     }
 

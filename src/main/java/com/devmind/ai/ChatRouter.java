@@ -18,6 +18,7 @@ import org.springframework.web.client.RestClientResponseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -213,6 +214,55 @@ public class ChatRouter {
             }
             return fail(primaryError);
         }
+    }
+
+    /**
+     * 流式聊天（token 级）：主网关真流式（ZhipuRestModelGateway 覆写），失败按序降级到备用 Provider
+     * （OpenAiCompatibleGateway 等用默认拆块模拟）；全部失败抛 MODEL_CALL_FAILED 交上层本地 RAG 降级。
+     */
+    public void streamChat(String systemPrompt, String userPrompt, Consumer<String> onToken) {
+        if (isCircuitOpen(PRIMARY_CIRCUIT_KEY)) {
+            streamViaFallbacks(systemPrompt, userPrompt, onToken);
+            return;
+        }
+        try {
+            primaryGateway.streamChat(systemPrompt, userPrompt, onToken);
+            circuitStateStore.reset(PRIMARY_CIRCUIT_KEY);
+            return;
+        } catch (Exception primaryError) {
+            failedCounter.increment();
+            boolean rateLimited = isRateLimited(primaryError);
+            if (rateLimited) {
+                circuitStateStore.recordFailure(PRIMARY_CIRCUIT_KEY, 1, true, CIRCUIT_OPEN_MS);
+            }
+            log.warn("主模型流式调用失败，切换备用 Provider: {}", primaryError.getMessage());
+            streamViaFallbacks(systemPrompt, userPrompt, onToken);
+        }
+    }
+
+    private void streamViaFallbacks(String systemPrompt, String userPrompt, Consumer<String> onToken) {
+        for (ChatProvider provider : fallbackProviders) {
+            String key = providerKey(provider.name());
+            if (circuitStateStore.isOpen(key)) {
+                log.warn("备用 Provider {} 熔断中，跳过（流式）", provider.name());
+                continue;
+            }
+            try {
+                provider.gateway().streamChat(systemPrompt, userPrompt, onToken);
+                circuitStateStore.reset(key);
+                Counter.builder("devmind.model.fallback")
+                        .tag("provider", provider.name())
+                        .register(meterRegistry)
+                        .increment();
+                log.info("主模型失败，备用 Provider {} 流式接管成功", provider.name());
+                return;
+            } catch (Exception error) {
+                circuitStateStore.recordFailure(key, CIRCUIT_FAILURE_THRESHOLD, isRateLimited(error), CIRCUIT_OPEN_MS);
+                failedCounter.increment();
+                log.warn("备用 Provider {} 流式调用失败: {}", provider.name(), error.getMessage());
+            }
+        }
+        throw new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型流式调用失败（主备均不可用）");
     }
 
     /**

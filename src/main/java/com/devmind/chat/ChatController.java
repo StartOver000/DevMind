@@ -6,7 +6,6 @@ import com.devmind.chat.dto.ChatResponse;
 import com.devmind.chat.dto.ConversationListResponse;
 import com.devmind.chat.dto.MessagesResponse;
 import com.devmind.common.SsePusher;
-import com.devmind.common.StreamingChunkSplitter;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,9 +24,6 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api")
 public class ChatController {
-
-    /** 分片推送间隔（毫秒），模拟打字节奏 */
-    private static final long DELTA_INTERVAL_MS = 40L;
 
     private final ChatService chatService;
     private final SsePusher ssePusher;
@@ -72,21 +68,21 @@ public class ChatController {
 
     private void runStream(SseEmitter emitter, Long knowledgeBaseId, ChatRequest request, Long userId)
             throws Exception {
-        ChatResponse response = chatService.chat(knowledgeBaseId, request, userId);
+        // 真流式（token 级）：检索与会话准备 → 发 meta（引用来源）→ 模型 token 流逐块推送
+        ChatService.StreamSession session = chatService.prepareStream(knowledgeBaseId, request, userId);
         ssePusher.sendJson(emitter, "meta", Map.of(
-                "conversationId", response.conversationId() == null ? 0L : response.conversationId(),
-                "references", response.references() == null ? List.of() : response.references()
+                "conversationId", session.conversationId() == null ? 0L : session.conversationId(),
+                "references", session.references() == null ? List.of() : session.references()
         ));
-        streamAnswer(emitter, response.answer());
+        chatService.streamAnswer(session, chunk -> {
+            try {
+                ssePusher.sendDelta(emitter, chunk);
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        });
         ssePusher.sendJson(emitter, "done", Map.of("ok", true));
         emitter.complete();
-    }
-
-    private void streamAnswer(SseEmitter emitter, String answer) throws Exception {
-        for (String chunk : StreamingChunkSplitter.split(answer)) {
-            ssePusher.sendDelta(emitter, chunk);
-            Thread.sleep(DELTA_INTERVAL_MS);
-        }
     }
 
     @PostMapping("/chat/aggregate")

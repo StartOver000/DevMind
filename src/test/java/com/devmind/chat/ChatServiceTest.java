@@ -20,6 +20,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -30,6 +31,7 @@ import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.times;
@@ -222,5 +224,67 @@ class ChatServiceTest {
         assertThat(response.answer()).contains("本地降级模式").contains("a.md");
         assertThat(response.references()).hasSize(1);
         verify(chatRouter).chat(anyString(), anyString());
+    }
+
+    @Test
+    void streamAnswerForwardsTokensToCallbackAndPersistsFullAnswer() {
+        // 回归：onToken 必须被转发（修复前 full::append 直接传给 chatRouter，客户端收不到任何 token）
+        DevMindProperties properties = new DevMindProperties(
+                "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
+                4, 3, 5000, 5, 60000, 60000, 0.7, 0.3, true, "mock", "mysql", "", "", "", 2000, "heuristic", 5,
+                0.00015, 0.0006, "", "", "", "", "", "glm-4.7-flash", "embedding-2", 2000, false, true, "", "", "", "", "", "", true, ""
+        );
+        ChatService service = new ChatService(
+                knowledgeBaseService, chatRepository, retrievalService, reranker, modelGateway,
+                chatRouter, auditLogService, modelUsageService, userService, properties,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry(),
+                io.micrometer.observation.ObservationRegistry.create()
+        );
+        ChatService.StreamSession session = new ChatService.StreamSession(
+                100L, 1L, "什么是 RAG", "prompt", List.of(), List.of(), 1L);
+        // 模拟模型流式：分两批推送 token
+        org.mockito.Mockito.doAnswer(inv -> {
+            java.util.function.Consumer<String> onToken = inv.getArgument(2);
+            onToken.accept("RAG 是");
+            onToken.accept("检索增强生成。");
+            return null;
+        }).when(chatRouter).streamChat(anyString(), anyString(), any());
+
+        List<String> received = new ArrayList<>();
+        service.streamAnswer(session, received::add);
+
+        // token 实时转发给调用方（SSE 推送），且完整回答持久化到消息表
+        assertThat(received).containsExactly("RAG 是", "检索增强生成。");
+        verify(chatRepository).insertMessage(eq(100L), eq("assistant"), eq("RAG 是检索增强生成。"), isNull(), isNull());
+        verify(auditLogService).log(eq(1L), eq("CHAT"), eq("knowledge_base"), eq(1L), anyString());
+    }
+
+    @Test
+    void streamAnswerFallsBackToLocalRagWhenModelStreamingFails() {
+        DevMindProperties properties = new DevMindProperties(
+                "mock", "./data", 20, "md,markdown,pdf", 1500, 200, "boundary", 8, 5, 10, 0.1,
+                4, 3, 5000, 5, 60000, 60000, 0.7, 0.3, true, "mock", "mysql", "", "", "", 2000, "heuristic", 5,
+                0.00015, 0.0006, "", "", "", "", "", "glm-4.7-flash", "embedding-2", 2000, false, true, "", "", "", "", "", "", true, ""
+        );
+        ChatService service = new ChatService(
+                knowledgeBaseService, chatRepository, retrievalService, reranker, modelGateway,
+                chatRouter, auditLogService, modelUsageService, userService, properties,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry(),
+                io.micrometer.observation.ObservationRegistry.create()
+        );
+        ChatService.StreamSession session = new ChatService.StreamSession(
+                100L, 1L, "什么是 RAG", "prompt", List.of(),
+                List.of(new RetrievalResult(1L, 1L, "a.md", 0, "RAG 是检索增强生成。", Map.of(), 0.9)), 1L);
+        org.mockito.Mockito.doThrow(new ApiException(ErrorCode.MODEL_CALL_FAILED, "模型挂了"))
+                .when(chatRouter).streamChat(anyString(), anyString(), any());
+
+        List<String> received = new ArrayList<>();
+        service.streamAnswer(session, received::add);
+
+        // 模型流式失败 → 本地 RAG 降级并分块推送（非空回答，防空回答回归）
+        assertThat(received).isNotEmpty();
+        String joined = String.join("", received);
+        assertThat(joined).contains("本地降级模式").contains("a.md");
+        verify(chatRepository).insertMessage(eq(100L), eq("assistant"), contains("a.md"), isNull(), isNull());
     }
 }

@@ -3,16 +3,24 @@ package com.devmind.ai;
 import com.devmind.config.DevMindProperties;
 import com.devmind.security.SecretCipher;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 public class ZhipuRestModelGateway implements AiModelGateway {
@@ -174,6 +182,78 @@ public class ZhipuRestModelGateway implements AiModelGateway {
         } catch (Exception ex) {
             log.warn("工具参数 JSON 解析失败: {}", ex.getMessage());
             return Map.of();
+        }
+    }
+
+    /**
+     * 流式聊天（token 级）：OpenAI 兼容 SSE 流（data: {...} delta 逐块回调，data: [DONE] 结束）。
+     * 用 JDK HttpClient 直连（RestClient 不便流式读 body），失败抛异常交给 ChatRouter 降级。
+     */
+    @Override
+    public void streamChat(String systemPrompt, String userPrompt, Consumer<String> onToken) {
+        Map<String, Object> body = Map.of(
+                "model", properties.zhipuChatModel(),
+                "messages", List.of(
+                        Map.of("role", "system", "content", systemPrompt),
+                        Map.of("role", "user", "content", userPrompt)
+                ),
+                "max_tokens", properties.zhipuMaxTokens(),
+                "temperature", 0.2,
+                "thinking", Map.of("type", "enabled"),
+                "stream", true
+        );
+        try {
+            String json = objectMapper.writeValueAsString(body);
+            String baseUrl = properties.zhipuBaseUrl().replaceAll("/+$", "");
+            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .build();
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl + "/chat/completions"))
+                    .header("Authorization", "Bearer " + apiKey())
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .timeout(Duration.ofSeconds(120))
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(json))
+                    .build();
+            java.net.http.HttpResponse<InputStream> response =
+                    client.send(request, java.net.http.HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() >= 300) {
+                String err = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
+                throw new IllegalStateException("流式接口失败 HTTP " + response.statusCode() + ": " + err);
+            }
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line == null || !line.startsWith("data:")) {
+                        continue;
+                    }
+                    String payload = line.substring(5).trim();
+                    if (payload.isEmpty()) {
+                        continue;
+                    }
+                    if ("[DONE]".equals(payload)) {
+                        break;
+                    }
+                    try {
+                        JsonNode node = objectMapper.readTree(payload);
+                        JsonNode content = node.path("choices").path(0).path("delta").path("content");
+                        if (content.isTextual() && !content.asText().isEmpty()) {
+                            onToken.accept(content.asText());
+                        }
+                    } catch (Exception ignored) {
+                        // 单条 SSE 数据解析失败（空行/心跳等）不中断流
+                    }
+                }
+            } catch (java.io.IOException ex) {
+                throw new IllegalStateException("流式读取中断: " + ex.getMessage());
+            }
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("流式请求失败: " + ex.getMessage());
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("流式请求被中断");
         }
     }
 

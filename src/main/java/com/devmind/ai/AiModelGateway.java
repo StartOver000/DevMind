@@ -21,6 +21,19 @@ public interface AiModelGateway {
         throw new UnsupportedOperationException("当前模型网关不支持工具调用");
     }
 
+    /**
+     * 流式聊天（token 级）：逐块回调生成的文本。
+     * 默认实现：非流式网关用完整回答拆块模拟（约 8 字符/块），保证降级链/测试网关无需各自实现；
+     * 支持流式的网关（如 ZhipuRestModelGateway）覆写为真实 token 流。
+     */
+    default void streamChat(String systemPrompt, String userPrompt, java.util.function.Consumer<String> onToken) {
+        ChatResult result = chat(systemPrompt, userPrompt);
+        String content = result == null || result.content() == null ? "" : result.content();
+        for (int i = 0; i < content.length(); i += 8) {
+            onToken.accept(content.substring(i, Math.min(i + 8, content.length())));
+        }
+    }
+
     record ChatResult(
             String content,
             String model,

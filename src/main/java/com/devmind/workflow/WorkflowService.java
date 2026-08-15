@@ -291,8 +291,19 @@ public class WorkflowService {
         }
     }
 
-    /** 递归校验单个步骤节点（if/parallel/普通步骤） */
+    /** 递归校验单个步骤节点（if/parallel/审批/普通步骤） */
     private void validateStepNode(JsonNode node, Set<String> accessible) {
+        // 人工审批节点：校验 then 分支（approve 字段非空即审批节点）
+        String approveTitle = node.path("approve").asText("");
+        if (!approveTitle.isBlank()) {
+            JsonNode thenNode = node.path("then");
+            if (thenNode.isArray()) {
+                for (JsonNode item : thenNode) {
+                    validateStepNode(item, accessible);
+                }
+            }
+            return;
+        }
         // 条件分支
         String condition = node.path("if").asText("");
         if (!condition.isBlank()) {

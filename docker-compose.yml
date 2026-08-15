@@ -82,6 +82,7 @@ services:
     build: .
     container_name: devmind-app
     restart: unless-stopped
+    init: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,12 +96,21 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+    # 应用健康检查（SRE）：探测 Spring Boot Actuator /actuator/health，
+    # node 为 MCP 依赖已随镜像安装（v22 含全局 fetch）
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/actuator/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
 
   # 第二个实例：验证 Redis Stream 消费者组多实例负载均衡 / 水平扩展
   app2:
     build: .
     container_name: devmind-app2
     restart: unless-stopped
+    init: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -115,6 +125,12 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8081/actuator/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
 
   nginx:
     image: nginx:alpine

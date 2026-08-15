@@ -25,22 +25,26 @@ public class AiModelConfig {
             EmbeddingModel embeddingModel,
             ChatModel chatModel,
             EmbeddingCacheRepository cache,
+            io.micrometer.core.instrument.MeterRegistry meterRegistry,
             @Value("${spring.ai.openai.embedding.options.model:openai}") String embeddingModelName
     ) {
         return new CachedEmbeddingGateway(
                 new SpringAiModelGateway(embeddingModel, chatModel),
                 cache,
-                "openai:" + embeddingModelName
+                "openai:" + embeddingModelName,
+                meterRegistry
         );
     }
 
     @Bean
     @ConditionalOnProperty(name = "devmind.model-mode", havingValue = "mock")
-    public AiModelGateway mockAiModelGateway(DevMindProperties properties, EmbeddingCacheRepository cache) {
+    public AiModelGateway mockAiModelGateway(DevMindProperties properties, EmbeddingCacheRepository cache,
+                                             io.micrometer.core.instrument.MeterRegistry meterRegistry) {
         return new CachedEmbeddingGateway(
                 new MockAiModelGateway(properties.embeddingDimensions()),
                 cache,
-                "mock:dim" + properties.embeddingDimensions()
+                "mock:dim" + properties.embeddingDimensions(),
+                meterRegistry
         );
     }
 
@@ -52,6 +56,7 @@ public class AiModelConfig {
             SecretCipher secretCipher,
             EmbeddingCacheRepository cache,
             com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            io.micrometer.core.instrument.MeterRegistry meterRegistry,
             @Value("${devmind.embedding-fallback.base-url:}") String embeddingFallbackBaseUrl,
             @Value("${devmind.embedding-fallback.api-key:}") String embeddingFallbackApiKey,
             @Value("${devmind.embedding-fallback.model:BAAI/bge-m3}") String embeddingFallbackModel
@@ -59,7 +64,8 @@ public class AiModelConfig {
         AiModelGateway gateway = new CachedEmbeddingGateway(
                 new ZhipuRestModelGateway(restClientBuilder, properties, secretCipher, objectMapper),
                 cache,
-                "zhipu:" + properties.zhipuEmbeddingModel() + "@" + properties.zhipuBaseUrl()
+                "zhipu:" + properties.zhipuEmbeddingModel() + "@" + properties.zhipuBaseUrl(),
+                meterRegistry
         );
         // 配置了备用 embedding（如硅基流动 bge-m3）时，主 embedding 失败自动切换；
         // 传主模型维度做校验——备用维度不一致时拒绝写入，防污染 pgvector 向量库

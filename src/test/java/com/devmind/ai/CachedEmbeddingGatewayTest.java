@@ -37,8 +37,10 @@ class CachedEmbeddingGatewayTest {
         when(cache.find(org.mockito.ArgumentMatchers.anyString())).thenReturn(Optional.empty());
         when(delegate.embed(anyList())).thenReturn(List.of(vecA)).thenReturn(List.of(vecB));
 
-        CachedEmbeddingGateway gatewayA = new CachedEmbeddingGateway(delegate, cache, "zhipu:bge-m3@sf");
-        CachedEmbeddingGateway gatewayB = new CachedEmbeddingGateway(delegate, cache, "old:embedding-2@mock");
+        CachedEmbeddingGateway gatewayA = new CachedEmbeddingGateway(delegate, cache, "zhipu:bge-m3@sf",
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+        CachedEmbeddingGateway gatewayB = new CachedEmbeddingGateway(delegate, cache, "old:embedding-2@mock",
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
 
         List<List<Double>> r1 = gatewayA.embed(List.of("RAG 是什么"));
         List<List<Double>> r2 = gatewayB.embed(List.of("RAG 是什么"));
@@ -54,7 +56,8 @@ class CachedEmbeddingGatewayTest {
         when(cache.find(org.mockito.ArgumentMatchers.anyString())).thenReturn(Optional.empty());
         when(delegate.embed(anyList())).thenReturn(List.of(vecA));
 
-        CachedEmbeddingGateway gateway = new CachedEmbeddingGateway(delegate, cache, "zhipu:bge-m3@sf");
+        CachedEmbeddingGateway gateway = new CachedEmbeddingGateway(delegate, cache, "zhipu:bge-m3@sf",
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
 
         gateway.embed(List.of("RAG 是什么"));
         List<List<Double>> second = gateway.embed(List.of("RAG 是什么"));

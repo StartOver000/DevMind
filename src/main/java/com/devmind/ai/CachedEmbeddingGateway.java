@@ -1,6 +1,8 @@
 package com.devmind.ai;
 
 import com.devmind.common.HashUtils;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -28,11 +30,19 @@ public class CachedEmbeddingGateway implements AiModelGateway {
     private final Semaphore semaphore = new Semaphore(MAX_CONCURRENCY);
     /** L1 内存缓存：sha256(modelKey+text) → vector。命中则跳过 DB 查询（检索/问答高频同问题场景显著降低延迟与连接竞争） */
     private final Map<String, List<Double>> memoryCache = new ConcurrentHashMap<>();
+    /** 缓存命中率可观测：devmind.embedding.cache{level=l1|l2|miss} */
+    private final Counter l1Hits;
+    private final Counter l2Hits;
+    private final Counter misses;
 
-    public CachedEmbeddingGateway(AiModelGateway delegate, EmbeddingCacheRepository cache, String modelKey) {
+    public CachedEmbeddingGateway(AiModelGateway delegate, EmbeddingCacheRepository cache, String modelKey,
+                                  MeterRegistry meterRegistry) {
         this.delegate = delegate;
         this.cache = cache;
         this.modelKey = modelKey;
+        this.l1Hits = Counter.builder("devmind.embedding.cache").tag("level", "l1").register(meterRegistry);
+        this.l2Hits = Counter.builder("devmind.embedding.cache").tag("level", "l2").register(meterRegistry);
+        this.misses = Counter.builder("devmind.embedding.cache").tag("level", "miss").register(meterRegistry);
     }
 
     private String cacheKey(String text) {
@@ -50,15 +60,18 @@ public class CachedEmbeddingGateway implements AiModelGateway {
             // L1：进程内内存命中（高频同问题，零 DB 往返）
             List<Double> mem = memoryCache.get(key);
             if (mem != null) {
+                l1Hits.increment();
                 result.add(mem);
                 continue;
             }
             // L2：embedding_cache 表（跨实例共享）
             Optional<List<Double>> cached = cache.find(key);
             if (cached.isPresent()) {
+                l2Hits.increment();
                 memoryCache.put(key, cached.get());
                 result.add(cached.get());
             } else {
+                misses.increment();
                 result.add(null);
                 missing.add(text);
                 missingIndexes.add(i);

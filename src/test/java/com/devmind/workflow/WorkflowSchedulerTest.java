@@ -9,7 +9,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -27,11 +30,16 @@ class WorkflowSchedulerTest {
     @Mock
     private WorkflowRunRepository runRepository;
 
+    @Mock
+    private CronLock cronLock;
+
     private WorkflowScheduler scheduler;
 
     @BeforeEach
     void setUp() {
-        scheduler = new WorkflowScheduler(repository, executor, runRepository);
+        scheduler = new WorkflowScheduler(repository, executor, runRepository, cronLock);
+        // 默认：分布式锁可获取（单测专注调度判定；锁行为由 CronLockTest 覆盖）
+        lenient().when(cronLock.tryAcquire(anyLong(), anyString())).thenReturn(true);
     }
 
     private Workflow cronWorkflow(Long id, String cron, Long createdBy) {
@@ -80,5 +88,28 @@ class WorkflowSchedulerTest {
         scheduler.scanCronWorkflows();
 
         verify(executor, never()).execute(any(), any(), eq("cron"));
+    }
+
+    @Test
+    void skipsTriggerWhenDistributedLockHeldByOtherInstance() {
+        // 双实例：本实例扫描命中，但分布式锁已被另一实例持有 → 跳过（防双 run）
+        when(repository.listEnabledByTrigger(1L, "cron"))
+                .thenReturn(List.of(cronWorkflow(1L, "0 * * * * *", 7L)));
+        when(cronLock.tryAcquire(eq(1L), anyString())).thenReturn(false);
+
+        scheduler.scanCronWorkflows();
+
+        verify(executor, never()).execute(any(), any(), eq("cron"));
+    }
+
+    @Test
+    void acquiresDistributedLockBeforeTrigger() {
+        when(repository.listEnabledByTrigger(1L, "cron"))
+                .thenReturn(List.of(cronWorkflow(1L, "0 * * * * *", 7L)));
+
+        scheduler.scanCronWorkflows();
+
+        verify(cronLock).tryAcquire(eq(1L), anyString());
+        verify(executor, timeout(5000)).execute(any(), eq(7L), eq("cron"));
     }
 }

@@ -31,16 +31,18 @@ public class WorkflowScheduler {
     private final WorkflowRepository repository;
     private final WorkflowExecutor executor;
     private final WorkflowRunRepository runRepository;
-    /** 每个工作流最近一次触发的分钟键（防重复触发） */
+    private final CronLock cronLock;
+    /** 每个工作流最近一次触发的分钟键（进程内防重复；跨实例由 CronLock 分布式锁兜底） */
     private final Map<Long, String> lastTriggerMinute = new ConcurrentHashMap<>();
     /** 定时触发执行池：统一有界池 */
     private final ExecutorService executionPool = com.devmind.common.DevMindExecutors.scheduler();
 
     public WorkflowScheduler(WorkflowRepository repository, WorkflowExecutor executor,
-                             WorkflowRunRepository runRepository) {
+                             WorkflowRunRepository runRepository, CronLock cronLock) {
         this.repository = repository;
         this.executor = executor;
         this.runRepository = runRepository;
+        this.cronLock = cronLock;
     }
 
     /**
@@ -90,7 +92,11 @@ public class WorkflowScheduler {
                 }
                 String minuteKey = next.format(MINUTE_KEY);
                 if (minuteKey.equals(lastTriggerMinute.get(workflow.id()))) {
-                    continue; // 该触发分钟已执行过
+                    continue; // 该触发分钟已执行过（本实例）
+                }
+                // 分布式锁：同一触发分钟跨实例只允许一个实例提交执行（双实例竞态防护）
+                if (!cronLock.tryAcquire(workflow.id(), minuteKey)) {
+                    continue; // 其他实例已触发
                 }
                 lastTriggerMinute.put(workflow.id(), minuteKey);
                 executionPool.submit(() -> runScheduled(workflow));

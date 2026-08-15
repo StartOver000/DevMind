@@ -190,4 +190,89 @@ class InterfaceToolAdapterTest {
         assertThat(result).contains("\"ok\":true");
         server.verify();
     }
+
+    @Test
+    void oauth2ExchangesTokenThenCallsBusinessApi() {
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        // 首次调用：先向 token_url 换 token（client_credentials）
+        server.expect(requestTo("https://auth.example.com/oauth2/token"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(
+                        "{\"access_token\":\"tok-abc\",\"expires_in\":3600}",
+                        MediaType.APPLICATION_JSON));
+        // 业务请求携带 Bearer token
+        server.expect(requestTo("https://api.example.com/orders"))
+                .andExpect(header("Authorization", "Bearer tok-abc"))
+                .andRespond(withSuccess("{\"id\":7}", MediaType.APPLICATION_JSON));
+        when(secretCipher.resolve("enc:oauth"))
+                .thenReturn("{\"token_url\":\"https://auth.example.com/oauth2/token\"," +
+                        "\"client_id\":\"cid\",\"client_secret\":\"csec\",\"scope\":\"read\"}");
+
+        InterfaceToolAdapter adapter = adapter(def(
+                "oauth_api", "https://api.example.com/orders", "GET", "oauth2", "enc:oauth", null));
+
+        assertThat(adapter.execute("{}", 1L)).isEqualTo("{\"id\":7}");
+        server.verify();
+    }
+
+    @Test
+    void oauth2ReusesCachedTokenWithoutReExchanging() {
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        // token 端点只应被调用一次（第二次调用复用缓存）
+        server.expect(requestTo("https://auth.example.com/oauth2/token"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(
+                        "{\"access_token\":\"tok-1\",\"expires_in\":3600}",
+                        MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.example.com/orders"))
+                .andExpect(header("Authorization", "Bearer tok-1"))
+                .andRespond(withSuccess("{\"id\":1}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.example.com/orders"))
+                .andExpect(header("Authorization", "Bearer tok-1"))
+                .andRespond(withSuccess("{\"id\":2}", MediaType.APPLICATION_JSON));
+        when(secretCipher.resolve("enc:oauth"))
+                .thenReturn("{\"token_url\":\"https://auth.example.com/oauth2/token\"," +
+                        "\"client_id\":\"cid\",\"client_secret\":\"csec\"}");
+
+        InterfaceToolAdapter adapter = adapter(def(
+                "oauth_api", "https://api.example.com/orders", "GET", "oauth2", "enc:oauth", null));
+
+        adapter.execute("{}", 1L);
+        adapter.execute("{}", 1L);
+        // token 端点若被调用第二次，verify 会因多余请求失败
+        server.verify();
+    }
+
+    @Test
+    void oauth2ReExchangesTokenWhenCachedExpired() throws InterruptedException {
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        // expires_in=1 秒 → 提前 20% 过期（0.8s）→ 第二次调用需重新换 token
+        server.expect(requestTo("https://auth.example.com/oauth2/token"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(
+                        "{\"access_token\":\"tok-a\",\"expires_in\":1}",
+                        MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.example.com/orders"))
+                .andExpect(header("Authorization", "Bearer tok-a"))
+                .andRespond(withSuccess("{\"id\":1}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://auth.example.com/oauth2/token"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(
+                        "{\"access_token\":\"tok-b\",\"expires_in\":3600}",
+                        MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.example.com/orders"))
+                .andExpect(header("Authorization", "Bearer tok-b"))
+                .andRespond(withSuccess("{\"id\":2}", MediaType.APPLICATION_JSON));
+        when(secretCipher.resolve("enc:oauth"))
+                .thenReturn("{\"token_url\":\"https://auth.example.com/oauth2/token\"," +
+                        "\"client_id\":\"cid\",\"client_secret\":\"csec\"}");
+
+        InterfaceToolAdapter adapter = adapter(def(
+                "oauth_api", "https://api.example.com/orders", "GET", "oauth2", "enc:oauth", null));
+
+        assertThat(adapter.execute("{}", 1L)).isEqualTo("{\"id\":1}");
+        Thread.sleep(1100); // 超过 0.8s 提前过期窗口
+        assertThat(adapter.execute("{}", 1L)).isEqualTo("{\"id\":2}");
+        server.verify();
+    }
 }

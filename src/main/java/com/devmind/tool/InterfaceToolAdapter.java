@@ -18,6 +18,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 把登记的接口（{@link ToolDefinition}）包装为 {@link AgentTool}：
@@ -39,6 +40,12 @@ public class InterfaceToolAdapter implements AgentTool {
     /** SSRF 防护开关与白名单（可配置，本地仿真/开发可放行 host.docker.internal） */
     private final boolean ssrfEnabled;
     private final java.util.Set<String> allowedHosts;
+    /** OAuth2 client credentials 换取的 token 缓存（按工具名隔离；过期自动重换）。用 name 而非 id——forInsert 场景 id 可能为 null */
+    private final Map<String, OauthToken> oauthTokenCache = new ConcurrentHashMap<>();
+
+    /** 缓存的 OAuth2 token 与过期时间（提前 20% 过期，防边界竞态） */
+    private record OauthToken(String token, long expiresAtEpochMs) {
+    }
 
     public InterfaceToolAdapter(
             ToolDefinition def,
@@ -253,7 +260,7 @@ public class InterfaceToolAdapter implements AgentTool {
         return null;
     }
 
-    /** 鉴权配置解析（解密后注入 header/query）；仅支持 none/api_key/basic */
+    /** 鉴权配置解析（解密后注入 header/query）；支持 none/api_key/basic/oauth2 */
     private void applyAuth(Map<String, String> headers, Map<String, String> query) {
         String authType = def.authType() == null ? "none" : def.authType();
         if ("none".equals(authType) || def.authConfigEncrypted() == null || def.authConfigEncrypted().isBlank()) {
@@ -280,10 +287,71 @@ public class InterfaceToolAdapter implements AgentTool {
                             .encodeToString((username + ":" + password).getBytes(java.nio.charset.StandardCharsets.UTF_8));
                     headers.put("Authorization", "Basic " + encoded);
                 }
+                case "oauth2" -> {
+                    String token = obtainOauthToken(cfg);
+                    if (token != null && !token.isBlank()) {
+                        headers.put("Authorization", "Bearer " + token);
+                    }
+                }
                 default -> log.warn("接口工具 {} 不支持的鉴权类型: {}", def.name(), authType);
             }
         } catch (Exception ex) {
             log.warn("接口工具 {} 鉴权配置解析失败: {}", def.name(), ex.getMessage());
+        }
+    }
+
+    /**
+     * OAuth2 client credentials：缓存有效 token → 缺失/过期时 POST token_url 换新 token → 缓存并返回。
+     * auth_config JSON：token_url/client_id/client_secret/scope/token_field(默认 access_token)/expires_field(默认 expires_in)。
+     * token_url 同样过 SSRF 校验（防把内网端点当认证中心被滥用）。
+     */
+    private String obtainOauthToken(JsonNode cfg) {
+        String cacheKey = def.name() == null ? "oauth" : def.name();
+        OauthToken cached = oauthTokenCache.get(cacheKey);
+        if (cached != null && System.currentTimeMillis() < cached.expiresAtEpochMs()) {
+            return cached.token();
+        }
+        String tokenUrl = cfg.path("token_url").asText("");
+        if (tokenUrl.isBlank()) {
+            log.warn("接口工具 {} oauth2 缺少 token_url", def.name());
+            return null;
+        }
+        if (ssrfEnabled && validateEndpoint(tokenUrl) != null) {
+            log.warn("接口工具 {} oauth2 token_url 未通过 SSRF 校验: {}", def.name(), tokenUrl);
+            return null;
+        }
+        try {
+            org.springframework.util.LinkedMultiValueMap<String, String> form =
+                    new org.springframework.util.LinkedMultiValueMap<>();
+            form.add("grant_type", "client_credentials");
+            form.add("client_id", cfg.path("client_id").asText(""));
+            form.add("client_secret", cfg.path("client_secret").asText(""));
+            String scope = cfg.path("scope").asText("");
+            if (!scope.isBlank()) {
+                form.add("scope", scope);
+            }
+            String raw = client.post()
+                    .uri(tokenUrl)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body(form)
+                    .retrieve()
+                    .body(String.class);
+            JsonNode resp = objectMapper.readTree(raw == null ? "{}" : raw);
+            String tokenField = cfg.path("token_field").asText("access_token");
+            String expiresField = cfg.path("expires_field").asText("expires_in");
+            String token = resp.path(tokenField).asText("");
+            if (token.isBlank()) {
+                log.warn("接口工具 {} oauth2 换 token 失败: {}", def.name(), raw);
+                return null;
+            }
+            long expiresIn = expiresField.isBlank() ? 3600L : resp.path(expiresField).asLong(3600L);
+            // 提前 20% 过期（默认 1 小时），避免边界竞态导致偶发 401
+            long expiresAt = System.currentTimeMillis() + Math.max(1, (long) (expiresIn * 800));
+            oauthTokenCache.put(cacheKey, new OauthToken(token, expiresAt));
+            return token;
+        } catch (Exception ex) {
+            log.warn("接口工具 {} oauth2 换 token 异常: {}", def.name(), ex.getMessage());
+            return null;
         }
     }
 

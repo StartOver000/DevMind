@@ -1,6 +1,7 @@
 package com.devmind.tool;
 
 import com.devmind.agent.ToolRegistry;
+import com.devmind.ai.AiModelGateway;
 import com.devmind.common.ApiException;
 import com.devmind.security.SecretCipher;
 import com.devmind.tool.dto.ToolCreateRequest;
@@ -41,6 +42,12 @@ class InterfaceToolServiceTest {
     @Mock
     private ToolAccessService toolAccessService;
 
+    @Mock
+    private AiModelGateway modelGateway;
+
+    @Mock
+    private ToolSemanticRepository semanticRepository;
+
     private ToolRegistry registry;
     private InterfaceToolService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -50,8 +57,10 @@ class InterfaceToolServiceTest {
         registry = new ToolRegistry(List.of());
         service = new InterfaceToolService(
                 repository, registry, RestClient.builder(), secretCipher, objectMapper,
-                userService, toolAccessService
+                userService, toolAccessService, modelGateway, semanticRepository
         );
+        // 语义档案同步默认成功（避免 mock 干扰主流程断言）
+        lenient().when(modelGateway.embed(any())).thenReturn(List.of(List.of(0.1, 0.2, 0.3)));
         // 测试用户 1 为管理员，租户 1
         lenient().when(userService.isAdmin(1L)).thenReturn(true);
         lenient().when(userService.tenantIdOf(1L)).thenReturn(1L);

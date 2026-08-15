@@ -1,6 +1,7 @@
 package com.devmind.tool;
 
 import com.devmind.agent.ToolRegistry;
+import com.devmind.ai.AiModelGateway;
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
 import com.devmind.security.SecretCipher;
@@ -41,6 +42,8 @@ public class InterfaceToolService implements ApplicationRunner {
     private final ObjectMapper objectMapper;
     private final UserService userService;
     private final ToolAccessService toolAccessService;
+    private final AiModelGateway modelGateway;
+    private final ToolSemanticRepository semanticRepository;
 
     public InterfaceToolService(
             ToolDefinitionRepository repository,
@@ -49,7 +52,9 @@ public class InterfaceToolService implements ApplicationRunner {
             SecretCipher secretCipher,
             ObjectMapper objectMapper,
             UserService userService,
-            ToolAccessService toolAccessService
+            ToolAccessService toolAccessService,
+            AiModelGateway modelGateway,
+            ToolSemanticRepository semanticRepository
     ) {
         this.repository = repository;
         this.toolRegistry = toolRegistry;
@@ -58,6 +63,27 @@ public class InterfaceToolService implements ApplicationRunner {
         this.objectMapper = objectMapper;
         this.userService = userService;
         this.toolAccessService = toolAccessService;
+        this.modelGateway = modelGateway;
+        this.semanticRepository = semanticRepository;
+    }
+
+    /**
+     * 语义档案同步：手工创建/更新的接口也要生成语义向量，否则无法被
+     * "自然语言 → 接口发现"（semanticSearch）命中，Agent 在复合任务下选不到这些接口。
+     * 失败降级：仅影响语义检索（关键词通道仍可用），不阻断登记。
+     */
+    private void syncSemantic(ToolDefinition def, Long tenantId) {
+        try {
+            String semanticText = def.httpMethod() + " " + def.endpointUrl()
+                    + " —— " + def.name()
+                    + (def.description() == null || def.description().isBlank() ? "" : "\n" + def.description());
+            List<List<Double>> embeddings = modelGateway.embed(List.of(semanticText));
+            if (embeddings.get(0) != null) {
+                semanticRepository.upsert(tenantId, def.id(), semanticText, embeddings.get(0));
+            }
+        } catch (Exception ex) {
+            log.warn("接口 {} 语义档案生成失败（仅影响语义检索，关键词检索仍可用）: {}", def.name(), ex.getMessage());
+        }
     }
 
     @Override
@@ -104,6 +130,7 @@ public class InterfaceToolService implements ApplicationRunner {
         Long id = repository.insert(def);
         ToolDefinition saved = requireTool(tenantId, id);
         registerAdapter(saved);
+        syncSemantic(saved, tenantId);
         log.info("登记接口工具 {} (id={}, tenant={}, by user={})", saved.name(), id, tenantId, userId);
         return ToolResponse.from(saved);
     }
@@ -130,6 +157,7 @@ public class InterfaceToolService implements ApplicationRunner {
         toolRegistry.unregister(existing.name());
         ToolDefinition saved = requireTool(tenantId, id);
         registerAdapter(saved);
+        syncSemantic(saved, tenantId);
         log.info("更新接口工具 {} (id={}, by user={})", saved.name(), id, userId);
         return ToolResponse.from(saved);
     }
@@ -140,6 +168,7 @@ public class InterfaceToolService implements ApplicationRunner {
         ToolDefinition existing = requireTool(tenantId, id);
         repository.softDelete(tenantId, id);
         toolRegistry.unregister(existing.name());
+        semanticRepository.deleteByToolId(id);
         log.info("删除接口工具 {} (id={}, by user={})", existing.name(), id, userId);
     }
 

@@ -465,27 +465,64 @@ public class AgentService {
     /**
      * 接口工具语义发现：按自然语言问题对接口语义档案做向量检索，返回可注入的接口名集合。
      * 命中为空或检索失败时回退全量（保持接口可用，语义注入是增强而非必需）。
+     * <p>
+     * 复合任务修复（2026-08-15）：完整长句（"创建客户→建订单→支付→查状态"）的语义会被
+     * 整体稀释，中间步骤的接口（如"创建客户"）被挤出 top-K，Agent 因而看不到所需接口。
+     * 做法：按连接词/标点把问题拆成多个子意图，分别检索再合并去重，保证每个步骤的接口都能被发现。
      */
+    private static final java.util.regex.Pattern INTENT_SPLIT =
+            java.util.regex.Pattern.compile("(然后|接着|最后|并且|以及|随后|同时|之后|再|还要|并|先|下一步|接下来|；|;|。|，|,)");
+
     private Set<String> resolveInterfaceInjection(String question, Long userId, Set<String> interfaceNames) {
         if (openApiImportService == null) {
             return interfaceNames;
         }
         try {
-            List<com.devmind.tool.ToolSemanticRepository.SemanticHit> hits =
-                    openApiImportService.semanticSearch(question, userId, MAX_INTERFACE_TOOLS_INJECT);
-            Set<String> hitNames = hits.stream()
-                    .map(com.devmind.tool.ToolSemanticRepository.SemanticHit::name)
-                    .filter(interfaceNames::contains)
-                    .collect(java.util.stream.Collectors.toSet());
+            List<String> queries = splitIntents(question);
+            Set<String> hitNames = new java.util.LinkedHashSet<>();
+            for (String q : queries) {
+                List<com.devmind.tool.ToolSemanticRepository.SemanticHit> hits =
+                        openApiImportService.semanticSearch(q, userId, MAX_INTERFACE_TOOLS_INJECT);
+                for (com.devmind.tool.ToolSemanticRepository.SemanticHit h : hits) {
+                    if (interfaceNames.contains(h.name())) {
+                        hitNames.add(h.name());
+                    }
+                }
+            }
             if (!hitNames.isEmpty()) {
-                log.info("接口工具语义发现：授权 {} 个接口，按问题命中注入 {} 个",
-                        interfaceNames.size(), hitNames.size());
-                return hitNames;
+                log.info("接口工具语义发现：授权 {} 个接口，按 {} 个子意图命中注入 {} 个",
+                        interfaceNames.size(), queries.size(), hitNames.size());
+                return hitNames.stream().limit(MAX_INTERFACE_TOOLS_INJECT)
+                        .collect(java.util.stream.Collectors.toSet());
             }
         } catch (Exception e) {
             log.warn("接口工具语义发现失败，回退全量注入: {}", e.getMessage());
         }
         return interfaceNames;
+    }
+
+    /** 按连接词/标点拆分子意图（保留连接词在子句里，过滤过短子句与重复） */
+    private List<String> splitIntents(String question) {
+        if (question == null || question.isBlank()) {
+            return List.of();
+        }
+        java.util.regex.Matcher m = INTENT_SPLIT.matcher(question);
+        List<String> intents = new ArrayList<>();
+        int last = 0;
+        while (m.find()) {
+            intents.add(question.substring(last, m.end()));
+            last = m.end();
+        }
+        if (last < question.length()) {
+            intents.add(question.substring(last));
+        }
+        List<String> filtered = intents.stream()
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .filter(s -> s.length() >= 2)
+                .distinct()
+                .toList();
+        return filtered.isEmpty() ? List.of(question) : filtered;
     }
 
     /** 把上传文件的文本注入为问题上下文（文件分析场景） */

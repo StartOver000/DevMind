@@ -53,6 +53,33 @@ public class WorkflowExecutor {
     private static final long STEP_RETRY_BACKOFF_MS = 300;
     /** 每工作流执行闸门：permit=1 保证同工作流串行，waiting 统计排队深度 */
     private final ConcurrentHashMap<Long, WorkflowGate> gates = new ConcurrentHashMap<>();
+    /** 步骤进度监听（SSE 进度推送）：按 runId 注册/注销，并行线程也能读到，多 run 互不冲突 */
+    private final ConcurrentHashMap<Long, java.util.function.Consumer<WorkflowStepEvent>> runListeners =
+            new ConcurrentHashMap<>();
+
+    /** 步骤执行事件（runId 维度，SSE 进度推送用） */
+    public record WorkflowStepEvent(Long runId, int stepIndex, String toolName, String status, String error) {
+    }
+
+    /** 注册 run 的步骤进度监听（执行前调用；结束后调用方须 {@link #removeRunListener}） */
+    public void addRunListener(Long runId, java.util.function.Consumer<WorkflowStepEvent> listener) {
+        runListeners.put(runId, listener);
+    }
+
+    public void removeRunListener(Long runId) {
+        runListeners.remove(runId);
+    }
+
+    private void notifyStep(Long runId, int index, String tool, String status, String error) {
+        java.util.function.Consumer<WorkflowStepEvent> listener = runListeners.get(runId);
+        if (listener != null) {
+            try {
+                listener.accept(new WorkflowStepEvent(runId, index, tool, status, error));
+            } catch (Exception ex) {
+                log.warn("工作流步骤进度推送失败 (run={}, step={}): {}", runId, index, ex.getMessage());
+            }
+        }
+    }
 
     private static final class WorkflowGate {
         final Semaphore permit = new Semaphore(1);
@@ -380,6 +407,7 @@ public class WorkflowExecutor {
                 if (isErrorOutput(output)) {
                     String msg = (output.length() > 200 ? output.substring(0, 200) : output).replace('\n', ' ');
                     runRepository.insertStep(runId, index, step.tool(), input, output, "FAILED", costMs, msg);
+                    notifyStep(runId, index, step.tool(), "FAILED", msg);
                     log.warn("工作流 {} 步骤 {} 输出含错误 (tool={}): {}", workflowName, index + 1, step.tool(), msg);
                     if (failure.get() == null) {
                         failure.set("工具返回错误: " + msg);
@@ -387,6 +415,7 @@ public class WorkflowExecutor {
                     return;
                 }
                 runRepository.insertStep(runId, index, step.tool(), input, output, "SUCCESS", costMs, null);
+                notifyStep(runId, index, step.tool(), "SUCCESS", null);
                 if (step.outputVar() != null && !step.outputVar().isBlank()) {
                     writeOutput(vars, step.outputVar(), output, step.outputAppend());
                 }
@@ -416,6 +445,7 @@ public class WorkflowExecutor {
         String message = ex == null || ex.getMessage() == null
                 ? (ex == null ? "未知错误" : ex.getClass().getSimpleName()) : ex.getMessage();
         runRepository.insertStep(runId, index, step.tool(), input, null, "FAILED", costMs, message);
+        notifyStep(runId, index, step.tool(), "FAILED", message);
         log.warn("工作流 {} 步骤 {} 失败 (tool={}): {}", workflowName, index + 1, step.tool(), message);
         if (failure.get() == null) {
             failure.set(message);

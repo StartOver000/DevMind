@@ -770,4 +770,50 @@ class WorkflowExecutorTest {
         verify(approvalRepository, never()).decide(anyLong(), anyString(), anyString(), anyString());
         verify(toolRegistry, never()).execute(anyString(), anyString(), eq(1L), eq("workflow"), eq(100L));
     }
+
+    @Test
+    void notifiesStepListenerOnEachStepCompletion() {
+        // SSE 进度推送：注册监听 → 每步完成收到 WorkflowStepEvent（SUCCESS）
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("A");
+        when(toolRegistry.execute(eq("b"), anyString(), eq(1L), eq("workflow"), eq(100L))).thenReturn("B");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+
+        List<WorkflowExecutor.WorkflowStepEvent> events = new ArrayList<>();
+        executor.addRunListener(100L, events::add);
+        try {
+            executor.execute(
+                    workflow("[{\"tool\":\"a\",\"params\":{}},{\"tool\":\"b\",\"params\":{}}]"), 1L, "manual");
+        } finally {
+            executor.removeRunListener(100L);
+        }
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0).toolName()).isEqualTo("a");
+        assertThat(events.get(0).status()).isEqualTo("SUCCESS");
+        assertThat(events.get(0).runId()).isEqualTo(100L);
+        assertThat(events.get(1).toolName()).isEqualTo("b");
+    }
+
+    @Test
+    void notifiesFailedStepEventOnToolErrorOutput() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(toolRegistry.execute(eq("a"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenReturn("{\"error\":\"HTTP 调用失败: 401\"}");
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "FAILED"));
+
+        List<WorkflowExecutor.WorkflowStepEvent> events = new ArrayList<>();
+        executor.addRunListener(100L, events::add);
+        try {
+            executor.execute(workflow("[{\"tool\":\"a\",\"params\":{}}]"), 1L, "manual");
+        } finally {
+            executor.removeRunListener(100L);
+        }
+
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).status()).isEqualTo("FAILED");
+        assertThat(events.get(0).error()).contains("401");
+    }
 }

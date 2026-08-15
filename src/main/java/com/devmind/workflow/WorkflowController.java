@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 import java.util.Map;
@@ -25,10 +26,13 @@ public class WorkflowController {
 
     private final WorkflowService workflowService;
     private final WorkflowGenerationService generationService;
+    private final com.devmind.common.SsePusher ssePusher;
 
-    public WorkflowController(WorkflowService workflowService, WorkflowGenerationService generationService) {
+    public WorkflowController(WorkflowService workflowService, WorkflowGenerationService generationService,
+                              com.devmind.common.SsePusher ssePusher) {
         this.workflowService = workflowService;
         this.generationService = generationService;
+        this.ssePusher = ssePusher;
     }
 
     /** 对话式生成工作流草案（业务人员大白话描述 → LLM 生成步骤 + 可直接创建的 stepsJson） */
@@ -99,6 +103,35 @@ public class WorkflowController {
             @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
     ) {
         return workflowService.run(id, userId);
+    }
+
+    /**
+     * 流式执行（SSE 步骤进度实时推送）：
+     * event: step —— 每步执行结果（runId/stepIndex/toolName/status/error）
+     * event: done —— run 最终结果
+     */
+    @PostMapping("/{id}/run/stream")
+    public SseEmitter runStream(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        SseEmitter emitter = ssePusher.createEmitter();
+        ssePusher.async(emitter, () -> {
+            WorkflowRun result = workflowService.runStream(id, userId, event -> {
+                try {
+                    ssePusher.sendJson(emitter, "step", event);
+                } catch (Exception ex) {
+                    throw new RuntimeException(ex);
+                }
+            });
+            try {
+                ssePusher.sendJson(emitter, "done", result);
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+            emitter.complete();
+        });
+        return emitter;
     }
 
     @GetMapping("/{id}/runs")

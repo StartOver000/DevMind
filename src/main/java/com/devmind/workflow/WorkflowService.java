@@ -134,6 +134,28 @@ public class WorkflowService {
         return executor.execute(workflow, userId, "manual");
     }
 
+    /**
+     * 流式执行（SSE 步骤进度实时推送）：先插 run → 注册步骤监听 → executeExistingRun → 清理监听。
+     * 每步完成回调 WorkflowStepEvent（SUCCESS/FAILED）；审批暂停时事件流结束，resume 后可重新查 run。
+     */
+    public WorkflowRun runStream(Long id, Long userId,
+                                 java.util.function.Consumer<WorkflowExecutor.WorkflowStepEvent> listener) {
+        Long tenantId = userService.tenantIdOf(userId);
+        Workflow workflow = requireWorkflow(tenantId, id);
+        requireVisible(workflow, userId);
+        if (!"ENABLED".equals(workflow.status())) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流已停用");
+        }
+        log.info("流式运行工作流 {} (id={}, by user={})", workflow.name(), id, userId);
+        Long runId = runRepository.insertRun(workflow.id(), tenantId, "manual");
+        executor.addRunListener(runId, listener);
+        try {
+            return executor.executeExistingRun(workflow, userId, "manual", null, runId);
+        } finally {
+            executor.removeRunListener(runId);
+        }
+    }
+
     public List<WorkflowRun> runList(Long workflowId, int limit, Long userId) {
         Long tenantId = userService.tenantIdOf(userId);
         Workflow workflow = requireWorkflow(tenantId, workflowId);

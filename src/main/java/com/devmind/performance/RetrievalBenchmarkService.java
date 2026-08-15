@@ -8,6 +8,8 @@ import com.devmind.retrieval.RerankService;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
 import com.devmind.user.UserService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -38,6 +40,8 @@ public class RetrievalBenchmarkService {
         this.properties = properties;
     }
 
+    private static final Logger log = LoggerFactory.getLogger(RetrievalBenchmarkService.class);
+
     public RetrievalBenchmarkResponse benchmark(Long knowledgeBaseId, String question, Integer iterations, Long userId) {
         userService.requireUser(userId);
         knowledgeBaseService.requireEnabledKnowledgeBaseAccess(knowledgeBaseId, userId);
@@ -46,7 +50,9 @@ public class RetrievalBenchmarkService {
         int returned = 0;
         for (int i = 0; i < count; i++) {
             long start = System.nanoTime();
+            long t0 = System.nanoTime();
             List<Double> vector = modelGateway.embed(List.of(question)).get(0);
+            long t1 = System.nanoTime();
             List<RetrievalResult> results = retrievalService.searchHybrid(
                     knowledgeBaseId,
                     vector,
@@ -57,8 +63,14 @@ public class RetrievalBenchmarkService {
                     properties.retrievalKeywordWeight(),
                     properties.retrievalHybridEnabled()
             );
+            long t2 = System.nanoTime();
             rerankService.rerank(question, results, properties.retrievalTopK());
-            total += System.nanoTime() - start;
+            long t3 = System.nanoTime();
+            total += t3 - start;
+            if (i == 0) {
+                log.info("benchmark breakdown: embed={}ms searchHybrid={}ms rerank={}ms total={}ms",
+                        (t1 - t0) / 1_000_000, (t2 - t1) / 1_000_000, (t3 - t2) / 1_000_000, (t3 - start) / 1_000_000);
+            }
             returned = results.size();
         }
         long totalMs = total / 1_000_000;

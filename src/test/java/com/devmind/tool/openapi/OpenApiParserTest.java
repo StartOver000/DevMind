@@ -251,4 +251,151 @@ class OpenApiParserTest {
         assertThat(op.requestBodyJson()).contains("\"j\"");
         assertThat(op.requestBodyJson()).doesNotContain("\"f\"");
     }
+
+    @Test
+    void inlinesNestedRefInRequestBodySchema() {
+        String json = """
+                {
+                  "openapi": "3.0.1",
+                  "info": { "title": "嵌套引用" },
+                  "paths": {
+                    "/users": {
+                      "post": {
+                        "operationId": "createUser",
+                        "summary": "创建用户",
+                        "requestBody": {
+                          "content": {
+                            "application/json": {
+                              "schema": { "$ref": "#/components/schemas/User" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "components": {
+                    "schemas": {
+                      "User": {
+                        "type": "object",
+                        "properties": {
+                          "name": { "type": "string" },
+                          "address": { "$ref": "#/components/schemas/Address" }
+                        }
+                      },
+                      "Address": {
+                        "type": "object",
+                        "properties": {
+                          "city": { "type": "string" },
+                          "country": { "$ref": "#/components/schemas/Country" }
+                        }
+                      },
+                      "Country": {
+                        "type": "object",
+                        "properties": { "code": { "type": "string" } }
+                      }
+                    }
+                  }
+                }
+                """;
+
+        OpenApiParser.ParsedDocument doc = parser.parse(json, "nested.json");
+        String body = doc.operations().get(0).requestBodyJson();
+
+        // 嵌套 $ref 全部递归展开：name / address.city / address.country.code 均可读，无残留 $ref
+        assertThat(body).contains("\"name\"");
+        assertThat(body).contains("\"city\"");
+        assertThat(body).contains("\"code\"");
+        assertThat(body).doesNotContain("$ref");
+    }
+
+    @Test
+    void refCycleKeepsPlaceholderWithoutHanging() {
+        String json = """
+                {
+                  "openapi": "3.0.1",
+                  "info": { "title": "循环引用" },
+                  "paths": {
+                    "/a": {
+                      "post": {
+                        "operationId": "createA",
+                        "summary": "创建 A",
+                        "requestBody": {
+                          "content": {
+                            "application/json": {
+                              "schema": { "$ref": "#/components/schemas/A" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "components": {
+                    "schemas": {
+                      "A": {
+                        "type": "object",
+                        "properties": {
+                          "fieldA": { "type": "string" },
+                          "b": { "$ref": "#/components/schemas/B" }
+                        }
+                      },
+                      "B": {
+                        "type": "object",
+                        "properties": {
+                          "fieldB": { "type": "string" },
+                          "a": { "$ref": "#/components/schemas/A" }
+                        }
+                      }
+                    }
+                  }
+                }
+                """;
+
+        // 环（A→B→A）必须终止不挂起：最内层保留 $ref 占位
+        OpenApiParser.ParsedDocument doc = parser.parse(json, "cycle.json");
+        String body = doc.operations().get(0).requestBodyJson();
+
+        assertThat(body).contains("fieldA");
+        assertThat(body).contains("fieldB");
+        assertThat(body).contains("$ref"); // 环处保留占位防死循环
+    }
+
+    @Test
+    void refSiblingDescriptionIsPreserved() {
+        // $ref 旁兄弟字段（description 覆盖）应保留
+        String json = """
+                {
+                  "openapi": "3.0.1",
+                  "info": { "title": "兄弟覆盖" },
+                  "paths": {
+                    "/x": {
+                      "post": {
+                        "operationId": "doX",
+                        "summary": "操作",
+                        "requestBody": {
+                          "content": {
+                            "application/json": {
+                              "schema": {
+                                "$ref": "#/components/schemas/Base",
+                                "description": "覆盖描述"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "components": {
+                    "schemas": {
+                      "Base": { "type": "object", "properties": { "id": { "type": "integer" } } }
+                    }
+                  }
+                }
+                """;
+
+        OpenApiParser.ParsedDocument doc = parser.parse(json, "sib.json");
+        String body = doc.operations().get(0).requestBodyJson();
+
+        assertThat(body).contains("\"id\"");
+        assertThat(body).contains("覆盖描述");
+    }
 }

@@ -2,6 +2,8 @@ package com.devmind.tool.openapi;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -9,7 +11,6 @@ import org.yaml.snakeyaml.Yaml;
 
 import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -63,6 +64,8 @@ public class OpenApiParser {
         }
         List<OpenApiOperation> operations = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
+        // components：$ref 递归内联的引用目标（schemas/parameters/requestBodies 等）
+        JsonNode components = root.path("components");
 
         JsonNode paths = root.path("paths");
         if (!paths.isObject() || paths.isEmpty()) {
@@ -88,7 +91,7 @@ public class OpenApiParser {
                     continue;
                 }
                 try {
-                    operations.add(buildOperation(method, path, operation));
+                    operations.add(buildOperation(method, path, operation, components));
                 } catch (Exception e) {
                     warnings.add("跳过接口 " + method.toUpperCase() + " " + path + "：" + e.getMessage());
                 }
@@ -101,7 +104,7 @@ public class OpenApiParser {
         return new ParsedDocument(title, baseUrl, operations, warnings);
     }
 
-    private OpenApiOperation buildOperation(String method, String path, JsonNode operation) {
+    private OpenApiOperation buildOperation(String method, String path, JsonNode operation, JsonNode components) {
         String operationId = operation.path("operationId").asText("").trim();
         String summary = operation.path("summary").asText("").trim();
         String description = operation.path("description").asText("").trim();
@@ -134,6 +137,8 @@ public class OpenApiParser {
                 String desc = p.path("description").asText("").trim();
                 JsonNode schema = p.path("schema");
                 if (schema.isObject()) {
+                    // schema 内联 $ref（#/components/schemas/...），让参数类型/枚举对模型可读
+                    schema = inlineRef(schema, components, new java.util.HashSet<>());
                     type = schemaType(schema);
                     if (desc.isEmpty()) {
                         desc = schema.path("description").asText("").trim();
@@ -152,14 +157,14 @@ public class OpenApiParser {
 
         // 请求体：优先取 application/json 的 schema；Stripe 等 API 用
         // application/x-www-form-urlencoded / multipart（导入后 schema 为空导致
-        // Agent 无法传参），按 content-type 优先级 fallback（$ref 做一级内联）
+        // Agent 无法传参），按 content-type 优先级 fallback（$ref 递归内联）
         String requestBodyJson = null;
         JsonNode requestBody = operation.path("requestBody");
         if (requestBody.isObject()) {
             String ref = requestBody.path("$ref").asText("");
             if (!ref.isEmpty()) {
-                // 引用体暂不支持内联，标记为占位
-                requestBodyJson = "{\"$ref\":\"" + ref + "\"}";
+                // 引用体：递归内联为实际 schema（嵌套 $ref 也展开）
+                requestBodyJson = inlineRef(requestBody, components, new java.util.HashSet<>()).toString();
             } else {
                 JsonNode content = requestBody.path("content");
                 JsonNode chosen = null;
@@ -175,13 +180,67 @@ public class OpenApiParser {
                     }
                 }
                 if (chosen != null) {
-                    requestBodyJson = chosen.path("schema").toString();
+                    // 递归内联 schema 中的 $ref（嵌套引用展开，环保留占位）
+                    requestBodyJson = inlineRef(chosen.path("schema"), components, new java.util.HashSet<>()).toString();
                 }
             }
         }
 
         return new OpenApiOperation(
                 method.toUpperCase(), path, operationId, summary, description, tags, parameters, requestBodyJson);
+    }
+
+    /**
+     * 递归内联 $ref（#/components/... 引用）：引用节点替换为目标定义，目标里的嵌套 $ref 继续展开。
+     * 环检测：解析中的引用再次出现时保留占位（防 A→B→A 死循环）。对象/数组字段递归复制。
+     */
+    private JsonNode inlineRef(JsonNode node, JsonNode components, java.util.Set<String> resolving) {
+        if (node == null || node.isMissingNode()) {
+            return node;
+        }
+        if (node.isObject() && node.has("$ref")) {
+            String ref = node.path("$ref").asText("");
+            if (ref.startsWith("#/components/") && !resolving.contains(ref)) {
+                JsonNode target = components;
+                boolean found = true;
+                for (String part : ref.substring("#/components/".length()).split("/")) {
+                    target = target == null ? null : target.path(part);
+                    if (target == null || target.isMissingNode()) {
+                        found = false;
+                        break;
+                    }
+                }
+                if (found && target != null && target.isObject()) {
+                    java.util.Set<String> next = new java.util.HashSet<>(resolving);
+                    next.add(ref);
+                    JsonNode inlined = inlineRef(target, components, next);
+                    // $ref 旁允许兄弟字段覆盖（OpenAPI 3 规范：description 等可覆盖）
+                    if (inlined != null && inlined.isObject()) {
+                        ObjectNode merged = (ObjectNode) objectMapper.createObjectNode().setAll((ObjectNode) inlined);
+                        node.fields().forEachRemaining(e -> {
+                            if (!"$ref".equals(e.getKey())) {
+                                merged.set(e.getKey(), e.getValue());
+                            }
+                        });
+                        return merged;
+                    }
+                    return inlined;
+                }
+            }
+            // 外部 $ref 或环：保留占位
+            return node;
+        }
+        if (node.isObject()) {
+            ObjectNode copy = objectMapper.createObjectNode();
+            node.fields().forEachRemaining(e -> copy.set(e.getKey(), inlineRef(e.getValue(), components, resolving)));
+            return copy;
+        }
+        if (node.isArray()) {
+            ArrayNode copy = objectMapper.createArrayNode();
+            node.forEach(item -> copy.add(inlineRef(item, components, resolving)));
+            return copy;
+        }
+        return node;
     }
 
     /** 把 JsonNode schema 归一为 JSON Schema 类型名 */

@@ -21,11 +21,23 @@ import org.springframework.stereotype.Service;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 @Service
 public class SqlDiagnosisService {
 
     private static final Logger log = LoggerFactory.getLogger(SqlDiagnosisService.class);
+    /** 模型建议调用总超时（含 ChatRouter 备用 Provider 重试）：超时降级规则建议，保证诊断接口/Agent 工具不被模型卡住 */
+    private static final long MODEL_CALL_TIMEOUT_SECONDS = 12;
+    private static final ExecutorService MODEL_CALL_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "sql-diagnosis-model-call");
+        t.setDaemon(true);
+        return t;
+    });
     private final UserService userService;
     private final KnowledgeBaseService knowledgeBaseService;
     private final RetrievalService retrievalService;
@@ -193,7 +205,9 @@ public class SqlDiagnosisService {
             userPrompt.append("\n参考资料：\n").append(context);
         }
         try {
-            AiModelGateway.ChatResult result = chatRouter.chat(systemPrompt, userPrompt.toString());
+            AiModelGateway.ChatResult result = CompletableFuture
+                    .supplyAsync(() -> chatRouter.chat(systemPrompt, userPrompt.toString()), MODEL_CALL_EXECUTOR)
+                    .get(MODEL_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             modelUsageService.record(
                     userId,
                     "sql",
@@ -204,6 +218,9 @@ public class SqlDiagnosisService {
                     result.content()
             );
             return result.content();
+        } catch (TimeoutException ex) {
+            log.warn("sql diagnosis model call timed out after {}s, fallback to rule-based advice", MODEL_CALL_TIMEOUT_SECONDS);
+            return buildRuleBasedAdvice(risks);
         } catch (ApiException ex) {
             log.warn("sql diagnosis model call failed, fallback to rule-based advice: {}", ex.getMessage());
             return buildRuleBasedAdvice(risks);

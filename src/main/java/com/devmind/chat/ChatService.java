@@ -359,6 +359,16 @@ public class ChatService {
         List<Double> queryVector;
         try {
             queryVector = modelGateway.embed(List.of(question)).get(0);
+            if (queryVector == null) {
+                // 防御：embedding 返回空向量（不抛异常）时与失败同等处理，走关键词降级，
+                // 否则 searchHybrid(null) 会检索空结果，chat 误报"没有足够相关内容"
+                log.warn("embedding 返回空向量，降级为关键词检索: {}", question);
+                return reranker.rerank(
+                        question,
+                        retrievalService.searchByKeywords(knowledgeBaseId, question, topK, metadataFilter),
+                        topK
+                );
+            }
         } catch (Exception ex) {
             log.warn("embedding 不可用，降级为关键词检索: {}", ex.getMessage());
             return reranker.rerank(

@@ -268,6 +268,17 @@ public class WorkflowExecutor {
                 // 提交到线程池执行并带超时（防止底层调用挂起导致 run 永久 RUNNING，阻塞定时/后续执行）
                 String output = executeWithTimeout(step.tool(), input, userId, runId, start);
                 long costMs = System.currentTimeMillis() - start;
+                // 输出内容校验：接口/工具返回错误内容（{"error":...} / 调用失败标记）时判失败，
+                // 而不是仅看是否抛异常——否则编排链路某一步 401/404 仍被记 SUCCESS，后续步骤拿错误输出继续
+                if (isErrorOutput(output)) {
+                    String msg = (output.length() > 200 ? output.substring(0, 200) : output).replace('\n', ' ');
+                    runRepository.insertStep(runId, index, step.tool(), input, output, "FAILED", costMs, msg);
+                    log.warn("工作流 {} 步骤 {} 输出含错误 (tool={}): {}", workflowName, index + 1, step.tool(), msg);
+                    if (failure.get() == null) {
+                        failure.set("工具返回错误: " + msg);
+                    }
+                    return;
+                }
                 runRepository.insertStep(runId, index, step.tool(), input, output, "SUCCESS", costMs, null);
                 if (step.outputVar() != null && !step.outputVar().isBlank()) {
                     writeOutput(vars, step.outputVar(), output, step.outputAppend());
@@ -302,6 +313,30 @@ public class WorkflowExecutor {
         if (failure.get() == null) {
             failure.set(message);
         }
+    }
+
+    /**
+     * 输出内容错误判定：接口工具/执行器失败时返回 {"error": ...} 或含明确失败标记的文本
+     * （接口调用失败/HTTP 调用失败/工具执行超时等）。用于工作流步骤失败检测——
+     * 编排接口链路时某一步 401/404 若不被识别，后续步骤会拿错误输出继续执行。
+     */
+    private boolean isErrorOutput(String output) {
+        if (output == null || output.isBlank()) {
+            return false;
+        }
+        String trimmed = output.trim();
+        if (trimmed.startsWith("{\"error\"") || trimmed.startsWith("{\"error\":")) {
+            return true;
+        }
+        for (String marker : new String[]{
+                "接口调用失败", "HTTP 调用失败", "工具执行超时", "接口工具未配置",
+                "参数解析失败", "接口地址仅支持"
+        }) {
+            if (trimmed.contains(marker)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

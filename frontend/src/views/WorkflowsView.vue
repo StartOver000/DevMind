@@ -3,6 +3,7 @@ import { ref, onMounted, h } from 'vue';
 import { api } from '@/api/client';
 import { showToast } from '@/stores/toast';
 import WorkflowEditor from '@/components/WorkflowEditor.vue';
+import WorkflowRunMonitor from '@/components/WorkflowRunMonitor.vue';
 
 // 递归渲染工作流草案节点（step / if / parallel）
 const DraftNode = {
@@ -86,7 +87,7 @@ function draftBadges() {
 const workflows = ref([]);
 const loading = ref(false);
 const runningId = ref(null);
-const runResult = ref(null);
+const monitorWorkflow = ref(null); // 运行监视器（SSE 实时进度 + 审批）
 
 // 可视化编辑（Guide-55 高优先级）
 const editorWorkflow = ref(null);   // 正在编辑的工作流
@@ -250,7 +251,7 @@ async function generateDraft() {
   }
   generating.value = true;
   draft.value = null;
-  runResult.value = null;
+  monitorWorkflow.value = null;
   try {
     draft.value = await api('/api/workflows/generate', {
       method: 'POST',
@@ -340,27 +341,8 @@ async function createWorkflow() {
 
 async function runWorkflow(w) {
   if (!confirm(`确认运行工作流「${w.name}」？`)) return;
-  runningId.value = w.id;
-  runResult.value = null;
-  try {
-    const run = await api(`/api/workflows/${w.id}/run`, { method: 'POST' });
-    runResult.value = { name: w.name, run };
-    if (run.status === 'SUCCESS') {
-      // 拉取步骤详情拿最终结果
-      try {
-        const detail = await api(`/api/workflows/runs/${run.id}`);
-        const last = detail.steps[detail.steps.length - 1];
-        runResult.value.resultText = last && last.outputJson ? last.outputJson : '';
-      } catch (e) { /* 忽略 */ }
-      showToast('运行成功');
-    } else {
-      showToast(`运行失败：${run.error || '未知错误'}`, true);
-    }
-  } catch (err) {
-    showToast(err.message, true);
-  } finally {
-    runningId.value = null;
-  }
+  // 打开运行监视器：SSE 实时步骤 + 审批节点（human-in-the-loop）
+  monitorWorkflow.value = w;
 }
 
 async function showRuns(w) {
@@ -530,10 +512,11 @@ onMounted(load);
           <button :disabled="creating" @click="openDraftEditor">✏️ 可视化调整草稿</button>
         </div>
       </div>
-      <div v-if="runResult" class="run-result" :class="runResult.run.status.toLowerCase()">
-        <h3>运行结果：{{ runResult.run.status }}</h3>
-        <p v-if="runResult.run.error">错误：{{ runResult.run.error }}</p>
-        <pre v-if="runResult.resultText">{{ runResult.resultText }}</pre>
+      <div v-if="monitorWorkflow" class="draft">
+        <WorkflowRunMonitor
+          :workflow="monitorWorkflow"
+          @close="monitorWorkflow = null; load()"
+        />
       </div>
 
       <div v-if="skillDraft" class="draft">

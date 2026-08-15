@@ -79,12 +79,14 @@ public class WebhookController {
             @org.springframework.web.bind.annotation.PathVariable String token,
             @RequestParam(defaultValue = "false") boolean async,
             @RequestParam(required = false) String callbackUrl,
+            @org.springframework.web.bind.annotation.RequestHeader(value = "X-DevMind-Signature", required = false) String signature,
             @RequestBody(required = false) String body
     ) {
         Workflow workflow = repository.findByWebhookToken(token);
         if (workflow == null) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "无效的 webhook token");
         }
+        verifySignature(token, body, signature);
         if (!"ENABLED".equals(workflow.status())) {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流已停用");
         }
@@ -117,6 +119,31 @@ public class WebhookController {
                 "error", run.error() == null ? "" : run.error(),
                 "totalCost", run.totalCost()
         );
+    }
+
+    /**
+     * Webhook 签名校验（P2 安全专项）：X-DevMind-Signature: sha256=<hex>（HMAC-SHA256，token 为密钥）。
+     * 可选增强：header 存在时须与 body 签名匹配，防伪造/篡改；缺失则兼容旧调用（token 本身是 URL 凭据）。
+     */
+    private void verifySignature(String token, String body, String signatureHeader) {
+        if (signatureHeader == null || signatureHeader.isBlank()) {
+            return;
+        }
+        try {
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+            mac.init(new javax.crypto.spec.SecretKeySpec(
+                    token.getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
+            byte[] digest = mac.doFinal(body == null ? new byte[0] : body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            String expected = "sha256=" + java.util.HexFormat.of().formatHex(digest);
+            if (!expected.equals(signatureHeader.trim())) {
+                log.warn("webhook 触发被拒绝：签名校验失败");
+                throw new ApiException(ErrorCode.FORBIDDEN, "webhook 签名校验失败");
+            }
+        } catch (ApiException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "webhook 签名校验异常");
+        }
     }
 
     /** 异步触发：先落 run 记录（供外部轮询），后台执行；完成后回调 callbackUrl（可选） */

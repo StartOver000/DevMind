@@ -70,11 +70,14 @@ devmind:
   embedding-dimensions: ${DEVMIND_EMBEDDING_DIMENSIONS:1536}
   retrieval-top-k: 5
   retrieval-max-top-k: 10
-  retrieval-min-score: 0.35
   # 混合检索权重：修复向量空间一致性（bge-m3 灌库+查询）后，向量检索质量显著提升，
   # alpha 扫描最优 vectorWeight=0.9（KB19 MRR 1.0 / KB20 0.9821），向量主导、关键词兜底
   retrieval-vector-weight: ${DEVMIND_RETRIEVAL_VECTOR_WEIGHT:0.9}
   retrieval-keyword-weight: ${DEVMIND_RETRIEVAL_KEYWORD_WEIGHT:0.1}
+  # minScore 按合并后（权重缩放后）分数过滤：0.35 是旧"未缩放分数"设计，与 0.9/0.4 缩放不匹配，
+  # 会导致高相似度向量 chunk（如 0.68）被 0.4×0.68=0.27 < 0.35 滤掉 → chat 空/弱回答。
+  # 0.15 折中：向量主导(0.9)下相似度>0.17 通过，keyword-first(0.4)下相似度>0.375 通过
+  retrieval-min-score: ${DEVMIND_RETRIEVAL_MIN_SCORE:0.15}
   retrieval-hybrid-enabled: ${DEVMIND_RETRIEVAL_HYBRID_ENABLED:true}
   task-thread-pool-size: ${DEVMIND_TASK_THREAD_POOL_SIZE:4}
   task-max-retries: ${DEVMIND_TASK_MAX_RETRIES:3}

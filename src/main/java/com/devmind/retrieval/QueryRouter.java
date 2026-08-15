@@ -1,20 +1,17 @@
 package com.devmind.retrieval;
 
-import java.util.Locale;
-import java.util.regex.Pattern;
-
 /**
- * 查询路由：按问题特征选择混合检索的权重策略。
- * - 含代码/术语/大写缩写（如 EXPLAIN、LIMIT、RAG、Nginx）-> 关键词优先（关键词 0.6）；
- * - 其他口语/长问句 -> 向量优先（默认 0.7/0.3）。
+ * 查询路由：选择混合检索的权重策略。
+ * <p>
+ * 2026-08-15 修正：统一向量主导（0.9/0.1）。旧实现按问题特征切"keyword-first"
+ * （含 RAG/LLM/API 等术语 → 0.4/0.6），该策略是向量检索质量不足时用关键词兜底的
+ * 旧设计；bge-m3 向量空间修复后纯向量检索已高度准确（KB19/KB20 在 0.9 权重下
+ * 评估全绿），而 keyword-first 的 0.6 关键词权重会让"仅关键词命中的噪声 chunk"
+ * （如只含 LLM 一词的语音文档，0.6×0.5=0.30）压过向量高度相关的文档
+ * （如 LLM 网关 0.4×0.68=0.27），把真相关文档挤出 top-K，导致 chat 答错
+ * （"知识库未提及 LLM 网关"）。统一向量主导后该问题消失。
  */
 public final class QueryRouter {
-
-    private static final Pattern CODE_TERM = Pattern.compile(
-            "(?i)\\b(EXPLAIN|LIMIT|OFFSET|JOIN|INDEX|Nginx|RAG|SQL|URL|HTTPS|JSON|API|BM25|POSTGRES|MYSQL|VECTOR|HNSW)\\b"
-    );
-
-    private static final Pattern CAPS_ACRONYM = Pattern.compile("\\b[A-Z]{2,}\\b");
 
     public record Route(double vectorWeight, double keywordWeight, String mode) {
     }
@@ -23,23 +20,6 @@ public final class QueryRouter {
     }
 
     public static Route route(String question) {
-        if (question == null || question.isBlank()) {
-            return new Route(0.7, 0.3, "hybrid");
-        }
-        boolean codeOrTerm = CODE_TERM.matcher(question).find()
-                || CAPS_ACRONYM.matcher(question).find()
-                || containsCodeLike(question);
-        if (codeOrTerm) {
-            return new Route(0.4, 0.6, "keyword-first");
-        }
-        return new Route(0.7, 0.3, "hybrid");
-    }
-
-    private static boolean containsCodeLike(String question) {
-        String lower = question.toLowerCase(Locale.ROOT);
-        return lower.contains("select ") || lower.contains("where ")
-                || lower.contains("order by") || lower.contains("group by")
-                || lower.contains("type=") || lower.contains(" filesort")
-                || lower.contains(" temporary") || lower.contains("offset ");
+        return new Route(0.9, 0.1, "hybrid");
     }
 }

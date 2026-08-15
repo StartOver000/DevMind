@@ -90,6 +90,14 @@ public class UserRepository {
         );
     }
 
+    /** 登录成功时记录最近登录时间（app_user.last_login_time，V2 迁移新增列） */
+    public void updateLastLoginTime(Long userId) {
+        jdbcTemplate.update(
+                "UPDATE app_user SET last_login_time = CURRENT_TIMESTAMP WHERE id = ?",
+                userId
+        );
+    }
+
     public List<User> list() {
         return jdbcTemplate.query("""
                 SELECT id, tenant_id, username, display_name, role, created_time

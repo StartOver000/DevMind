@@ -73,6 +73,7 @@ public class AuthService {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "用户名或密码错误");
         }
         loginAttemptService.reset(name);
+        userRepository.updateLastLoginTime(user.id());
         String token = UUID.randomUUID().toString().replace("-", "");
         OffsetDateTime expiresAt = OffsetDateTime.now(ZoneOffset.UTC).plusDays(security.tokenTtlDays());
         tokenRepository.save(user.id(), token, expiresAt);

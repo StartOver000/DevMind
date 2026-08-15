@@ -21,6 +21,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
 
 /**
  * 工作流轻量执行器：按 steps_json 顺序调度工具，支持 {{var}} 步骤间数据传递，
@@ -570,10 +571,7 @@ public class WorkflowExecutor {
                 JsonNode child = node.get(key);
                 if (child != null && child.isTextual()) {
                     String text = child.asText();
-                    String replaced = text;
-                    for (Map.Entry<String, Object> entry : vars.entrySet()) {
-                        replaced = replaced.replace("{{" + entry.getKey() + "}}", String.valueOf(entry.getValue()));
-                    }
+                    String replaced = replaceVars(text, vars);
                     if (!replaced.equals(text)) {
                         ((ObjectNode) node).put(key, replaced);
                     }
@@ -586,5 +584,53 @@ public class WorkflowExecutor {
                 transform(item, vars);
             }
         }
+    }
+
+    /**
+     * 变量替换：支持 {{key}} 与 {{key.field}}（从上一步 JSON 输出提取字段）。
+     * 接口工具编排场景必须支持字段提取——上一步返回 {"id":"cus_xxx",...}，
+     * 下一步参数要 {{customer.id}} 才能拿到 ID 传下去（修复前只能整段替换，无法取字段）。
+     */
+    private static final java.util.regex.Pattern VAR_PATTERN =
+            java.util.regex.Pattern.compile("\\{\\{([a-zA-Z0-9_.]+)\\}\\}");
+
+    private String replaceVars(String text, Map<String, Object> vars) {
+        java.util.regex.Matcher m = VAR_PATTERN.matcher(text);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String expr = m.group(1);
+            String[] parts = expr.split("\\.");
+            Object value = vars.get(parts[0]);
+            if (value != null && parts.length > 1) {
+                value = extractField(value, parts, 1);
+            }
+            m.appendReplacement(sb, Matcher.quoteReplacement(
+                    value == null ? m.group(0) : String.valueOf(value)));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    /** 从 JSON 字符串/JsonNode 按路径取叶子字段的文本值（缺失返回 null） */
+    private Object extractField(Object json, String[] parts, int startIdx) {
+        JsonNode node = null;
+        if (json instanceof String s) {
+            try {
+                node = objectMapper.readTree(s);
+            } catch (Exception ex) {
+                return null;
+            }
+        } else if (json instanceof JsonNode jn) {
+            node = jn;
+        } else {
+            return null;
+        }
+        for (int i = startIdx; i < parts.length && node != null; i++) {
+            node = node.path(parts[i]);
+        }
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        return node.isContainerNode() ? node.toString() : node.asText();
     }
 }

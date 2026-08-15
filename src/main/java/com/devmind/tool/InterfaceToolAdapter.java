@@ -12,7 +12,6 @@ import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
-import java.net.URI;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -83,20 +82,34 @@ public class InterfaceToolAdapter implements AgentTool {
         if (endpoint == null || endpoint.isBlank()) {
             return "{\"error\": \"接口工具未配置 endpointUrl\"}";
         }
-        URI uri = URI.create(endpoint);
-        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
-        if (!"http".equals(scheme) && !"https".equals(scheme)) {
-            return "{\"error\": \"接口地址仅支持 http/https: " + scheme + "\"}";
-        }
 
         HttpMethod method = parseMethod();
         Map<String, Object> args = parseArgs(argumentsJson);
+        // 路径占位符替换：endpoint 形如 /v1/invoices/{invoice}，用对应参数值填充。
+        // 必须先于 URI 解析执行——{param} 在 URI.create 里是非法字符（Illegal character in path），
+        // 修复前替换逻辑在 URI.create 之后，含路径参数的工具一调用就抛异常、替换永不生效。
+        String resolvedEndpoint = endpoint;
+        java.util.Set<String> pathParamKeys = new java.util.HashSet<>();
+        for (Map.Entry<String, Object> e : args.entrySet()) {
+            if (e.getValue() == null) {
+                continue;
+            }
+            String ph = "{" + e.getKey() + "}";
+            if (resolvedEndpoint.contains(ph)) {
+                resolvedEndpoint = resolvedEndpoint.replace(ph, String.valueOf(e.getValue()));
+                pathParamKeys.add(e.getKey());
+            }
+        }
+        String lowerEndpoint = resolvedEndpoint.toLowerCase();
+        if (!lowerEndpoint.startsWith("http://") && !lowerEndpoint.startsWith("https://")) {
+            return "{\"error\": \"接口地址仅支持 http/https\"}";
+        }
         // 鉴权（解密后注入）
         Map<String, String> authHeaders = new LinkedHashMap<>();
         Map<String, String> authQuery = new LinkedHashMap<>();
         applyAuth(authHeaders, authQuery);
 
-        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(endpoint);
+        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(resolvedEndpoint);
         authQuery.forEach(uriBuilder::queryParam);
 
         RestClient.RequestBodySpec spec = client.method(method)
@@ -105,7 +118,7 @@ public class InterfaceToolAdapter implements AgentTool {
 
         if (method == HttpMethod.GET || method == HttpMethod.DELETE) {
             for (Map.Entry<String, Object> e : args.entrySet()) {
-                if (e.getValue() != null) {
+                if (e.getValue() != null && !pathParamKeys.contains(e.getKey())) {
                     uriBuilder.queryParam(e.getKey(), String.valueOf(e.getValue()));
                 }
             }
@@ -114,8 +127,15 @@ public class InterfaceToolAdapter implements AgentTool {
                     .uri(uriBuilder.build().toUri())
                     .headers(h -> authHeaders.forEach(h::add));
         } else {
+            // 路径参数不进 body
+            Map<String, Object> bodyArgs = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> e : args.entrySet()) {
+                if (!pathParamKeys.contains(e.getKey())) {
+                    bodyArgs.put(e.getKey(), e.getValue());
+                }
+            }
             try {
-                String json = objectMapper.writeValueAsString(args);
+                String json = objectMapper.writeValueAsString(bodyArgs);
                 spec.contentType(MediaType.APPLICATION_JSON).body(json);
             } catch (Exception ex) {
                 return "{\"error\": \"请求参数序列化失败: " + sanitize(ex.getMessage()) + "\"}";

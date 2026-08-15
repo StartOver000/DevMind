@@ -150,7 +150,9 @@ public class OpenApiParser {
             });
         }
 
-        // 请求体：仅取 application/json 的 schema（$ref 做一级内联）
+        // 请求体：优先取 application/json 的 schema；Stripe 等 API 用
+        // application/x-www-form-urlencoded / multipart（导入后 schema 为空导致
+        // Agent 无法传参），按 content-type 优先级 fallback（$ref 做一级内联）
         String requestBodyJson = null;
         JsonNode requestBody = operation.path("requestBody");
         if (requestBody.isObject()) {
@@ -160,10 +162,20 @@ public class OpenApiParser {
                 requestBodyJson = "{\"$ref\":\"" + ref + "\"}";
             } else {
                 JsonNode content = requestBody.path("content");
-                JsonNode jsonContent = content.path("application/json");
-                JsonNode schema = jsonContent.path("schema");
-                if (schema.isObject()) {
-                    requestBodyJson = schema.toString();
+                JsonNode chosen = null;
+                for (String mediaType : new String[]{
+                        "application/json",
+                        "application/x-www-form-urlencoded",
+                        "multipart/form-data"
+                }) {
+                    JsonNode candidate = content.path(mediaType);
+                    if (candidate.isObject() && candidate.path("schema").isObject()) {
+                        chosen = candidate;
+                        break;
+                    }
+                }
+                if (chosen != null) {
+                    requestBodyJson = chosen.path("schema").toString();
                 }
             }
         }

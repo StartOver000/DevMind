@@ -59,6 +59,12 @@ public class AgentService {
     /** 语义命中注入的接口工具数（P1 接口语义化闭环） */
     private static final int MAX_INTERFACE_TOOLS_INJECT = 8;
 
+    /** 内置工具名（非接口工具）：接口失败引导只针对动态注册的接口工具 */
+    private static final Set<String> INTERNAL_TOOLS = Set.of(
+            "plan", "update_skill", "load_skill", "delete_memory", "run_workflow",
+            "kb_search", "kb_info", "doc_list", "sql_diagnose", "usage_query"
+    );
+
     private static final String SYSTEM_PROMPT = """
             你是 DevMind 研发助手 Agent。根据用户问题自主决定调用哪些工具获取信息，再给出最终回答。
 
@@ -98,6 +104,16 @@ public class AgentService {
             9. 若命中的技能规范中带【可联动资源】标注（工作流/知识库），说明该技能关联了
                这些资源：涉及工作流时调用 run_workflow（workflowId 取标注中的 ID）；
                涉及知识库时调用 kb_search 并指定该知识库。联动执行后再给出最终回答。
+            10. 多步业务编排（如"创建客户→建订单→支付→查状态"）时：
+               - 严格按任务描述的依赖顺序调用接口，把上一步返回结果里的 id 传给下一步
+                 （如 customer id / order id），不要跳步或重复创建；
+               - 每个意图只选一个最匹配的接口调用，不要同时尝试多个功能相似的接口
+                 （如"创建客户"只调一个创建客户的接口，不要既试业务服务接口又试支付平台客户接口）；
+               - 按接口描述区分用途：业务系统操作（建单/标记状态/查单）用业务服务接口，
+                 支付相关用支付平台接口；
+               - 不要调用与当前步骤无关的工具（如做业务编排时不要检索知识库）。
+            11. 工具返回错误（如 HTTP 401/404 或 {"error":...}）时：不要基于错误结果继续编造，
+               不要盲目重试功能相似的接口；明确向用户报告失败的步骤与原因，可给出后续建议。
             """;
 
     // ---- 内部工具名（P2 拆分：定义移至 AgentTools，此处保留 public 转发常量供外部/测试引用）----
@@ -381,6 +397,7 @@ public class AgentService {
                 // 工具执行：plan 走计划执行器（顺序执行）；普通工具并发执行（结果按原顺序回填）
                 boolean hasPlan = false;
                 boolean planAllOk = true;
+                List<AiModelGateway.ToolCall> failedInterfaceCalls = new ArrayList<>();
                 List<AiModelGateway.ToolCall> parallelCalls = new ArrayList<>();
                 Map<AiModelGateway.ToolCall, java.util.concurrent.Future<AgentToolExecutor.ToolExecOutcome>> futures = new LinkedHashMap<>();
                 for (AiModelGateway.ToolCall tc : toolCalls) {
@@ -416,11 +433,17 @@ public class AgentService {
                         AgentToolExecutor.ToolExecOutcome outcome = futures.get(tc)
                                 .get(AgentTools.TOOL_TIMEOUT_SECONDS + 5L, java.util.concurrent.TimeUnit.SECONDS);
                         trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
+                        if (!outcome.ok() && !INTERNAL_TOOLS.contains(tc.name())) {
+                            failedInterfaceCalls.add(tc);
+                        }
                     } catch (Exception ex) {
                         // 理论不可达：executeToolCore 内部已捕获所有异常并返回失败结果
                         AgentToolExecutor.ToolExecOutcome outcome = new AgentToolExecutor.ToolExecOutcome(
                                 "{\"error\": \"工具执行异常: " + ex.getMessage() + "\"}", false, 0);
                         trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
+                        if (!INTERNAL_TOOLS.contains(tc.name())) {
+                            failedInterfaceCalls.add(tc);
+                        }
                     }
                 }
                 // 重复工具调用收敛：连续调用相同工具时注入提示（真实模型下防止兜圈子耗尽轮数）
@@ -430,6 +453,18 @@ public class AgentService {
                     messages.add(Map.of(
                             "role", "system",
                             "content", "【提示】你已经调用过相同工具并拿到了结果（见上方工具返回）。请直接基于已有结果回答用户问题，不要重复调用同一工具。"
+                    ));
+                }
+                // 接口编排失败引导：上一步接口工具返回错误时，引导模型聚焦正确接口、不盲目重试
+                if (!failedInterfaceCalls.isEmpty()) {
+                    meterRegistry.counter("devmind.agent.interface_error_hint").increment();
+                    log.warn("agent 接口工具 {} 调用失败，注入编排引导",
+                            failedInterfaceCalls.stream().map(AiModelGateway.ToolCall::name).toList());
+                    messages.add(Map.of(
+                            "role", "system",
+                            "content", "【提示】上一步接口调用返回错误（见上方工具返回的错误信息）。请：1) 若该步骤存在多个功能相似的接口，"
+                                    + "选择描述与当前步骤匹配的那个（业务操作用业务服务接口、支付用支付平台接口），不要重复调用已失败的接口或盲目尝试相似接口；"
+                                    + "2) 把上一步成功返回的 id 传给后续步骤；3) 确实无法继续时，向用户报告失败的步骤与原因。"
                     ));
                 }
                 lastToolNames = toolCalls.stream().map(AiModelGateway.ToolCall::name).toList();

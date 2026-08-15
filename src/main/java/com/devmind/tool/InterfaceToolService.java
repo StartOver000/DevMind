@@ -35,6 +35,14 @@ public class InterfaceToolService implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(InterfaceToolService.class);
     private static final Set<String> ALLOWED_METHODS = Set.of("GET", "POST", "PUT", "DELETE");
+    /** 接口方法 → 中文操作语义标签（bge-m3 多语言，中文自然语言 query 命中英文档案时提供跨语言锚点） */
+    private static final java.util.Map<String, String> METHOD_CN_LABELS = java.util.Map.of(
+            "GET", "查询 获取 查看 检索",
+            "POST", "创建 新增 发起 提交",
+            "PUT", "更新 修改 替换",
+            "DELETE", "删除 移除",
+            "PATCH", "更新 修改"
+    );
 
     private final ToolDefinitionRepository repository;
     private final ToolRegistry toolRegistry;
@@ -81,6 +89,14 @@ public class InterfaceToolService implements ApplicationRunner {
             String semanticText = def.httpMethod() + " " + def.endpointUrl()
                     + " —— " + def.name()
                     + (def.description() == null || def.description().isBlank() ? "" : "\n" + def.description());
+            // 中文操作语义标签 + 接口名驼峰拆词：提升中文 query 对英文档案的命中与近义接口区分度
+            // （Stripe 等英文档案“balance 系/charge 系”相似度 0.52-0.65 区分不足，模型易选错近义工具）
+            String cn = METHOD_CN_LABELS.getOrDefault(
+                    def.httpMethod() == null ? "" : def.httpMethod().toUpperCase(Locale.ROOT), "");
+            if (!cn.isBlank()) {
+                semanticText += "\n" + cn;
+            }
+            semanticText += "\n" + camelToWords(def.name());
             List<List<Double>> embeddings = modelGateway.embed(List.of(semanticText));
             if (embeddings.get(0) != null) {
                 semanticRepository.upsert(tenantId, def.id(), semanticText, embeddings.get(0));
@@ -88,6 +104,17 @@ public class InterfaceToolService implements ApplicationRunner {
         } catch (Exception ex) {
             log.warn("接口 {} 语义档案生成失败（仅影响语义检索，关键词检索仍可用）: {}", def.name(), ex.getMessage());
         }
+    }
+
+    /** 驼峰/短横线接口名拆词：GetBalance → Get Balance（模型对拼接名语义感知弱） */
+    private String camelToWords(String name) {
+        if (name == null || name.isBlank()) {
+            return "";
+        }
+        String spaced = name.replaceAll("([a-z])([A-Z])", "$1 $2")
+                .replace('-', ' ')
+                .replace('_', ' ');
+        return spaced.trim();
     }
 
     @Override

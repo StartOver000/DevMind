@@ -58,7 +58,13 @@ public class AgentBehaviorEvalRunner implements ApplicationRunner {
                 new AgentEvalCase("SQL 诊断", "诊断这条 SQL 慢在哪：SELECT * FROM orders WHERE user_id = 1 ORDER BY created_at",
                         List.of("sql_diagnose")),
                 new AgentEvalCase("文档检索", "知识库里有关于线程池的文档吗？帮我找一下", List.of("doc_search", "kb_search")),
-                new AgentEvalCase("直接回答", "你好", List.of())
+                new AgentEvalCase("直接回答", "你好", List.of()),
+                // 接口工具选择（P1 接口语义化）：问题需语义命中注入的接口候选，再选对工具
+                new AgentEvalCase("Stripe 余额", "查一下 Stripe 账户的当前余额是多少", List.of("GetBalance")),
+                new AgentEvalCase("Stripe 交易", "列出 Stripe 的余额交易记录", List.of("GetBalanceTransactions")),
+                // PostCharges 已被 Stripe 标记弃用（no longer recommended），现行推荐 PaymentIntent，两者皆可算对；
+                // 必须带金额/币种（模型缺必填参数时澄清是合理行为，不算工具选择错误）
+                new AgentEvalCase("Stripe 支付", "帮我在 Stripe 上创建一笔 100 美元的支付", List.of("PostCharges", "PostPaymentIntents"))
         );
     }
 

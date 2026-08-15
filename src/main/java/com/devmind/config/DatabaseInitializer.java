@@ -487,6 +487,27 @@ public class DatabaseInitializer implements ApplicationRunner {
         jdbcTemplate.execute("""
                 CREATE INDEX IF NOT EXISTS idx_workflow_run_step_run ON workflow_run_step(run_id, step_index)
                 """);
+        // 人工审批节点（P2-3 human-in-the-loop）：审批请求挂在工作流 run 上，vars_snapshot 支持恢复执行
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS workflow_approval (
+                    id BIGSERIAL PRIMARY KEY,
+                    workflow_id BIGINT NOT NULL,
+                    run_id BIGINT NOT NULL,
+                    tenant_id BIGINT NOT NULL DEFAULT 1,
+                    title VARCHAR(500),
+                    assignee VARCHAR(255),
+                    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+                    comment VARCHAR(1000),
+                    vars_snapshot TEXT,
+                    step_index INT,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    decided_at TIMESTAMP,
+                    decided_by VARCHAR(255)
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE INDEX IF NOT EXISTS idx_workflow_approval_run ON workflow_approval(run_id)
+                """);
         // 工具调用审计：Agent / 工作流每次工具调用的完整轨迹（M2-3）
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS tool_call_log (

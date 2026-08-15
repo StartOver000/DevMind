@@ -48,8 +48,10 @@ public class WorkflowRunRepository {
     }
 
     public boolean hasRunning(Long tenantId, Long workflowId) {
+        // RUNNING + WAITING_APPROVAL 都视为“进行中”（审批等待期间同一工作流不应被并发触发）
         Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM workflow_run WHERE workflow_id = ? AND tenant_id = ? AND status = 'RUNNING'",
+                "SELECT COUNT(*) FROM workflow_run WHERE workflow_id = ? AND tenant_id = ? " +
+                        "AND status IN ('RUNNING', 'WAITING_APPROVAL')",
                 Integer.class, workflowId, tenantId
         );
         return count != null && count > 0;

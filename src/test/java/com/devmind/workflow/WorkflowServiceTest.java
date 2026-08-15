@@ -46,6 +46,9 @@ class WorkflowServiceTest {
     @Mock
     private ToolAccessService toolAccessService;
 
+    @Mock
+    private WorkflowApprovalRepository approvalRepository;
+
     private ToolRegistry registry;
     private WorkflowService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -55,7 +58,7 @@ class WorkflowServiceTest {
         registry = new ToolRegistry(List.of());
         service = new WorkflowService(
                 repository, runRepository, executor, registry, objectMapper,
-                userService, toolAccessService
+                userService, toolAccessService, approvalRepository
         );
         lenient().when(userService.tenantIdOf(1L)).thenReturn(1L);
         // 默认：当前注册的工具全部对用户 1 可见

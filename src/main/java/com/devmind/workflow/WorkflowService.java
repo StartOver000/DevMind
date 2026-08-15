@@ -35,6 +35,7 @@ public class WorkflowService {
     private final ObjectMapper objectMapper;
     private final UserService userService;
     private final ToolAccessService toolAccessService;
+    private final WorkflowApprovalRepository approvalRepository;
 
     public WorkflowService(
             WorkflowRepository repository,
@@ -43,7 +44,8 @@ public class WorkflowService {
             ToolRegistry toolRegistry,
             ObjectMapper objectMapper,
             UserService userService,
-            ToolAccessService toolAccessService
+            ToolAccessService toolAccessService,
+            WorkflowApprovalRepository approvalRepository
     ) {
         this.repository = repository;
         this.runRepository = runRepository;
@@ -52,6 +54,7 @@ public class WorkflowService {
         this.objectMapper = objectMapper;
         this.userService = userService;
         this.toolAccessService = toolAccessService;
+        this.approvalRepository = approvalRepository;
     }
 
     public List<Workflow> list(Long userId) {
@@ -148,6 +151,42 @@ public class WorkflowService {
         Workflow workflow = requireWorkflow(tenantId, run.workflowId());
         requireVisible(workflow, userId);
         return new WorkflowRunDetail(run, runRepository.listSteps(runId));
+    }
+
+    /** 运行挂起的审批请求列表（P2-3 human-in-the-loop） */
+    public List<WorkflowApproval> approvals(Long runId, Long userId) {
+        Long tenantId = userService.tenantIdOf(userId);
+        WorkflowRun run = requireRun(tenantId, runId);
+        requireVisible(requireWorkflow(tenantId, run.workflowId()), userId);
+        return approvalRepository.listByRun(tenantId, runId);
+    }
+
+    /** 审批决定（P2-3）：通过 → 恢复执行；拒绝 → run 置 REJECTED。审批人/创建者/admin 可操作。 */
+    public WorkflowRun decideApproval(Long runId, Long approvalId, boolean approved, String comment, Long userId) {
+        Long tenantId = userService.tenantIdOf(userId);
+        WorkflowApproval approval = approvalRepository.findById(tenantId, approvalId);
+        if (approval == null || !approval.runId().equals(runId)) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "审批请求不存在");
+        }
+        Workflow workflow = requireWorkflow(tenantId, approval.workflowId());
+        requireVisible(workflow, userId);
+        // 权限：审批人本人 / 创建者 / admin
+        boolean isAssignee = approval.assignee() != null && !approval.assignee().isBlank()
+                && approval.assignee().equals(String.valueOf(userId));
+        if (!isAssignee && !workflow.createdBy().equals(userId) && !userService.isAdmin(userId)) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "无权审批该请求");
+        }
+        log.info("审批决定 run={} approval={} {}{} by user={}", runId, approvalId,
+                approved ? "通过" : "拒绝", comment == null ? "" : " - " + comment, userId);
+        return executor.resumeAfterApproval(workflow, runId, approvalId, approved, comment, userId);
+    }
+
+    private WorkflowRun requireRun(Long tenantId, Long runId) {
+        WorkflowRun run = runRepository.findRun(tenantId, runId);
+        if (run == null) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "运行记录不存在: " + runId);
+        }
+        return run;
     }
 
     public record WorkflowRunDetail(WorkflowRun run, List<WorkflowRunStep> steps) {

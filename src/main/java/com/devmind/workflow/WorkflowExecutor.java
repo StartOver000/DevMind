@@ -35,6 +35,7 @@ public class WorkflowExecutor {
 
     private final ToolRegistry toolRegistry;
     private final WorkflowRunRepository runRepository;
+    private final WorkflowApprovalRepository approvalRepository;
     private final ObjectMapper objectMapper;
     private final WorkflowConditionEvaluator conditionEvaluator;
     /** 并行组执行线程池（M3-2） */
@@ -61,11 +62,13 @@ public class WorkflowExecutor {
     public WorkflowExecutor(
             ToolRegistry toolRegistry,
             WorkflowRunRepository runRepository,
+            WorkflowApprovalRepository approvalRepository,
             ObjectMapper objectMapper,
             WorkflowConditionEvaluator conditionEvaluator
     ) {
         this.toolRegistry = toolRegistry;
         this.runRepository = runRepository;
+        this.approvalRepository = approvalRepository;
         this.objectMapper = objectMapper;
         this.conditionEvaluator = conditionEvaluator;
     }
@@ -82,8 +85,8 @@ public class WorkflowExecutor {
         }
     }
 
-    /** 执行单元：顺序步骤 / 并行组 / 条件分支（if）/ 循环（loop，P2-2） */
-    private sealed interface StepUnit permits SequentialUnit, ParallelUnit, IfUnit, LoopUnit {
+    /** 执行单元：顺序步骤 / 并行组 / 条件分支（if）/ 循环（loop，P2-2）/ 人工审批（approve，P2-3） */
+    private sealed interface StepUnit permits SequentialUnit, ParallelUnit, IfUnit, LoopUnit, ApprovalUnit {
     }
 
     private record SequentialUnit(WorkflowStep step) implements StepUnit {
@@ -93,6 +96,20 @@ public class WorkflowExecutor {
     }
 
     private record IfUnit(String condition, List<StepUnit> thenBranch, List<StepUnit> elseBranch) implements StepUnit {
+    }
+
+    /**
+     * 人工审批单元（P2-3 human-in-the-loop）：执行到此处暂停 run（WAITING_APPROVAL）并落审批请求；
+     * 审批通过后执行 thenBranch + 后续单元，拒绝则 run 置 REJECTED。index 为顶层单元下标（恢复定位）。
+     */
+    private record ApprovalUnit(String title, String assignee, List<StepUnit> thenBranch, int index) implements StepUnit {
+    }
+
+    /** 执行到审批节点时抛出的内部暂停信号（中止本次执行，等待人工审批后 resume） */
+    private static final class ApprovalPauseException extends RuntimeException {
+        ApprovalPauseException() {
+            super("等待人工审批");
+        }
     }
 
     /**
@@ -175,7 +192,13 @@ public class WorkflowExecutor {
         }
         AtomicInteger stepIndex = new AtomicInteger(0);
         AtomicReference<String> failure = new AtomicReference<>();
-        executeUnits(units, runId, vars, userId, workflow.name(), stepIndex, failure);
+        try {
+            executeUnits(units, runId, workflow.id(), workflow.tenantId(), vars, userId,
+                    workflow.name(), stepIndex, failure);
+        } catch (ApprovalPauseException pause) {
+            // run 已在 pauseForApproval 置为 WAITING_APPROVAL，等待人工审批后 resumeAfterApproval 续跑
+            return runRepository.findRun(workflow.tenantId(), runId);
+        }
         runRepository.finishRun(runId, failure.get() == null ? "SUCCESS" : "FAILED", failure.get());
         return runRepository.findRun(workflow.tenantId(), runId);
     }
@@ -184,8 +207,9 @@ public class WorkflowExecutor {
      * 循环执行（P2-2）：条件为真执行 body，每轮后重评估；达到 maxRounds 无条件退出。
      * 防死循环三件套：继续条件（condition）+ 退出条件（condition 为假）+ 安全边界（maxRounds）。
      */
-    private void executeLoop(LoopUnit loopUnit, Long runId, Map<String, Object> vars, Long userId,
-                             String workflowName, AtomicInteger stepIndex, AtomicReference<String> failure) {
+    private void executeLoop(LoopUnit loopUnit, Long runId, Long workflowId, Long tenantId,
+                             Map<String, Object> vars, Long userId, String workflowName,
+                             AtomicInteger stepIndex, AtomicReference<String> failure) {
         int rounds = 0;
         while (rounds < loopUnit.maxRounds()) {
             if (failure.get() != null) {
@@ -198,14 +222,16 @@ public class WorkflowExecutor {
             }
             rounds++;
             log.info("工作流 {} 循环第 {} 轮（max={}）", workflowName, rounds, loopUnit.maxRounds());
-            executeUnits(loopUnit.body(), runId, vars, userId, workflowName, stepIndex, failure);
+            executeUnits(loopUnit.body(), runId, workflowId, tenantId, vars, userId,
+                    workflowName, stepIndex, failure);
         }
         log.warn("工作流 {} 循环达到最大轮次上限 {}，强制退出（防死循环）", workflowName, loopUnit.maxRounds());
     }
 
-    /** 按顺序执行单元列表（条件分支递归） */
-    private void executeUnits(List<StepUnit> units, Long runId, Map<String, Object> vars, Long userId,
-                              String workflowName, AtomicInteger stepIndex, AtomicReference<String> failure) {
+    /** 按顺序执行单元列表（条件分支递归；审批节点暂停等待人工审批） */
+    private void executeUnits(List<StepUnit> units, Long runId, Long workflowId, Long tenantId,
+                              Map<String, Object> vars, Long userId, String workflowName,
+                              AtomicInteger stepIndex, AtomicReference<String> failure) {
         for (StepUnit unit : units) {
             if (failure.get() != null) {
                 break;
@@ -218,11 +244,92 @@ public class WorkflowExecutor {
                 boolean matched = conditionEvaluator.evaluate(ifUnit.condition(), vars);
                 log.info("工作流 {} 条件 [{}] → {}", workflowName, ifUnit.condition(), matched ? "THEN" : "ELSE");
                 executeUnits(matched ? ifUnit.thenBranch() : ifUnit.elseBranch(),
-                        runId, vars, userId, workflowName, stepIndex, failure);
+                        runId, workflowId, tenantId, vars, userId, workflowName, stepIndex, failure);
             } else if (unit instanceof LoopUnit loopUnit) {
-                executeLoop(loopUnit, runId, vars, userId, workflowName, stepIndex, failure);
+                executeLoop(loopUnit, runId, workflowId, tenantId, vars, userId, workflowName, stepIndex, failure);
+            } else if (unit instanceof ApprovalUnit approval) {
+                pauseForApproval(approval, runId, workflowId, tenantId, vars, workflowName,
+                        stepIndex.get(), failure);
             }
         }
+    }
+
+    /**
+     * 人工审批暂停（P2-3）：落审批请求（含变量快照）+ run 置 WAITING_APPROVAL + 抛暂停信号中断本次执行。
+     * 审批通过后 {@link #resumeAfterApproval} 从变量快照 + 审批点续跑。
+     */
+    private void pauseForApproval(ApprovalUnit approval, Long runId, Long workflowId, Long tenantId,
+                                  Map<String, Object> vars, String workflowName, int index,
+                                  AtomicReference<String> failure) {
+        try {
+            String snapshot = objectMapper.writeValueAsString(vars);
+            Long approvalId = approvalRepository.create(workflowId, runId, tenantId, approval.title(),
+                    approval.assignee(), snapshot, index);
+            runRepository.finishRun(runId, "WAITING_APPROVAL", "等待审批: " + approval.title());
+            log.info("工作流 {} 到达审批节点 [{}]（run={}, approval={}），已暂停等待审批",
+                    workflowName, approval.title(), runId, approvalId);
+        } catch (Exception ex) {
+            log.warn("审批请求创建失败: {}", ex.getMessage());
+            failure.set("审批请求创建失败: " + ex.getMessage());
+        }
+        throw new ApprovalPauseException();
+    }
+
+    /**
+     * 审批决定后恢复执行（P2-3）：通过 → 执行 thenBranch + 后续顶层单元；拒绝 → run 置 REJECTED。
+     * 幂等：审批已决定时直接返回当前 run 状态。支持多审批节点（恢复后执行到下一个审批再次暂停）。
+     */
+    public WorkflowRun resumeAfterApproval(Workflow workflow, Long runId, Long approvalId,
+                                           boolean approved, String comment, Long userId) {
+        WorkflowApproval approval = approvalRepository.findById(workflow.tenantId(), approvalId);
+        if (approval == null) {
+            throw new ApiException(ErrorCode.WORKFLOW_NOT_FOUND, "审批请求不存在");
+        }
+        if (!"PENDING".equals(approval.status())) {
+            return runRepository.findRun(workflow.tenantId(), runId);
+        }
+        approvalRepository.decide(approvalId, approved ? "APPROVED" : "REJECTED", comment,
+                userId == null ? "system" : String.valueOf(userId));
+        if (!approved) {
+            runRepository.finishRun(runId, "REJECTED", "审批拒绝: " + approval.title()
+                    + (comment == null || comment.isBlank() ? "" : " - " + comment));
+            return runRepository.findRun(workflow.tenantId(), runId);
+        }
+        List<StepUnit> units = parseUnits(workflow.stepsJson());
+        if (units == null || approval.stepIndex() == null
+                || approval.stepIndex() < 0 || approval.stepIndex() >= units.size()) {
+            runRepository.finishRun(runId, "FAILED", "审批恢复失败：步骤结构已变更");
+            return runRepository.findRun(workflow.tenantId(), runId);
+        }
+        StepUnit at = units.get(approval.stepIndex());
+        if (!(at instanceof ApprovalUnit approvalUnit)) {
+            runRepository.finishRun(runId, "FAILED", "审批恢复失败：审批点不存在");
+            return runRepository.findRun(workflow.tenantId(), runId);
+        }
+        Map<String, Object> vars = new ConcurrentHashMap<>();
+        if (approval.varsSnapshot() != null && !approval.varsSnapshot().isBlank()) {
+            try {
+                JsonNode snapshot = objectMapper.readTree(approval.varsSnapshot());
+                if (snapshot.isObject()) {
+                    snapshot.fields().forEachRemaining(e -> vars.put(e.getKey(), e.getValue().asText()));
+                }
+            } catch (Exception ex) {
+                log.warn("审批变量快照恢复失败（用空变量续跑）: {}", ex.getMessage());
+            }
+        }
+        AtomicInteger stepIndex = new AtomicInteger(approval.stepIndex() + 1);
+        AtomicReference<String> failure = new AtomicReference<>();
+        List<StepUnit> remainder = new ArrayList<>(approvalUnit.thenBranch());
+        remainder.addAll(units.subList(approval.stepIndex() + 1, units.size()));
+        try {
+            executeUnits(remainder, runId, workflow.id(), workflow.tenantId(), vars, userId,
+                    workflow.name(), stepIndex, failure);
+        } catch (ApprovalPauseException nextPause) {
+            // 后续又遇审批节点：再次暂停等待
+            return runRepository.findRun(workflow.tenantId(), runId);
+        }
+        runRepository.finishRun(runId, failure.get() == null ? "SUCCESS" : "FAILED", failure.get());
+        return runRepository.findRun(workflow.tenantId(), runId);
     }
 
     /** 并行执行所有步骤，等待全部完成 */
@@ -390,15 +497,16 @@ public class WorkflowExecutor {
         }
         AtomicInteger stepIndex = new AtomicInteger(0);
         AtomicReference<String> failure = new AtomicReference<>();
-        executeUnitsResuming(units, runId, vars, userId, workflow.name(),
+        executeUnitsResuming(units, runId, workflow.id(), workflow.tenantId(), vars, userId, workflow.name(),
                 stepIndex, failure, successIndexes, resumeFrom);
         runRepository.finishRun(runId, failure.get() == null ? "SUCCESS" : "FAILED", failure.get());
         return runRepository.findRun(workflow.tenantId(), runId);
     }
 
     /** 断点恢复专用：跳过程序中已成功步骤的 index，仅从失败点续跑（其余同 executeUnits） */
-    private void executeUnitsResuming(List<StepUnit> units, Long runId, Map<String, Object> vars, Long userId,
-                                      String workflowName, AtomicInteger stepIndex, AtomicReference<String> failure,
+    private void executeUnitsResuming(List<StepUnit> units, Long runId, Long workflowId, Long tenantId,
+                                      Map<String, Object> vars, Long userId, String workflowName,
+                                      AtomicInteger stepIndex, AtomicReference<String> failure,
                                       java.util.Set<Integer> successIndexes, int resumeFrom) {
         for (StepUnit unit : units) {
             if (failure.get() != null) {
@@ -413,9 +521,11 @@ public class WorkflowExecutor {
             } else if (unit instanceof IfUnit ifUnit) {
                 boolean matched = conditionEvaluator.evaluate(ifUnit.condition(), vars);
                 executeUnitsResuming(matched ? ifUnit.thenBranch() : ifUnit.elseBranch(),
-                        runId, vars, userId, workflowName, stepIndex, failure, successIndexes, resumeFrom);
+                        runId, workflowId, tenantId, vars, userId, workflowName, stepIndex, failure,
+                        successIndexes, resumeFrom);
             } else if (unit instanceof LoopUnit loopUnit) {
-                executeLoop(loopUnit, runId, vars, userId, workflowName, stepIndex, failure);
+                executeLoop(loopUnit, runId, workflowId, tenantId, vars, userId,
+                        workflowName, stepIndex, failure);
             }
         }
     }
@@ -485,10 +595,12 @@ public class WorkflowExecutor {
                 return null;
             }
             List<StepUnit> units = new ArrayList<>();
+            int i = 0;
             for (JsonNode node : array) {
-                StepUnit unit = parseUnit(node);
+                StepUnit unit = parseUnit(node, i);
                 if (unit != null) {
                     units.add(unit);
+                    i++;
                 }
             }
             return units.isEmpty() ? null : units;
@@ -498,8 +610,20 @@ public class WorkflowExecutor {
         }
     }
 
-    /** 解析单个元素：if 分支 / parallel 并行组 / 普通步骤 */
-    private StepUnit parseUnit(JsonNode node) {
+    /** 解析单个元素：if 分支 / parallel 并行组 / 人工审批 / 普通步骤；index 为顶层单元下标（嵌套传 -1） */
+    private StepUnit parseUnit(JsonNode node, int index) {
+        // 人工审批：{"approve": "标题", "assignee": "x", "then": [...]}（仅支持顶层顺序单元）
+        String approveTitle = node.path("approve").asText("");
+        if (!approveTitle.isBlank()) {
+            if (index < 0) {
+                log.warn("审批节点仅支持顶层顺序单元，已忽略: {}", approveTitle);
+                return null;
+            }
+            String assignee = node.path("assignee").asText("");
+            List<StepUnit> thenUnits = parseUnitsFromNode(node.path("then"));
+            return new ApprovalUnit(approveTitle, assignee,
+                    thenUnits == null ? new ArrayList<>() : thenUnits, index);
+        }
         // 条件分支：{"if": "{{x}} > 100", "then": [...], "else": [...]}
         String condition = node.path("if").asText("");
         if (!condition.isBlank()) {
@@ -549,7 +673,7 @@ public class WorkflowExecutor {
         }
         List<StepUnit> units = new ArrayList<>();
         for (JsonNode item : node) {
-            StepUnit unit = parseUnit(item);
+            StepUnit unit = parseUnit(item, -1);
             if (unit != null) {
                 units.add(unit);
             }

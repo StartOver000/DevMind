@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
@@ -38,12 +39,15 @@ class WorkflowExecutorTest {
     @Mock
     private WorkflowRunRepository runRepository;
 
+    @Mock
+    private WorkflowApprovalRepository approvalRepository;
+
     private WorkflowExecutor executor;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
-        executor = new WorkflowExecutor(toolRegistry, runRepository, objectMapper,
+        executor = new WorkflowExecutor(toolRegistry, runRepository, approvalRepository, objectMapper,
                 new WorkflowConditionEvaluator());
     }
 
@@ -669,5 +673,101 @@ class WorkflowExecutorTest {
 
         assertThat(result.status()).isEqualTo("SUCCESS");
         verify(toolRegistry, never()).execute(eq("tick"), anyString(), eq(1L), eq("workflow"), eq(100L));
+    }
+
+    // ---------- P2-3 人工审批（human-in-the-loop） ----------
+
+    private WorkflowApproval pendingApproval(Long id, Long runId, String snapshot, int stepIndex) {
+        return new WorkflowApproval(id, 1L, runId, 1L, "确认下单", "1", "PENDING", null,
+                snapshot, stepIndex, "t", null, null);
+    }
+
+    @Test
+    void pausesAtApprovalAndResumesOnApprove() {
+        // 步骤1(customer_query) → 审批(确认下单) → 通过后执行 then(ai_generate) + 后续(usage_query)
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(runRepository.findRun(1L, 100L)).thenReturn(
+                run(100L, "WAITING_APPROVAL"), run(100L, "SUCCESS"));
+        when(toolRegistry.execute(eq("customer_query"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenReturn("{\"clients\":[1]}");
+        when(toolRegistry.execute(eq("ai_generate"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenReturn("日报");
+        when(toolRegistry.execute(eq("usage_query"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenReturn("ok");
+        when(approvalRepository.create(anyLong(), eq(100L), anyLong(), anyString(), anyString(), anyString(), anyInt()))
+                .thenReturn(999L);
+        when(approvalRepository.findById(1L, 999L))
+                .thenReturn(pendingApproval(999L, 100L, "{\"c\":\"{\\\"clients\\\":[1]}\"}", 1));
+
+        String stepsJson = """
+                [{"tool":"customer_query","params":{},"output_var":"c"},
+                 {"approve":"确认下单","assignee":"1","then":[
+                    {"tool":"ai_generate","params":{"prompt":"基于 {{c}}"}}]},
+                 {"tool":"usage_query","params":{}}]
+                """;
+        Workflow workflow = workflow(stepsJson);
+        WorkflowRun paused = executor.execute(workflow, 1L, "manual");
+
+        // 执行到审批 → 暂停 WAITING_APPROVAL，不执行 then/后续
+        assertThat(paused.status()).isEqualTo("WAITING_APPROVAL");
+        verify(approvalRepository).create(anyLong(), eq(100L), anyLong(), eq("确认下单"), eq("1"), anyString(), eq(1));
+        verify(toolRegistry, never()).execute(eq("ai_generate"), anyString(), eq(1L), eq("workflow"), eq(100L));
+
+        // 审批通过 → 恢复执行 then + 后续 → SUCCESS
+        WorkflowRun resumed = executor.resumeAfterApproval(workflow, 100L, 999L, true, "同意", 1L);
+        assertThat(resumed.status()).isEqualTo("SUCCESS");
+        verify(approvalRepository).decide(eq(999L), eq("APPROVED"), eq("同意"), anyString());
+        verify(toolRegistry).execute(eq("ai_generate"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(toolRegistry).execute(eq("usage_query"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(runRepository).finishRun(eq(100L), eq("WAITING_APPROVAL"), anyString());
+        verify(runRepository).finishRun(eq(100L), eq("SUCCESS"), eq(null));
+    }
+
+    @Test
+    void rejectsRunOnApprovalReject() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(runRepository.findRun(1L, 100L)).thenReturn(
+                run(100L, "WAITING_APPROVAL"), run(100L, "REJECTED"));
+        when(toolRegistry.execute(eq("customer_query"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenReturn("{\"clients\":[1]}");
+        when(approvalRepository.create(anyLong(), eq(100L), anyLong(), anyString(), anyString(), anyString(), anyInt()))
+                .thenReturn(999L);
+        when(approvalRepository.findById(1L, 999L))
+                .thenReturn(pendingApproval(999L, 100L, "{}", 1));
+
+        String stepsJson = """
+                [{"tool":"customer_query","params":{},"output_var":"c"},
+                 {"approve":"确认下单","assignee":"1","then":[
+                    {"tool":"ai_generate","params":{}}]},
+                 {"tool":"usage_query","params":{}}]
+                """;
+        Workflow workflow = workflow(stepsJson);
+        WorkflowRun paused = executor.execute(workflow, 1L, "manual");
+        assertThat(paused.status()).isEqualTo("WAITING_APPROVAL");
+
+        // 审批拒绝 → run 置 REJECTED，不执行 then/后续
+        WorkflowRun rejected = executor.resumeAfterApproval(workflow, 100L, 999L, false, "金额不对", 1L);
+        assertThat(rejected.status()).isEqualTo("REJECTED");
+        verify(approvalRepository).decide(eq(999L), eq("REJECTED"), eq("金额不对"), anyString());
+        verify(toolRegistry, never()).execute(eq("ai_generate"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(toolRegistry, never()).execute(eq("usage_query"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(runRepository).finishRun(eq(100L), eq("REJECTED"), anyString());
+    }
+
+    @Test
+    void approvalDecisionIsIdempotent() {
+        // 已决定的审批再次 approve → 直接返回当前状态，不重复执行
+        when(runRepository.findRun(1L, 100L)).thenReturn(run(100L, "SUCCESS"));
+        when(approvalRepository.findById(1L, 999L))
+                .thenReturn(new WorkflowApproval(999L, 1L, 100L, 1L, "确认下单", "1", "APPROVED",
+                        "已通过", "{}", 1, "t", "t2", "1"));
+
+        WorkflowRun result = executor.resumeAfterApproval(workflow("[]"), 100L, 999L, true, "再通过", 1L);
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        verify(approvalRepository, never()).decide(anyLong(), anyString(), anyString(), anyString());
+        verify(toolRegistry, never()).execute(anyString(), anyString(), eq(1L), eq("workflow"), eq(100L));
     }
 }

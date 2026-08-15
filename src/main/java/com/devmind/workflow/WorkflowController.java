@@ -117,4 +117,42 @@ public class WorkflowController {
     ) {
         return workflowService.runDetail(runId, userId);
     }
+
+    // ---------- 人工审批（P2-3 human-in-the-loop） ----------
+
+    /** 运行挂起的审批请求列表 */
+    @GetMapping("/{id}/runs/{runId}/approvals")
+    public List<WorkflowApproval> approvals(
+            @PathVariable Long id,
+            @PathVariable Long runId,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        return workflowService.approvals(runId, userId);
+    }
+
+    /** 审批通过：恢复执行审批节点之后的步骤 */
+    @PostMapping("/{id}/runs/{runId}/approvals/{approvalId}/approve")
+    public WorkflowRun approve(
+            @PathVariable Long id,
+            @PathVariable Long runId,
+            @PathVariable Long approvalId,
+            @RequestBody(required = false) Map<String, String> body,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        String comment = body == null ? null : body.get("comment");
+        return workflowService.decideApproval(runId, approvalId, true, comment, userId);
+    }
+
+    /** 审批拒绝：run 置 REJECTED */
+    @PostMapping("/{id}/runs/{runId}/approvals/{approvalId}/reject")
+    public WorkflowRun reject(
+            @PathVariable Long id,
+            @PathVariable Long runId,
+            @PathVariable Long approvalId,
+            @RequestBody(required = false) Map<String, String> body,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId
+    ) {
+        String comment = body == null ? null : body.get("comment");
+        return workflowService.decideApproval(runId, approvalId, false, comment, userId);
+    }
 }

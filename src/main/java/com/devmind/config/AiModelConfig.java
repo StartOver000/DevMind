@@ -61,14 +61,16 @@ public class AiModelConfig {
                 cache,
                 "zhipu:" + properties.zhipuEmbeddingModel() + "@" + properties.zhipuBaseUrl()
         );
-        // 配置了备用 embedding（如硅基流动 bge-m3）时，主 embedding 失败自动切换
+        // 配置了备用 embedding（如硅基流动 bge-m3）时，主 embedding 失败自动切换；
+        // 传主模型维度做校验——备用维度不一致时拒绝写入，防污染 pgvector 向量库
         if (embeddingFallbackBaseUrl != null && !embeddingFallbackBaseUrl.isBlank()) {
             gateway = new FallbackEmbeddingGateway(
                     gateway,
                     restClientBuilder,
                     embeddingFallbackBaseUrl,
                     secretCipher.resolve(embeddingFallbackApiKey),
-                    embeddingFallbackModel
+                    embeddingFallbackModel,
+                    properties.embeddingDimensions()
             );
         }
         return gateway;

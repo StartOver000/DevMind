@@ -26,8 +26,10 @@ public class FallbackEmbeddingGateway implements AiModelGateway {
 
     private final AiModelGateway delegate;
     private final FallbackEmbeddingCaller fallbackCaller;
+    /** 主 embedding 维度（1024）；<=0 表示不校验（测试/未配置场景） */
+    private final int expectedDimensions;
 
-    /** 生产构造：内部用 RestClient 调备用 /embeddings */
+    /** 生产构造：内部用 RestClient 调备用 /embeddings（不校验维度，兼容旧配置） */
     public FallbackEmbeddingGateway(
             AiModelGateway delegate,
             RestClient.Builder restClientBuilder,
@@ -35,8 +37,19 @@ public class FallbackEmbeddingGateway implements AiModelGateway {
             String apiKey,
             String fallbackModel
     ) {
-        this.delegate = delegate;
-        this.fallbackCaller = texts -> {
+        this(delegate, restClientBuilder, baseUrl, apiKey, fallbackModel, -1);
+    }
+
+    /** 生产构造 + 维度校验：备用模型维度必须与主一致，否则拒绝写入（防污染 pgvector） */
+    public FallbackEmbeddingGateway(
+            AiModelGateway delegate,
+            RestClient.Builder restClientBuilder,
+            String baseUrl,
+            String apiKey,
+            String fallbackModel,
+            int expectedDimensions
+    ) {
+        this(delegate, texts -> {
             FallbackEmbeddingResponse response = restClientBuilder.baseUrl(baseUrl).build().post()
                     .uri("/embeddings")
                     .header("Authorization", "Bearer " + apiKey)
@@ -48,13 +61,19 @@ public class FallbackEmbeddingGateway implements AiModelGateway {
                 throw new IllegalStateException("备用 embedding 接口返回为空");
             }
             return response.data().stream().map(FallbackEmbeddingResponse.Data::embedding).toList();
-        };
+        }, expectedDimensions);
     }
 
-    /** 测试构造：注入自定义调用器 */
+    /** 测试构造：注入自定义调用器（不校验维度） */
     public FallbackEmbeddingGateway(AiModelGateway delegate, FallbackEmbeddingCaller fallbackCaller) {
+        this(delegate, fallbackCaller, -1);
+    }
+
+    /** 测试构造 + 维度校验 */
+    public FallbackEmbeddingGateway(AiModelGateway delegate, FallbackEmbeddingCaller fallbackCaller, int expectedDimensions) {
         this.delegate = delegate;
         this.fallbackCaller = fallbackCaller;
+        this.expectedDimensions = expectedDimensions;
     }
 
     @Override
@@ -63,7 +82,25 @@ public class FallbackEmbeddingGateway implements AiModelGateway {
             return delegate.embed(texts);
         } catch (Exception ex) {
             log.warn("主 embedding 调用失败（{}），切换到备用模型", ex.getMessage());
-            return fallbackCaller.call(texts);
+            List<List<Double>> vecs = fallbackCaller.call(texts);
+            validateDimensions(vecs);
+            return vecs;
+        }
+    }
+
+    /** 备用向量维度必须与主模型一致（pgvector 索引固定 1024 维），不一致拒绝写入防静默污染 */
+    private void validateDimensions(List<List<Double>> vecs) {
+        if (expectedDimensions <= 0 || vecs == null || vecs.isEmpty()) {
+            return;
+        }
+        for (List<Double> v : vecs) {
+            if (v != null && v.size() != expectedDimensions) {
+                String msg = String.format(
+                        "备用 embedding 维度 %d 与主模型 %d 不一致，拒绝写入（防止污染 pgvector 向量库）",
+                        v.size(), expectedDimensions);
+                log.error("[GUARD] {}", msg);
+                throw new IllegalStateException(msg);
+            }
         }
     }
 

@@ -30,7 +30,7 @@ function dismiss() {
       <a href="#/chat" class="qs-step">
         <span class="qs-no">2</span>
         <b>问它，或说句话让 AI 跑流程</b>
-        <span>问答直接问；流程用大白话描述需求，AI 帮你排好步骤</span>
+        <span>问答直接问；流程用大白话描述需求，AI 帮你排好步骤。想调公司系统？生成前点「🧭 能力盘点」看能调什么</span>
       </a>
       <a href="#/workflows" class="qs-step">
         <span class="qs-no">3</span>
@@ -40,6 +40,7 @@ function dismiss() {
     </div>
     <div class="qs-foot">
       💡 想 10 分钟体验完整闭环？建一个知识库上传文档，然后在「流程」说一句"查一下文档，总结要点"试试。
+      要调公司系统：找管理员在「管理 → 接口」接入并授权，你就能在流程里说人话调用。
     </div>
   </div>
 </template>

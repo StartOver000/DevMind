@@ -51,6 +51,12 @@ const routes = [
     meta: { title: '审计日志' }
   },
   {
+    path: '/metrics',
+    name: 'metrics',
+    component: () => import('@/views/ProductMetricsView.vue'),
+    meta: { title: '产品数据' }
+  },
+  {
     path: '/team',
     name: 'team',
     component: () => import('@/views/TeamView.vue'),

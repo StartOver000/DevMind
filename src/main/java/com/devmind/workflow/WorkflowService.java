@@ -1,6 +1,7 @@
 package com.devmind.workflow;
 
 import com.devmind.agent.ToolRegistry;
+import com.devmind.audit.AuditLogService;
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
 import com.devmind.tool.ToolAccessService;
@@ -36,6 +37,7 @@ public class WorkflowService {
     private final UserService userService;
     private final ToolAccessService toolAccessService;
     private final WorkflowApprovalRepository approvalRepository;
+    private final AuditLogService auditLogService;
 
     public WorkflowService(
             WorkflowRepository repository,
@@ -45,7 +47,8 @@ public class WorkflowService {
             ObjectMapper objectMapper,
             UserService userService,
             ToolAccessService toolAccessService,
-            WorkflowApprovalRepository approvalRepository
+            WorkflowApprovalRepository approvalRepository,
+            AuditLogService auditLogService
     ) {
         this.repository = repository;
         this.runRepository = runRepository;
@@ -55,6 +58,7 @@ public class WorkflowService {
         this.userService = userService;
         this.toolAccessService = toolAccessService;
         this.approvalRepository = approvalRepository;
+        this.auditLogService = auditLogService;
     }
 
     public List<Workflow> list(Long userId) {
@@ -90,6 +94,7 @@ public class WorkflowService {
         );
         Long id = repository.insert(workflow);
         ensureWebhookToken(tenantId, id, trigger);
+        auditLogService.log(userId, "CREATE_WORKFLOW", "workflow", id, req.name());
         log.info("创建工作流 {} (id={}, tenant={}, by user={})", req.name(), id, tenantId, userId);
         return requireWorkflow(tenantId, id);
     }

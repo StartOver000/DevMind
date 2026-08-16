@@ -16,9 +16,9 @@ test('顶部导航：业务人员 4 个核心入口 + 管理下拉收纳技术�
   await expect(tabs.nth(1)).toHaveText('问答');
   await expect(tabs.nth(2)).toHaveText('流程');
   await expect(tabs.nth(3)).toHaveText('技能');
-  // 管理下拉收纳技术/管理功能（接口/SQL 诊断/用量/审计日志/团队/评估）
+  // 管理下拉收纳技术/管理功能（接口/SQL 诊断/用量/审计日志/产品数据/团队/评估/反馈）
   await page.locator('.admin-btn').click();
-  await expect(page.locator('.admin-item:visible')).toHaveCount(6);
+  await expect(page.locator('.admin-item:visible')).toHaveCount(8);
 });
 
 test('知识库页：创建知识库并出现在列表', async ({ page }) => {

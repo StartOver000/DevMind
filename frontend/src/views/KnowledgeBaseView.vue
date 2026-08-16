@@ -19,6 +19,16 @@ const docs = ref([]);
 const teams = ref([]);
 const pollTimer = ref(null);
 const fileInput = ref(null);
+// 资产快照（产品审视2 盲区 E 落地：留存钩子，让用户看到自己在平台上的积累）
+const myAssets = ref(null);
+
+async function loadMyAssets() {
+  try {
+    myAssets.value = await api('/api/me/summary');
+  } catch (err) {
+    myAssets.value = null;
+  }
+}
 
 async function loadTeams() {
   try {
@@ -151,12 +161,14 @@ watch(
     currentKbId.value = null;
     loadKbs();
     loadTeams();
+    loadMyAssets();
   }
 );
 
 onMounted(() => {
   loadKbs();
   loadTeams();
+  loadMyAssets();
 });
 onBeforeUnmount(() => {
   if (pollTimer.value) clearInterval(pollTimer.value);
@@ -166,6 +178,16 @@ onBeforeUnmount(() => {
 <template>
   <!-- 快速上手引导（产品 P1-2：业务人员 3 步闭环，首次展示、可关闭） -->
   <QuickStartGuide />
+  <!-- 资产快照（留存钩子）：让用户看到自己在平台上的积累 -->
+  <div v-if="myAssets" class="asset-strip">
+    <span class="asset-label">我的资产</span>
+    <span class="asset-item"><b>{{ myAssets.kbCount }}</b>知识库</span>
+    <span class="asset-item"><b>{{ myAssets.docCount }}</b>文档</span>
+    <span class="asset-item"><b>{{ myAssets.skillCount }}</b>技能</span>
+    <span class="asset-item"><b>{{ myAssets.workflowCount }}</b>工作流</span>
+    <span class="asset-item"><b>{{ myAssets.conversationCount }}</b>会话</span>
+    <span class="asset-item"><b>{{ myAssets.askCount }}</b>提问</span>
+  </div>
   <section class="kb-grid">
     <div class="kb-left">
       <KbSidebar :kbs="kbsStore.kbs" :current-kb-id="currentKbId" :teams="teams" @select="selectKb" @created="onKbCreated" />
@@ -187,6 +209,32 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 资产快照条（留存钩子） */
+.asset-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  margin-bottom: 12px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2, transparent);
+  font-size: 13px;
+}
+
+.asset-label {
+  color: var(--muted);
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.asset-item b {
+  color: var(--accent);
+  font-size: 16px;
+  margin-right: 4px;
+}
+
 .kb-grid {
   display: grid;
   gap: 16px;

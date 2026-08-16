@@ -125,10 +125,22 @@ onMounted(loadUsers);
               <router-link to="/audit" class="admin-item" :class="{ active }">审计日志</router-link>
             </MenuItem>
             <MenuItem v-slot="{ active }">
+              <router-link to="/metrics" class="admin-item" :class="{ active }">产品数据</router-link>
+            </MenuItem>
+            <MenuItem v-slot="{ active }">
               <router-link to="/team" class="admin-item" :class="{ active }">团队</router-link>
             </MenuItem>
             <MenuItem v-slot="{ active }">
               <router-link to="/eval" class="admin-item" :class="{ active }">评估</router-link>
+            </MenuItem>
+            <MenuItem v-slot="{ active }">
+              <a
+                href="https://github.com/StartOver000/DevMind/issues/new"
+                target="_blank"
+                rel="noopener"
+                class="admin-item"
+                :class="{ active }"
+              >反馈问题</a>
             </MenuItem>
           </MenuItems>
         </Transition>

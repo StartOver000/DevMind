@@ -176,39 +176,49 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- 快速上手引导（产品 P1-2：业务人员 3 步闭环，首次展示、可关闭） -->
-  <QuickStartGuide />
-  <!-- 资产快照（留存钩子）：让用户看到自己在平台上的积累 -->
-  <div v-if="myAssets" class="asset-strip">
-    <span class="asset-label">我的资产</span>
-    <span class="asset-item"><b>{{ myAssets.kbCount }}</b>知识库</span>
-    <span class="asset-item"><b>{{ myAssets.docCount }}</b>文档</span>
-    <span class="asset-item"><b>{{ myAssets.skillCount }}</b>技能</span>
-    <span class="asset-item"><b>{{ myAssets.workflowCount }}</b>工作流</span>
-    <span class="asset-item"><b>{{ myAssets.conversationCount }}</b>会话</span>
-    <span class="asset-item"><b>{{ myAssets.askCount }}</b>提问</span>
-  </div>
-  <section class="kb-grid">
-    <div class="kb-left">
-      <KbSidebar :kbs="kbsStore.kbs" :current-kb-id="currentKbId" :teams="teams" @select="selectKb" @created="onKbCreated" />
-      <MemberPanel :key="memberReloadKey" :kb-id="currentKbId" />
+  <div class="kb-page">
+    <!-- 快速上手引导（产品 P1-2：业务人员 3 步闭环，首次展示、可关闭） -->
+    <QuickStartGuide />
+    <!-- 资产快照（留存钩子）：让用户看到自己在平台上的积累 -->
+    <div v-if="myAssets" class="asset-strip">
+      <span class="asset-label">我的资产</span>
+      <span class="asset-item"><b>{{ myAssets.kbCount }}</b>知识库</span>
+      <span class="asset-item"><b>{{ myAssets.docCount }}</b>文档</span>
+      <span class="asset-item"><b>{{ myAssets.skillCount }}</b>技能</span>
+      <span class="asset-item"><b>{{ myAssets.workflowCount }}</b>工作流</span>
+      <span class="asset-item"><b>{{ myAssets.conversationCount }}</b>会话</span>
+      <span class="asset-item"><b>{{ myAssets.askCount }}</b>提问</span>
     </div>
-    <div class="panel kb-main">
-      <div class="panel-header">
-        <h2>{{ currentKbId ? currentKbTitle : '请选择知识库' }}</h2>
-        <div class="actions">
-          <input v-if="currentKbId" v-model="uploadTags" placeholder="标签（逗号分隔，可选）" class="tags-input">
-          <button v-if="currentKbId" class="primary" @click="pickFile">上传（可多选）</button>
-          <button v-if="currentKbId" class="secondary" @click="exportKb">导出</button>
-          <input ref="fileInput" type="file" accept=".md,.markdown,.pdf" multiple hidden @change="onFileChange">
-        </div>
+    <section class="kb-grid">
+      <div class="kb-left">
+        <KbSidebar :kbs="kbsStore.kbs" :current-kb-id="currentKbId" :teams="teams" @select="selectKb" @created="onKbCreated" />
+        <MemberPanel :key="memberReloadKey" :kb-id="currentKbId" />
       </div>
-      <DocTable :docs="docs" :kb-id="currentKbId" @refresh="loadDocs" />
-    </div>
-  </section>
+      <div class="panel kb-main">
+        <div class="panel-header">
+          <h2>{{ currentKbId ? currentKbTitle : '请选择知识库' }}</h2>
+          <div class="actions">
+            <input v-if="currentKbId" v-model="uploadTags" placeholder="标签（逗号分隔，可选）" class="tags-input">
+            <button v-if="currentKbId" class="primary" @click="pickFile">上传（可多选）</button>
+            <button v-if="currentKbId" class="secondary" @click="exportKb">导出</button>
+            <input ref="fileInput" type="file" accept=".md,.markdown,.pdf" multiple hidden @change="onFileChange">
+          </div>
+        </div>
+        <DocTable :docs="docs" :kb-id="currentKbId" @refresh="loadDocs" />
+      </div>
+    </section>
+  </div>
 </template>
 
 <style scoped>
+.kb-page {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: calc(100vh - 96px);
+  height: calc(100dvh - 96px);
+  min-height: 0;
+}
+
 /* 资产快照条（留存钩子） */
 .asset-strip {
   display: flex;
@@ -239,12 +249,14 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 16px;
   grid-template-columns: 300px 1fr;
-  align-items: start;
+  min-height: 0;
+  align-items: stretch;
 }
 
 /* 左侧栏整列：知识库列表 + 成员，内容多时列内滚动 */
 .kb-left {
-  height: calc(100vh - 110px);
+  height: 100%;
+  min-height: 0;
   overflow-y: auto;
   display: grid;
   align-content: start;
@@ -259,7 +271,8 @@ onBeforeUnmount(() => {
 
 .kb-main {
   min-width: 0;
-  height: calc(100vh - 110px);
+  height: 100%;
+  min-height: 0;
   overflow-y: auto;
   align-content: start;
 }
@@ -269,13 +282,18 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
+  .kb-page {
+    height: auto;
+  }
+
   .kb-grid {
     grid-template-columns: 1fr;
+    align-items: start;
   }
   .kb-left, .kb-main {
     height: auto;
-    max-height: 420px;
-    overflow-y: auto;
+    max-height: none;
+    overflow: visible;
   }
 }
 </style>

@@ -32,9 +32,19 @@ const DraftNode = {
       return h('div', { class: 'draft-step' }, [
         h('span', { class: 'no' }, String((props.index === undefined ? '' : Number(props.index) + 1))),
         h('div', { class: 'body' }, [
-          h('div', [h('b', n.tool || ''), n.goal ? h('span', { class: 'goal' }, ['—— ' + n.goal]) : null]),
-          (n.paramsJson && n.paramsJson !== '{}') ? h('div', { class: 'params' }, n.paramsJson) : null,
-          n.outputVar ? h('div', { class: 'out' }, ['→ ' + n.outputVar]) : null
+          // 业务人员视角（产品审视：业务人员视角审视-20260816.md 卡点4）：
+          // 标题优先显示业务化 goal；工具名/参数/变量收进可折叠"技术细节"
+          h('div', { class: 'step-title' }, [h('b', n.goal || n.tool || '')]),
+          (n.tool || (n.paramsJson && n.paramsJson !== '{}') || n.outputVar)
+            ? h('details', { class: 'step-detail' }, [
+                h('summary', '技术细节'),
+                h('div', { class: 'detail-inner' }, [
+                  n.tool ? h('div', ['工具：', h('code', n.tool)]) : null,
+                  (n.paramsJson && n.paramsJson !== '{}') ? h('div', { class: 'params' }, ['参数：', n.paramsJson]) : null,
+                  n.outputVar ? h('div', { class: 'out' }, ['输出：', n.outputVar]) : null
+                ])
+              ])
+            : null
         ])
       ]);
     };
@@ -821,6 +831,39 @@ onMounted(load);
   font-size: 13px;
   display: grid;
   gap: 2px;
+}
+
+/* 业务人员视角：步骤标题（业务化 goal），技术细节折叠展示 */
+.step-title {
+  font-weight: 600;
+}
+
+.step-detail {
+  font-size: 12px;
+  color: var(--muted, #888);
+  margin-top: 2px;
+}
+
+.step-detail summary {
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.8;
+}
+
+.detail-inner {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 4px 6px;
+  border-left: 2px solid var(--line);
+  word-break: break-all;
+}
+
+.detail-inner code {
+  font-family: var(--mono, monospace);
+  background: var(--line, #eee);
+  padding: 0 3px;
+  border-radius: 3px;
 }
 
 .draft-step .params, .draft-step .out {

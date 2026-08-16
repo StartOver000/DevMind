@@ -59,10 +59,22 @@ public class AiModelConfig {
             io.micrometer.core.instrument.MeterRegistry meterRegistry,
             @Value("${devmind.embedding-fallback.base-url:}") String embeddingFallbackBaseUrl,
             @Value("${devmind.embedding-fallback.api-key:}") String embeddingFallbackApiKey,
-            @Value("${devmind.embedding-fallback.model:BAAI/bge-m3}") String embeddingFallbackModel
+            @Value("${devmind.embedding-fallback.model:BAAI/bge-m3}") String embeddingFallbackModel,
+            // chat 与 embedding 分离端点：chat 可独立指向 DeepSeek 官方等；空则回退 zhipuBaseUrl（embedding 保持原端点）
+            @Value("${devmind.zhipu-chat-base-url:}") String zhipuChatBaseUrl,
+            @Value("${devmind.zhipu-chat-api-key:}") String zhipuChatApiKey,
+            @Value("${devmind.zhipu-chat-thinking:true}") boolean zhipuChatThinking
     ) {
         AiModelGateway gateway = new CachedEmbeddingGateway(
-                new ZhipuRestModelGateway(restClientBuilder, properties, secretCipher, objectMapper),
+                new ZhipuRestModelGateway(
+                        restClientBuilder,
+                        properties,
+                        secretCipher,
+                        objectMapper,
+                        zhipuChatBaseUrl,
+                        zhipuChatApiKey,
+                        zhipuChatThinking
+                ),
                 cache,
                 "zhipu:" + properties.zhipuEmbeddingModel() + "@" + properties.zhipuBaseUrl(),
                 meterRegistry

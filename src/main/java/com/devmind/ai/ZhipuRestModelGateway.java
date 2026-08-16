@@ -24,6 +24,12 @@ public class ZhipuRestModelGateway implements AiModelGateway {
     private final DevMindProperties properties;
     private final SecretCipher secretCipher;
     private final ObjectMapper objectMapper;
+    /** chat 专用端点（与 embedding 分离）：null/空时回退 properties.zhipuBaseUrl（embedding 仍在原端点） */
+    private final String configuredChatBaseUrl;
+    /** chat 专用 key：null/空时回退主 key */
+    private final String configuredChatApiKey;
+    /** thinking 参数开关：硅基流动 DeepSeek 兼容；DeepSeek 官方 deepseek-chat 不支持需关 */
+    private final boolean chatThinkingEnabled;
 
     public ZhipuRestModelGateway(
             RestClient.Builder restClientBuilder,
@@ -31,10 +37,26 @@ public class ZhipuRestModelGateway implements AiModelGateway {
             SecretCipher secretCipher,
             ObjectMapper objectMapper
     ) {
+        this(restClientBuilder, properties, secretCipher, objectMapper, null, null, true);
+    }
+
+    /** 支持 chat 与 embedding 分离端点：chatBaseUrl/chatApiKey 为空时回退主端点 */
+    public ZhipuRestModelGateway(
+            RestClient.Builder restClientBuilder,
+            DevMindProperties properties,
+            SecretCipher secretCipher,
+            ObjectMapper objectMapper,
+            String chatBaseUrl,
+            String chatApiKey,
+            boolean chatThinking
+    ) {
         this.restClientBuilder = restClientBuilder;
         this.properties = properties;
         this.secretCipher = secretCipher;
         this.objectMapper = objectMapper;
+        this.configuredChatBaseUrl = chatBaseUrl;
+        this.configuredChatApiKey = chatApiKey;
+        this.chatThinkingEnabled = chatThinking;
     }
 
     private String apiKey() {
@@ -73,21 +95,22 @@ public class ZhipuRestModelGateway implements AiModelGateway {
 
     @Override
     public ChatResult chat(String systemPrompt, String userPrompt) {
-        Map<String, Object> body = Map.of(
-                "model", properties.zhipuChatModel(),
-                "messages", List.of(
-                        Map.of("role", "system", "content", systemPrompt),
-                        Map.of("role", "user", "content", userPrompt)
-                ),
-                "max_tokens", properties.zhipuMaxTokens(),
-                "temperature", 0.2,
-                "thinking", Map.of("type", "enabled")
-        );
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", properties.zhipuChatModel());
+        body.put("messages", List.of(
+                Map.of("role", "system", "content", systemPrompt),
+                Map.of("role", "user", "content", userPrompt)
+        ));
+        body.put("max_tokens", properties.zhipuMaxTokens());
+        body.put("temperature", 0.2);
+        if (chatThinking()) {
+            body.put("thinking", Map.of("type", "enabled"));
+        }
         ChatCompletionResponse response = retry(() -> {
-            RestClient client = client();
+            RestClient client = chatClient();
             return client.post()
                     .uri("/chat/completions")
-                    .header("Authorization", "Bearer " + apiKey())
+                    .header("Authorization", "Bearer " + chatApiKey())
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve()
@@ -118,7 +141,9 @@ public class ZhipuRestModelGateway implements AiModelGateway {
         body.put("messages", messages);
         body.put("max_tokens", properties.zhipuMaxTokens());
         body.put("temperature", 0.2);
-        body.put("thinking", Map.of("type", "enabled"));
+        if (chatThinking()) {
+            body.put("thinking", Map.of("type", "enabled"));
+        }
         body.put("tools", tools.stream()
                 .map(tool -> Map.of(
                         "type", "function",
@@ -130,10 +155,10 @@ public class ZhipuRestModelGateway implements AiModelGateway {
                 ))
                 .toList());
         ChatCompletionResponse response = retry(() -> {
-            RestClient client = client();
+            RestClient client = chatClient();
             return client.post()
                     .uri("/chat/completions")
-                    .header("Authorization", "Bearer " + apiKey())
+                    .header("Authorization", "Bearer " + chatApiKey())
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve()
@@ -184,19 +209,21 @@ public class ZhipuRestModelGateway implements AiModelGateway {
      */
     @Override
     public void streamChat(String systemPrompt, String userPrompt, Consumer<String> onToken) {
+        Map<String, Object> extra = new LinkedHashMap<>();
+        extra.put("max_tokens", properties.zhipuMaxTokens());
+        extra.put("temperature", 0.2);
+        if (chatThinking()) {
+            extra.put("thinking", Map.of("type", "enabled"));
+        }
         SseChatStreamer.streamChatCompletions(
-                properties.zhipuBaseUrl(),
-                apiKey(),
+                chatBaseUrl(),
+                chatApiKey(),
                 properties.zhipuChatModel(),
                 List.of(
                         Map.of("role", "system", "content", systemPrompt),
                         Map.of("role", "user", "content", userPrompt)
                 ),
-                Map.of(
-                        "max_tokens", properties.zhipuMaxTokens(),
-                        "temperature", 0.2,
-                        "thinking", Map.of("type", "enabled")
-                ),
+                extra,
                 objectMapper,
                 onToken
         );
@@ -204,6 +231,30 @@ public class ZhipuRestModelGateway implements AiModelGateway {
 
     private RestClient client() {
         return restClientBuilder.baseUrl(properties.zhipuBaseUrl()).build();
+    }
+
+    /** chat 专用端点：配置了 zhipuChatBaseUrl 时用独立端点（如 DeepSeek 官方），否则回退到 embedding 共用端点 */
+    private RestClient chatClient() {
+        return restClientBuilder.baseUrl(chatBaseUrl()).build();
+    }
+
+    /** chat 端点（配置了独立 chat base 时用，否则回退 embedding 共用端点） */
+    private String chatBaseUrl() {
+        return configuredChatBaseUrl == null || configuredChatBaseUrl.isBlank()
+                ? properties.zhipuBaseUrl()
+                : configuredChatBaseUrl;
+    }
+
+    /** chat 专用 key（未配置时回退主 key） */
+    private String chatApiKey() {
+        return configuredChatApiKey == null || configuredChatApiKey.isBlank()
+                ? apiKey()
+                : secretCipher.resolve(configuredChatApiKey);
+    }
+
+    /** thinking 参数开关 */
+    private boolean chatThinking() {
+        return chatThinkingEnabled;
     }
 
     private <T> T retry(Supplier<T> action) {

@@ -7,19 +7,18 @@ import { test, expect } from '@playwright/test';
  *       因此只验证页面元素与交互入口，不依赖模型返回内容。
  */
 
-test('顶部导航包含 9 个功能入口', async ({ page }) => {
+test('顶部导航：业务人员 4 个核心入口 + 管理下拉收纳技术功能', async ({ page }) => {
   await page.goto('/#/kb');
-  const tabs = page.locator('header nav a');
-  await expect(tabs).toHaveCount(9);
+  // 前台只留业务人员 4 件事（产品面孔收敛 P0）
+  const tabs = page.locator('header nav a.tab:visible');
+  await expect(tabs).toHaveCount(4);
   await expect(tabs.nth(0)).toHaveText('知识库');
   await expect(tabs.nth(1)).toHaveText('问答');
-  await expect(tabs.nth(2)).toHaveText('接口');
-  await expect(tabs.nth(3)).toHaveText('流程');
-  await expect(tabs.nth(4)).toHaveText('技能');
-  await expect(tabs.nth(5)).toHaveText('SQL 诊断');
-  await expect(tabs.nth(6)).toHaveText('用量');
-  await expect(tabs.nth(7)).toHaveText('团队');
-  await expect(tabs.nth(8)).toHaveText('评估');
+  await expect(tabs.nth(2)).toHaveText('流程');
+  await expect(tabs.nth(3)).toHaveText('技能');
+  // 管理下拉收纳技术/管理功能（接口/SQL 诊断/用量/团队/评估）
+  await page.locator('.admin-btn').click();
+  await expect(page.locator('.admin-item:visible')).toHaveCount(5);
 });
 
 test('知识库页：创建知识库并出现在列表', async ({ page }) => {

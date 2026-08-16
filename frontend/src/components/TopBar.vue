@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/vue';
+import { Listbox, ListboxButton, ListboxOptions, ListboxOption, Menu, MenuButton, MenuItems, MenuItem } from '@headlessui/vue';
 import { api, getToken, setToken, setCurrentUserId, getCurrentUserId } from '@/api/client';
 import { showToast } from '@/stores/toast';
 import { session } from '@/stores/session';
@@ -101,15 +101,35 @@ onMounted(loadUsers);
       <span class="brand-dot"></span>DevMind
     </div>
     <nav class="tabs">
+      <!-- 前台：业务人员 4 件事（产品面孔收敛 P0，见 docs/product/产品审视-20260816.md） -->
       <router-link to="/kb" class="tab" active-class="active">知识库</router-link>
       <router-link to="/chat" class="tab" active-class="active">问答</router-link>
-      <router-link to="/tools" class="tab" active-class="active">接口</router-link>
       <router-link to="/workflows" class="tab" active-class="active">流程</router-link>
       <router-link to="/skills" class="tab" active-class="active">技能</router-link>
-      <router-link to="/sql" class="tab" active-class="active">SQL 诊断</router-link>
-      <router-link to="/usage" class="tab" active-class="active">用量</router-link>
-      <router-link to="/team" class="tab" active-class="active">团队</router-link>
-      <router-link to="/eval" class="tab" active-class="active">评估</router-link>
+
+      <!-- 管理：技术/管理功能收进后台入口，业务人员不被工具噪音打扰 -->
+      <Menu as="div" class="admin-menu">
+        <MenuButton class="tab admin-btn">管理 ▾</MenuButton>
+        <Transition name="dropdown">
+          <MenuItems class="admin-items">
+            <MenuItem v-slot="{ active }">
+              <router-link to="/tools" class="admin-item" :class="{ active }">接口</router-link>
+            </MenuItem>
+            <MenuItem v-slot="{ active }">
+              <router-link to="/sql" class="admin-item" :class="{ active }">SQL 诊断</router-link>
+            </MenuItem>
+            <MenuItem v-slot="{ active }">
+              <router-link to="/usage" class="admin-item" :class="{ active }">用量</router-link>
+            </MenuItem>
+            <MenuItem v-slot="{ active }">
+              <router-link to="/team" class="admin-item" :class="{ active }">团队</router-link>
+            </MenuItem>
+            <MenuItem v-slot="{ active }">
+              <router-link to="/eval" class="admin-item" :class="{ active }">评估</router-link>
+            </MenuItem>
+          </MenuItems>
+        </Transition>
+      </Menu>
     </nav>
 
     <div class="right-group">
@@ -216,6 +236,48 @@ onMounted(loadUsers);
   background: var(--accent-weak);
   color: var(--accent);
   font-weight: 600;
+}
+
+/* 管理下拉（产品面孔收敛 P0：技术/管理功能收进后台入口） */
+.admin-menu {
+  position: relative;
+}
+
+.admin-btn {
+  cursor: pointer;
+  user-select: none;
+}
+
+.admin-items {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 130px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12);
+  z-index: 30;
+  outline: none;
+  display: grid;
+  gap: 2px;
+}
+
+.admin-item {
+  display: block;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.admin-item:hover,
+.admin-item.active {
+  background: var(--alt-bg);
+  color: var(--accent);
 }
 
 /* 右侧功能区：用户选择 + 主题 + 登录态 */

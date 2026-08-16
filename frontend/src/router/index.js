@@ -45,6 +45,12 @@ const routes = [
     meta: { title: '用量' }
   },
   {
+    path: '/audit',
+    name: 'audit',
+    component: () => import('@/views/AuditView.vue'),
+    meta: { title: '审计日志' }
+  },
+  {
     path: '/team',
     name: 'team',
     component: () => import('@/views/TeamView.vue'),

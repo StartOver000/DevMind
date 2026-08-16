@@ -14,6 +14,24 @@ const kbName = ref('');
 const kbDesc = ref('');
 const kbTeamId = ref('');
 const creating = ref(false);
+const creatingDemo = ref(false);
+
+// 冷启动：一键创建内置示例知识库（产品运营盲区修复，见 docs/product/产品审视2-运营体验盲区-20260816.md）
+async function createDemoKb() {
+  creatingDemo.value = true;
+  try {
+    const kb = await api('/api/knowledge-bases/demo', { method: 'POST' });
+    kbName.value = '';
+    kbDesc.value = '';
+    kbTeamId.value = '';
+    emit('created', kb);
+    showToast(kb.duplicate ? '示例知识库已存在' : '示例知识库已创建，文档向量化中…');
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    creatingDemo.value = false;
+  }
+}
 
 async function createKb(event) {
   event.preventDefault();
@@ -57,7 +75,15 @@ async function createKb(event) {
       </button>
     </form>
     <div class="kb-list">
-      <div v-if="!kbs.length" class="empty small">还没有知识库</div>
+      <div v-if="!kbs.length" class="empty small">还没有知识库，先体验一下👇</div>
+      <button
+        v-if="!kbs.length"
+        class="demo-kb-btn"
+        :disabled="creatingDemo"
+        @click="createDemoKb"
+      >
+        {{ creatingDemo ? '创建中…' : '✨ 一键创建示例知识库（含示例文档）' }}
+      </button>
       <button
         v-for="kb in kbs"
         :key="kb.id"
@@ -82,6 +108,26 @@ async function createKb(event) {
 .kb-list {
   display: grid;
   gap: 8px;
+}
+
+.demo-kb-btn {
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px dashed var(--accent);
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.demo-kb-btn:hover:not(:disabled) {
+  background: var(--accent-soft, var(--accent-weak));
+}
+
+.demo-kb-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .kb-item {

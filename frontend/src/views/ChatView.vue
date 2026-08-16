@@ -307,6 +307,28 @@ async function removeConversation(id) {
   }
 }
 
+// 失败重试（产品运营盲区修复：失败体验无出路，见 docs/product/产品审视2-运营体验盲区-20260816.md）
+const lastQuestion = ref('');
+const lastMode = ref('rag');
+function retryLast() {
+  const q = lastQuestion.value;
+  if (!q || loading.value || agentLoading.value) return;
+  // 移除末尾两条（user + 失败的 assistant 错误消息），恢复问题后重发
+  if (thread.value.length >= 2) {
+    thread.value.splice(thread.value.length - 2, 2);
+  } else {
+    thread.value = [];
+  }
+  result.value = null;
+  agentResult.value = null;
+  chatQuestion.value = q;
+  if (mode.value === 'agent') {
+    sendAgent();
+  } else {
+    sendChat();
+  }
+}
+
 async function sendChat() {
   const kbIds = chatKbIds.value.map(Number).filter(Boolean);
   const question = chatQuestion.value.trim();
@@ -319,6 +341,8 @@ async function sendChat() {
   result.value = null;
   chatQuestion.value = '';
   pushThread('user', question, nowText());
+  lastQuestion.value = question;
+  lastMode.value = 'rag';
   // 占位 assistant 消息，流式增量填充
   const assistantIndex = thread.value.length;
   pushThread('assistant', '', nowText());
@@ -426,6 +450,8 @@ async function sendAgent() {
   chatQuestion.value = '';
   chatFiles.value = [];
   pushThread('user', question, nowText());
+  lastQuestion.value = question;
+  lastMode.value = 'agent';
   // 占位 assistant 消息，工具轨迹实时挂载、回答增量填充
   const assistantIndex = thread.value.length;
   pushThread('assistant', '', nowText());
@@ -752,6 +778,10 @@ onBeforeUnmount(() => {
               <div class="user-text">{{ m.content }}</div>
             </template>
             <div v-if="m.time" class="msg-time">{{ m.time }}</div>
+            <div v-if="m.error && i === thread.length - 1" class="retry-row">
+              <button class="small" @click="retryLast">🔄 重试</button>
+              <span class="skill-hint">模型或网络异常，可重试一次</span>
+            </div>
             <div v-if="mode === 'agent' && i === thread.length - 1 && !agentLoading && hasAgentAnswer()" class="skill-save-row">
               <button class="small" @click="draftChatAsSkill">✨ 存为技能</button>
               <span class="skill-hint">把这次做法沉淀为技能，Agent 以后遇到同类任务自动遵循</span>
@@ -1053,6 +1083,13 @@ onBeforeUnmount(() => {
 
 .msg.user .msg-time {
   color: rgba(255, 255, 255, 0.75);
+}
+
+.retry-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .bubble.error {

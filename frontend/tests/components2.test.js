@@ -72,6 +72,37 @@ describe('KbSidebar 组件', () => {
     expect(wrapper.text()).toContain('还没有知识库');
   });
 
+  it('空列表显示「一键创建示例知识库」CTA', () => {
+    const wrapper = mount(KbSidebar, { props: { kbs: [], currentKbId: null } });
+    expect(wrapper.find('.demo-kb-btn').exists()).toBe(true);
+    expect(wrapper.text()).toContain('一键创建示例知识库');
+  });
+
+  it('有知识库时隐藏示例库 CTA', () => {
+    const wrapper = mount(KbSidebar, { props: { kbs: [{ id: 1, name: '库', documentCount: 1 }], currentKbId: 1 } });
+    expect(wrapper.find('.demo-kb-btn').exists()).toBe(false);
+  });
+
+  it('点击示例库 CTA 调用 demo 接口并触发 created', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: 99, name: '示例知识库', documentId: 5, documentName: 'a.md', duplicate: false })
+    });
+    global.fetch = fetchMock;
+
+    const wrapper = mount(KbSidebar, { props: { kbs: [], currentKbId: null } });
+    await wrapper.find('.demo-kb-btn').trigger('click');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/knowledge-bases/demo',
+      expect.objectContaining({ method: 'POST' })
+    );
+    expect(wrapper.emitted('created')).toBeTruthy();
+    expect(wrapper.emitted('created')[0][0]).toMatchObject({ id: 99, name: '示例知识库' });
+  });
+
   it('点击知识库触发 select 事件', async () => {
     const kbs = [{ id: 3, name: '测试库', documentCount: 1 }];
     const wrapper = mount(KbSidebar, { props: { kbs, currentKbId: null } });

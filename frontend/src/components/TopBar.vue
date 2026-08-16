@@ -122,6 +122,9 @@ onMounted(loadUsers);
               <router-link to="/usage" class="admin-item" :class="{ active }">用量</router-link>
             </MenuItem>
             <MenuItem v-slot="{ active }">
+              <router-link to="/audit" class="admin-item" :class="{ active }">审计日志</router-link>
+            </MenuItem>
+            <MenuItem v-slot="{ active }">
               <router-link to="/team" class="admin-item" :class="{ active }">团队</router-link>
             </MenuItem>
             <MenuItem v-slot="{ active }">

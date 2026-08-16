@@ -12,4 +12,13 @@ chmod 777 /app/logs /app/data 2>/dev/null || true
 
 # 降权运行应用（su 从 root 切普通用户无需密码）
 # 注意：su 会重置 PATH，java 需用绝对路径（temurin JRE 位于 /opt/java/openjdk/bin）
-exec su devmind -s /bin/sh -c "cd /app && exec /opt/java/openjdk/bin/java -jar app.jar"
+# 支持透传外部命令参数（如 docker compose run ... java -jar /app/app.jar --agent-eval）：
+# CMD[0] 是命令名（java），shift 后其余参数原样传给绝对路径 java。
+if [ "$#" -gt 0 ]; then
+    shift
+    ARGS=""
+    for a in "$@"; do ARGS="$ARGS \"$a\""; done
+    exec su devmind -s /bin/sh -c "cd /app && exec /opt/java/openjdk/bin/java $ARGS"
+else
+    exec su devmind -s /bin/sh -c "cd /app && exec /opt/java/openjdk/bin/java -jar app.jar"
+fi

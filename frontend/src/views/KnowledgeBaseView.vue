@@ -7,6 +7,7 @@ import { kbsStore } from '@/stores/kbs';
 import KbSidebar from '@/components/KbSidebar.vue';
 import MemberPanel from '@/components/MemberPanel.vue';
 import DocTable from '@/components/DocTable.vue';
+import QuickStartGuide from '@/components/QuickStartGuide.vue';
 
 const currentKbId = ref(null);
 const currentKbTitle = computed(() => {
@@ -163,6 +164,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!-- 快速上手引导（产品 P1-2：业务人员 3 步闭环，首次展示、可关闭） -->
+  <QuickStartGuide />
   <section class="kb-grid">
     <div class="kb-left">
       <KbSidebar :kbs="kbsStore.kbs" :current-kb-id="currentKbId" :teams="teams" @select="selectKb" @created="onKbCreated" />

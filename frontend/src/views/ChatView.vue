@@ -668,8 +668,8 @@ onBeforeUnmount(() => {
         <button class="secondary small" @click="newConversation">新建</button>
       </div>
       <div class="mode-switch">
-        <button class="small" :class="{ active: mode === 'rag' }" @click="switchMode('rag')">RAG</button>
-        <button class="small" :class="{ active: mode === 'agent' }" @click="switchMode('agent')">Agent</button>
+        <button class="small" :class="{ active: mode === 'rag' }" title="RAG：基于知识库检索直接回答" @click="switchMode('rag')">对话</button>
+        <button class="small" :class="{ active: mode === 'agent' }" title="Agent：AI 自主调用工具（检索/诊断/接口）完成任务" @click="switchMode('agent')">智能助手</button>
       </div>
       <div class="conv-list">
         <template v-if="mode === 'rag'">
@@ -688,7 +688,7 @@ onBeforeUnmount(() => {
           </div>
         </template>
         <template v-else>
-          <div v-if="!agentConversations.length" class="empty small">暂无 Agent 会话</div>
+          <div v-if="!agentConversations.length" class="empty small">暂无智能助手会话</div>
           <div
             v-for="c in agentConversations"
             :key="c.id"
@@ -711,7 +711,7 @@ onBeforeUnmount(() => {
         <div v-if="!thread.length && !loading && !agentLoading" class="empty">
           {{ mode === 'rag'
             ? '选择左侧会话或输入问题开始问答'
-            : '选择左侧会话或输入问题，Agent 会自动调用工具（知识库检索/SQL 诊断等）回答' }}
+            : '选择左侧会话或输入问题，智能助手会自动查找资料、调用工具回答' }}
         </div>
 
         <!-- 消息流（含时间戳，支持完整多轮历史） -->
@@ -784,7 +784,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-if="mode === 'agent' && i === thread.length - 1 && !agentLoading && hasAgentAnswer()" class="skill-save-row">
               <button class="small" @click="draftChatAsSkill">✨ 存为技能</button>
-              <span class="skill-hint">把这次做法沉淀为技能，Agent 以后遇到同类任务自动遵循</span>
+              <span class="skill-hint">把这次做法沉淀为技能，智能助手以后遇到同类任务自动遵循</span>
             </div>
           </div>
         </div>
@@ -793,13 +793,13 @@ onBeforeUnmount(() => {
         <div v-if="loading || agentLoading" class="msg assistant">
           <div class="bubble thinking">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-            {{ mode === 'agent' ? 'Agent 思考中…' : '检索中…' }}
+            {{ mode === 'agent' ? '智能助手思考中…' : '检索中…' }}
           </div>
         </div>
 
         <!-- 对话沉淀技能编辑面板 -->
         <div v-if="chatSkillDraft" class="skill-draft-panel">
-          <h4>存为技能（编辑后保存，Agent 遇到同类任务自动遵循）</h4>
+          <h4>存为技能（编辑后保存，智能助手遇到同类任务自动遵循）</h4>
           <label>技能名称
             <input v-model="chatSkillDraft.name">
           </label>
@@ -879,8 +879,8 @@ onBeforeUnmount(() => {
             rows="3"
             maxlength="2000"
             :placeholder="mode === 'rag'
-              ? '输入问题，例如：MySQL 深分页为什么会变慢？'
-              : '输入问题，Agent 会自动调用工具（知识库检索/SQL 诊断等）回答'"
+              ? '输入问题，例如：我们的退款政策是什么'
+              : '输入问题，智能助手会自动查找资料并调用工具回答'"
             @keydown.enter.exact.prevent="mode === 'rag' ? sendChat() : sendAgent()"
           ></textarea>
           <button class="primary send-btn" :disabled="loading || agentLoading" @click="mode === 'rag' ? sendChat() : sendAgent()">
@@ -892,7 +892,7 @@ onBeforeUnmount(() => {
           <button class="small" :disabled="uploadingFile" @click="uploadFileInput.click()">
             {{ uploadingFile ? '上传中…' : '📎 上传文件' }}
           </button>
-          <span v-if="!chatFiles.length" class="file-hint">支持 txt/md/pdf/docx/xlsx/pptx，Agent 将读取内容分析（不超过 10MB）</span>
+          <span v-if="!chatFiles.length" class="file-hint">支持 txt/md/pdf/docx/xlsx/pptx，智能助手将读取内容分析（不超过 10MB）</span>
           <span v-for="(f, i) in chatFiles" :key="f.fileId" class="file-chip">
             {{ f.fileName }}
             <b class="chip-x" @click="removeFile(i)">×</b>

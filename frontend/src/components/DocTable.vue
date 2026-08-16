@@ -13,6 +13,15 @@ const props = defineProps({
 });
 const emit = defineEmits(['refresh']);
 
+// 文档状态中文化（业务人员视角审视：状态不应是英文技术值）
+function docStatusLabel(s) {
+  const map = {
+    COMPLETED: '已完成', PROCESSING: '处理中', UPLOADED: '已上传',
+    FAILED: '失败', DELETED: '已删除', PENDING: '等待中'
+  };
+  return map[s] || s;
+}
+
 async function uploadFile(file) {
   if (!props.kbId) {
     showToast('请先选择知识库', true);
@@ -101,7 +110,7 @@ function showPreview(doc) {
         <tr v-for="doc in docs" :key="doc.id">
           <td>{{ doc.fileName }}</td>
           <td>{{ doc.fileType }}</td>
-          <td><span class="status" :class="doc.status">{{ doc.status }}</span></td>
+          <td><span class="status" :class="doc.status">{{ docStatusLabel(doc.status) }}</span></td>
           <td>{{ doc.chunkCount }}</td>
           <td>{{ formatTime(doc.createdTime) }}</td>
           <td>

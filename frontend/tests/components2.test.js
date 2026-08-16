@@ -18,7 +18,7 @@ describe('DocTable 组件', () => {
     const rows = wrapper.findAll('tbody tr');
     expect(rows).toHaveLength(2);
     expect(rows[0].text()).toContain('a.md');
-    expect(rows[0].text()).toContain('COMPLETED');
+    expect(rows[0].text()).toContain('已完成');
     expect(rows[1].find('.status').classes()).toContain('PROCESSING');
     expect(rows[0].text()).toContain('2026-08-04 10:00:00');
   });

@@ -93,6 +93,17 @@ function draftBadges() {
   return badges;
 }
 
+// 状态中文化（业务人员视角审视卡点5）：ENABLED→已启用、SUCCESS→成功等
+function wfStatusLabel(s) {
+  const map = {
+    ENABLED: '已启用', DISABLED: '已停用',
+    SUCCESS: '成功', RUNNING: '运行中', FAILED: '失败',
+    WAITING: '等待中', PENDING: '待审批', APPROVED: '已通过', REJECTED: '已拒绝',
+    COMPLETED: '已完成'
+  };
+  return map[s] || s;
+}
+
 // 工作流列表
 const workflows = ref([]);
 const loading = ref(false);
@@ -580,7 +591,7 @@ onMounted(load);
                   <button class="small" @click.stop="copyWebhookUrl(w.id)">复制</button>
                 </span>
               </td>
-                <td><span class="status" :class="w.status">{{ w.status }}</span></td>
+                <td><span class="status" :class="w.status">{{ wfStatusLabel(w.status) }}</span></td>
                 <td>
                   <button class="small" :disabled="runningId === w.id || w.status !== 'ENABLED'" @click="runWorkflow(w)">{{ runningId === w.id ? '运行中…' : '运行' }}</button>
                   <button class="small" @click="openEditor(w)">编辑</button>
@@ -622,7 +633,7 @@ onMounted(load);
               <tbody>
                 <tr v-for="r in runs" :key="r.id">
                   <td>{{ r.id }}</td>
-                  <td><span class="status" :class="r.status">{{ r.status }}</span></td>
+                  <td><span class="status" :class="r.status">{{ wfStatusLabel(r.status) }}</span></td>
                   <td>{{ r.triggerType }}</td>
                   <td class="err">{{ r.error || '—' }}</td>
                   <td><button class="small" @click="showDetail(r.id)">步骤</button></td>
@@ -638,7 +649,7 @@ onMounted(load);
             <div class="head">
               <span class="no">{{ i + 1 }}</span>
               <b>{{ s.toolName }}</b>
-              <span class="status" :class="s.status">{{ s.status }}</span>
+              <span class="status" :class="s.status">{{ wfStatusLabel(s.status) }}</span>
               <span class="cost">{{ s.costMs }}ms</span>
             </div>
             <div v-if="s.error" class="err">错误：{{ s.error }}</div>

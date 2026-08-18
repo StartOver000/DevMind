@@ -118,7 +118,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # 验证根 Dockerfile 可构建出镜像（多阶段：maven 构建 → JRE 运行时）。
       # type=gha 缓存：pom.xml/Dockerfile 未变时依赖下载与编译层跨 run 复用，

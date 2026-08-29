@@ -61,11 +61,11 @@ class SchemaMigratorIntegrationTest {
     }
 
     @Test
-    void baselineAndV2Applied() {
+    void baselineAndAllMigrationsApplied() {
         List<Map<String, Object>> versions = jdbcTemplate.queryForList(
                 "SELECT version, description FROM schema_version ORDER BY version");
         assertThat(versions).extracting(r -> ((Number) r.get("version")).intValue())
-                .containsExactly(1, 2);
+                .containsExactly(1, 2, 3);
 
         Integer colCount = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.columns

@@ -14,14 +14,16 @@ public record Workflow(
         String cronExpr,
         String scope,       // private | team
         String status,      // ENABLED | DISABLED
+        String engine,      // builtin | n8n（二期·双向互联，缺省 builtin）
         Long createdBy,
         String createdTime
 ) {
     public static Workflow forInsert(
             Long tenantId, String name, String description, String stepsJson,
-            String triggerType, String cronExpr, String scope, String status, Long createdBy
+            String triggerType, String cronExpr, String scope, String status,
+            String engine, Long createdBy
     ) {
         return new Workflow(null, tenantId, name, description, stepsJson,
-                triggerType, cronExpr, scope, status, createdBy, null);
+                triggerType, cronExpr, scope, status, engine, createdBy, null);
     }
 }

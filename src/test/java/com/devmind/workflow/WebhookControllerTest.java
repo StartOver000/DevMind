@@ -47,7 +47,7 @@ class WebhookControllerTest {
 
     private Workflow hookWorkflow() {
         return new Workflow(5L, 1L, "hook流程", null, "[{\"tool\":\"a\",\"params\":{}}]",
-                "webhook", null, "private", "ENABLED", 1L, null);
+                "webhook", null, "private", "ENABLED", "builtin", 1L, null);
     }
 
     private WorkflowRun run(Long id, String status) {
@@ -103,7 +103,7 @@ class WebhookControllerTest {
 
     @Test
     void disabledWorkflowRejected() {
-        Workflow disabled = new Workflow(5L, 1L, "w", null, "[]", "webhook", null, "private", "DISABLED", 1L, null);
+        Workflow disabled = new Workflow(5L, 1L, "w", null, "[]", "webhook", null, "private", "DISABLED", "builtin", 1L, null);
         when(repository.findByWebhookToken("tok")).thenReturn(disabled);
 
         assertThatThrownBy(() -> controller.trigger("tok", false, null, null, null))

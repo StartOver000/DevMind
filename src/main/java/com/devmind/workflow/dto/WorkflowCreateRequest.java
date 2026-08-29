@@ -10,6 +10,7 @@ public record WorkflowCreateRequest(
         String triggerType, // manual | cron | webhook
         String cronExpr,
         String scope,       // private | team
-        String status       // ENABLED | DISABLED
+        String status,      // ENABLED | DISABLED
+        String engine       // builtin | n8n（二期·双向互联，可空=缺省 builtin）
 ) {
 }

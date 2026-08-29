@@ -19,7 +19,7 @@ public class WorkflowRepository {
 
     private static final String COLUMNS = """
             id, tenant_id, name, description, steps_json, trigger_type,
-            cron_expr, scope, status, created_by, created_time::text
+            cron_expr, scope, status, engine, created_by, created_time::text
             """;
 
     private Workflow map(ResultSet rs, int rowNum) throws SQLException {
@@ -33,6 +33,7 @@ public class WorkflowRepository {
                 rs.getString("cron_expr"),
                 rs.getString("scope"),
                 rs.getString("status"),
+                rs.getString("engine"),
                 rs.getLong("created_by"),
                 rs.getString("created_time")
         );
@@ -97,13 +98,13 @@ public class WorkflowRepository {
         return jdbcTemplate.queryForObject(
                 """
                 INSERT INTO workflow (tenant_id, name, description, steps_json, trigger_type,
-                                      cron_expr, scope, status, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      cron_expr, scope, status, engine, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """,
                 Long.class,
                 w.tenantId(), w.name(), w.description(), w.stepsJson(), w.triggerType(),
-                w.cronExpr(), w.scope(), w.status(), w.createdBy()
+                w.cronExpr(), w.scope(), w.status(), w.engine(), w.createdBy()
         );
     }
 
@@ -111,12 +112,12 @@ public class WorkflowRepository {
         jdbcTemplate.update(
                 """
                 UPDATE workflow SET name = ?, description = ?, steps_json = ?,
-                    trigger_type = ?, cron_expr = ?, scope = ?, status = ?,
+                    trigger_type = ?, cron_expr = ?, scope = ?, status = ?, engine = ?,
                     updated_time = CURRENT_TIMESTAMP
                 WHERE id = ? AND tenant_id = ?
                 """,
                 w.name(), w.description(), w.stepsJson(), w.triggerType(),
-                w.cronExpr(), w.scope(), w.status(), w.id(), tenantId
+                w.cronExpr(), w.scope(), w.status(), w.engine(), w.id(), tenantId
         );
     }
 

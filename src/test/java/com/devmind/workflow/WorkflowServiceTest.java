@@ -61,7 +61,8 @@ class WorkflowServiceTest {
         registry = new ToolRegistry(List.of());
         service = new WorkflowService(
                 repository, runRepository, executor, registry, objectMapper,
-                userService, toolAccessService, approvalRepository, auditLogService
+                userService, toolAccessService, approvalRepository, auditLogService,
+                java.util.List.of(new com.devmind.workflow.spi.BuiltinWorkflowEngine(executor))
         );
         lenient().when(userService.tenantIdOf(1L)).thenReturn(1L);
         // 默认：当前注册的工具全部对用户 1 可见
@@ -75,7 +76,7 @@ class WorkflowServiceTest {
     }
 
     private WorkflowCreateRequest req(String stepsJson) {
-        return new WorkflowCreateRequest("测试流程", null, stepsJson, "manual", null, "private", "ENABLED");
+        return new WorkflowCreateRequest("测试流程", null, stepsJson, "manual", null, "private", "ENABLED", null);
     }
 
     @Test
@@ -89,7 +90,7 @@ class WorkflowServiceTest {
         when(repository.insert(any())).thenReturn(10L);
         when(repository.findById(1L, 10L)).thenReturn(new Workflow(
                 10L, 1L, "测试流程", null, "[{\"tool\":\"prom_buildinfo\",\"params\":{}}]",
-                "manual", null, "private", "ENABLED", 1L, null));
+                "manual", null, "private", "ENABLED", "builtin", 1L, null));
 
         Workflow created = service.create(req("[{\"tool\":\"prom_buildinfo\",\"params\":{}}]"), 1L);
 
@@ -135,7 +136,7 @@ class WorkflowServiceTest {
     void runOnlyWhenEnabled() {
         when(repository.findById(1L, 1L)).thenReturn(new Workflow(
                 1L, 1L, "停用的流程", null, "[{\"tool\":\"a\",\"params\":{}}]",
-                "manual", null, "private", "DISABLED", 1L, null));
+                "manual", null, "private", "DISABLED", "builtin", 1L, null));
 
         assertThatThrownBy(() -> service.run(1L, 1L))
                 .isInstanceOf(ApiException.class)
@@ -147,7 +148,7 @@ class WorkflowServiceTest {
     void runDelegatesToExecutorWhenEnabled() {
         Workflow enabled = new Workflow(
                 1L, 1L, "启用流程", null, "[{\"tool\":\"a\",\"params\":{}}]",
-                "manual", null, "private", "ENABLED", 1L, null);
+                "manual", null, "private", "ENABLED", "builtin", 1L, null);
         when(repository.findById(1L, 1L)).thenReturn(enabled);
         WorkflowRun run = new WorkflowRun(5L, 1L, 1L, "manual", "SUCCESS", 0.0, null, null, null);
         when(executor.execute(enabled, 1L, "manual")).thenReturn(run);
@@ -165,7 +166,7 @@ class WorkflowServiceTest {
         });
         assertThatThrownBy(() -> service.create(
                 new WorkflowCreateRequest("定时流程", null,
-                        "[{\"tool\":\"a\",\"params\":{}}]", "cron", "not-a-cron", "private", "ENABLED"), 1L))
+                        "[{\"tool\":\"a\",\"params\":{}}]", "cron", "not-a-cron", "private", "ENABLED", null), 1L))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("cron");
         verify(repository, never()).insert(any());
@@ -182,11 +183,11 @@ class WorkflowServiceTest {
         when(repository.insert(any())).thenReturn(20L);
         when(repository.findById(1L, 20L)).thenReturn(new Workflow(
                 20L, 1L, "定时流程", null, "[{\"tool\":\"a\",\"params\":{}}]",
-                "cron", "0 0 9 * * *", "private", "ENABLED", 1L, null));
+                "cron", "0 0 9 * * *", "private", "ENABLED", "builtin", 1L, null));
 
         Workflow created = service.create(
                 new WorkflowCreateRequest("定时流程", null,
-                        "[{\"tool\":\"a\",\"params\":{}}]", "cron", "0 0 9 * * *", "private", "ENABLED"), 1L);
+                        "[{\"tool\":\"a\",\"params\":{}}]", "cron", "0 0 9 * * *", "private", "ENABLED", null), 1L);
 
         assertThat(created.id()).isEqualTo(20L);
         assertThat(created.triggerType()).isEqualTo("cron");
@@ -203,11 +204,11 @@ class WorkflowServiceTest {
         when(repository.insert(any())).thenReturn(30L);
         when(repository.findById(1L, 30L)).thenReturn(new Workflow(
                 30L, 1L, "hook流程", null, "[{\"tool\":\"a\",\"params\":{}}]",
-                "webhook", null, "private", "ENABLED", 1L, null));
+                "webhook", null, "private", "ENABLED", "builtin", 1L, null));
         when(repository.findWebhookToken(1L, 30L)).thenReturn(null);
 
         service.create(new WorkflowCreateRequest("hook流程", null,
-                "[{\"tool\":\"a\",\"params\":{}}]", "webhook", null, "private", "ENABLED"), 1L);
+                "[{\"tool\":\"a\",\"params\":{}}]", "webhook", null, "private", "ENABLED", null), 1L);
 
         verify(repository).saveWebhookToken(eq(1L), eq(30L), anyString());
     }
@@ -223,11 +224,11 @@ class WorkflowServiceTest {
         when(repository.insert(any())).thenReturn(30L);
         when(repository.findById(1L, 30L)).thenReturn(new Workflow(
                 30L, 1L, "hook流程", null, "[{\"tool\":\"a\",\"params\":{}}]",
-                "webhook", null, "private", "ENABLED", 1L, null));
+                "webhook", null, "private", "ENABLED", "builtin", 1L, null));
         when(repository.findWebhookToken(1L, 30L)).thenReturn("existing-token");
 
         service.create(new WorkflowCreateRequest("hook流程", null,
-                "[{\"tool\":\"a\",\"params\":{}}]", "webhook", null, "private", "ENABLED"), 1L);
+                "[{\"tool\":\"a\",\"params\":{}}]", "webhook", null, "private", "ENABLED", null), 1L);
 
         verify(repository, never()).saveWebhookToken(anyLong(), anyLong(), anyString());
     }
@@ -235,7 +236,7 @@ class WorkflowServiceTest {
     @Test
     void webhookInfoReturnsUrlForWebhookWorkflow() {
         when(repository.findById(1L, 5L)).thenReturn(new Workflow(
-                5L, 1L, "hook流程", null, "[]", "webhook", null, "private", "ENABLED", 1L, null));
+                5L, 1L, "hook流程", null, "[]", "webhook", null, "private", "ENABLED", "builtin", 1L, null));
         when(repository.findWebhookToken(1L, 5L)).thenReturn("abc123");
 
         java.util.Map<String, Object> info = service.webhookInfo(5L, 1L);
@@ -247,7 +248,7 @@ class WorkflowServiceTest {
     @Test
     void webhookInfoEmptyForManualWorkflow() {
         when(repository.findById(1L, 5L)).thenReturn(new Workflow(
-                5L, 1L, "手动流程", null, "[]", "manual", null, "private", "ENABLED", 1L, null));
+                5L, 1L, "手动流程", null, "[]", "manual", null, "private", "ENABLED", "builtin", 1L, null));
 
         java.util.Map<String, Object> info = service.webhookInfo(5L, 1L);
 

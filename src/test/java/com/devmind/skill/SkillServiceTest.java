@@ -74,7 +74,7 @@ class SkillServiceTest {
         when(workflowRepository.findById(1L, 5L)).thenReturn(
                 new Workflow(5L, 1L, "月度报告", "生成月度经营分析报告",
                         "[{\"tool\":\"kb_search\",\"params\":{\"question\":\"月度数据\"}}]",
-                        "manual", null, "private", "ENABLED", 1L, null)
+                        "manual", null, "private", "ENABLED", "builtin", 1L, null)
         );
         when(chatRouter.chat(anyString(), anyString()))
                 .thenReturn(new AiModelGateway.ChatResult(
@@ -96,7 +96,7 @@ class SkillServiceTest {
                 new Workflow(5L, 1L, "库存预警", "检查库存并发预警",
                         "[{\"tool\":\"checkStock\",\"params\":{\"productId\":5},\"output_var\":\"stock\"},"
                                 + "{\"tool\":\"ai_generate\",\"params\":{\"prompt\":\"总结 {{stock}}\"}}]",
-                        "manual", null, "private", "ENABLED", 1L, null)
+                        "manual", null, "private", "ENABLED", "builtin", 1L, null)
         );
         // 接口工具集合含 checkStock（ai_generate 是内置工具，不应记录为接口依赖）
         when(toolAccessService.accessibleDynamicTools(1L, 1L)).thenReturn(List.of(

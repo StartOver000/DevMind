@@ -44,7 +44,7 @@ class WorkflowSchedulerTest {
 
     private Workflow cronWorkflow(Long id, String cron, Long createdBy) {
         return new Workflow(id, 1L, "定时流程" + id, null, "[{\"tool\":\"a\",\"params\":{}}]",
-                "cron", cron, "private", "ENABLED", createdBy, null);
+                "cron", cron, "private", "ENABLED", "builtin", createdBy, null);
     }
 
     @Test

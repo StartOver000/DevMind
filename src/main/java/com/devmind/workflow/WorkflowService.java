@@ -7,6 +7,9 @@ import com.devmind.common.ErrorCode;
 import com.devmind.tool.ToolAccessService;
 import com.devmind.user.UserService;
 import com.devmind.workflow.dto.WorkflowCreateRequest;
+import com.devmind.workflow.spi.BuiltinWorkflowEngine;
+import com.devmind.workflow.spi.WorkflowEngine;
+import com.devmind.workflow.spi.WorkflowHandle;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -18,6 +21,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 工作流管理：CRUD + 手动运行 + 运行记录查询。
@@ -38,6 +43,8 @@ public class WorkflowService {
     private final ToolAccessService toolAccessService;
     private final WorkflowApprovalRepository approvalRepository;
     private final AuditLogService auditLogService;
+    /** 二期·双向互联：已注册的工作流引擎（按 engine 标记索引），缺省仅 builtin */
+    private final Map<String, WorkflowEngine> engineRegistry;
 
     public WorkflowService(
             WorkflowRepository repository,
@@ -48,7 +55,8 @@ public class WorkflowService {
             UserService userService,
             ToolAccessService toolAccessService,
             WorkflowApprovalRepository approvalRepository,
-            AuditLogService auditLogService
+            AuditLogService auditLogService,
+            List<WorkflowEngine> engines
     ) {
         this.repository = repository;
         this.runRepository = runRepository;
@@ -59,6 +67,18 @@ public class WorkflowService {
         this.toolAccessService = toolAccessService;
         this.approvalRepository = approvalRepository;
         this.auditLogService = auditLogService;
+        this.engineRegistry = engines.stream()
+                .collect(Collectors.toMap(WorkflowEngine::id, Function.identity()));
+    }
+
+    /** 按 workflow.engine 选择引擎；未知引擎 fail-fast（防配置漂移静默走错引擎） */
+    private WorkflowEngine resolveEngine(String engine) {
+        String key = (engine == null || engine.isBlank()) ? "builtin" : engine.trim();
+        WorkflowEngine resolved = engineRegistry.get(key);
+        if (resolved == null) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "未接入的工作流引擎: " + key);
+        }
+        return resolved;
     }
 
     public List<Workflow> list(Long userId) {
@@ -88,9 +108,10 @@ public class WorkflowService {
         String trigger = req.triggerType() == null ? "manual" : req.triggerType();
         String scope = req.scope() == null ? "private" : req.scope();
         String status = req.status() == null ? "ENABLED" : req.status();
+        String engine = req.engine() == null || req.engine().isBlank() ? "builtin" : req.engine().trim();
         Workflow workflow = Workflow.forInsert(
                 tenantId, req.name(), req.description(), req.stepsJson(),
-                trigger, req.cronExpr(), scope, status, userId
+                trigger, req.cronExpr(), scope, status, engine, userId
         );
         Long id = repository.insert(workflow);
         ensureWebhookToken(tenantId, id, trigger);
@@ -111,6 +132,7 @@ public class WorkflowService {
                 req.triggerType() == null ? existing.triggerType() : req.triggerType(),
                 req.cronExpr(), req.scope() == null ? existing.scope() : req.scope(),
                 req.status() == null ? existing.status() : req.status(),
+                req.engine() == null ? existing.engine() : req.engine(),
                 existing.createdBy(), existing.createdTime()
         );
         repository.update(tenantId, updated);
@@ -136,7 +158,19 @@ public class WorkflowService {
             throw new ApiException(ErrorCode.INVALID_ARGUMENT, "工作流已停用");
         }
         log.info("手动运行工作流 {} (id={}, by user={})", workflow.name(), id, userId);
-        return executor.execute(workflow, userId, "manual");
+        WorkflowEngine engine = resolveEngine(workflow.engine());
+        if (engine instanceof BuiltinWorkflowEngine) {
+            // builtin 快路径：执行器直接返回完整 run 记录（行为与一期完全一致）
+            return executor.execute(workflow, userId, "manual");
+        }
+        // 外部引擎：异步启动 → 句柄 → 回读运行记录（无记录则用句柄字段构造）
+        WorkflowHandle handle = engine.run(workflow, userId, "manual", null);
+        WorkflowRun run = handle.runId() == null ? null : runRepository.findRun(tenantId, handle.runId());
+        if (run != null) {
+            return run;
+        }
+        return new WorkflowRun(handle.runId(), workflow.id(), tenantId, "manual",
+                handle.status(), 0.0, null, null, handle.error());
     }
 
     /**

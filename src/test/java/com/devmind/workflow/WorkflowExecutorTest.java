@@ -52,7 +52,7 @@ class WorkflowExecutorTest {
     }
 
     private Workflow workflow(String stepsJson) {
-        return new Workflow(1L, 1L, "测试流程", null, stepsJson, "manual", null, "private", "ENABLED", 1L, null);
+        return new Workflow(1L, 1L, "测试流程", null, stepsJson, "manual", null, "private", "ENABLED", "builtin", 1L, null);
     }
 
     private WorkflowRun run(Long id, String status) {
@@ -521,7 +521,7 @@ class WorkflowExecutorTest {
         // workflow id=2 的工作流（不同流程）
         Workflow fast = new Workflow(2L, 1L, "另一个流程", null,
                 "[{\"tool\":\"fast\",\"params\":{},\"output_var\":\"v\"}]",
-                "manual", null, "private", "ENABLED", 1L, null);
+                "manual", null, "private", "ENABLED", "builtin", 1L, null);
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
         CountDownLatch start = new CountDownLatch(1);

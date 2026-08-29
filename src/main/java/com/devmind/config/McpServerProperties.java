@@ -13,7 +13,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 @ConfigurationProperties(prefix = "devmind.mcp-server")
 public record McpServerProperties(
         @DefaultValue("false") boolean enabled,
-        @DefaultValue("kb_search,kb_chat") String tools,
+        @DefaultValue("kb_search,kb_chat,workflow_run,workflow_generate,skill_invoke") String tools,
         @DefaultValue("1") long userId
 ) {
 }

@@ -46,6 +46,9 @@ public class DevMindMcpTools {
     private final AuditLogService auditLogService;
     private final DevMindProperties properties;
     private final McpServerProperties mcpServerProperties;
+    private final com.devmind.workflow.WorkflowService workflowService;
+    private final com.devmind.workflow.WorkflowGenerationService workflowGenerationService;
+    private final com.devmind.skill.SkillService skillService;
 
     public DevMindMcpTools(
             KnowledgeBaseService knowledgeBaseService,
@@ -54,7 +57,10 @@ public class DevMindMcpTools {
             ChatService chatService,
             AuditLogService auditLogService,
             DevMindProperties properties,
-            McpServerProperties mcpServerProperties
+            McpServerProperties mcpServerProperties,
+            com.devmind.workflow.WorkflowService workflowService,
+            com.devmind.workflow.WorkflowGenerationService workflowGenerationService,
+            com.devmind.skill.SkillService skillService
     ) {
         this.knowledgeBaseService = knowledgeBaseService;
         this.retrievalService = retrievalService;
@@ -63,6 +69,9 @@ public class DevMindMcpTools {
         this.auditLogService = auditLogService;
         this.properties = properties;
         this.mcpServerProperties = mcpServerProperties;
+        this.workflowService = workflowService;
+        this.workflowGenerationService = workflowGenerationService;
+        this.skillService = skillService;
     }
 
     /** kb_search 工具入参（Spring AI 按此生成 MCP inputSchema） */
@@ -71,6 +80,18 @@ public class DevMindMcpTools {
 
     /** kb_chat 工具入参 */
     public record KbChatInput(Long knowledgeBaseId, String question, Long conversationId) {
+    }
+
+    /** workflow_run 工具入参：执行一个已有工作流 */
+    public record WorkflowRunInput(Long workflowId) {
+    }
+
+    /** workflow_generate 工具入参：自然语言生成工作流草稿 */
+    public record WorkflowGenerateInput(String description) {
+    }
+
+    /** skill_invoke 工具入参：按技能 id 执行其关联工作流 */
+    public record SkillInvokeInput(Long skillId) {
     }
 
     /**
@@ -142,6 +163,92 @@ public class DevMindMcpTools {
 
         auditLogService.log(userId, "mcp.kb_chat", "knowledge_base", knowledgeBaseId, abbreviate(question));
         return response;
+    }
+
+    /**
+     * 执行一个已有工作流（写操作）：复用 WorkflowService.run 的完整治理链路
+     * （引擎选择/授权/审计/配额），返回运行句柄。
+     */
+    public Object workflowRun(WorkflowRunInput input) {
+        long userId = mcpServerProperties.userId();
+        Long workflowId = input == null ? null : input.workflowId();
+        if (workflowId == null || workflowId <= 0) {
+            throw new IllegalArgumentException("workflowId 必须为正整数");
+        }
+        com.devmind.workflow.WorkflowRun run = workflowService.run(workflowId, userId);
+        auditLogService.log(userId, "mcp.workflow_run", "workflow", workflowId, "runId=" + run.id());
+        return Map.of(
+                "workflowId", workflowId,
+                "runId", run.id(),
+                "status", run.status(),
+                "error", run.error() == null ? "" : run.error()
+        );
+    }
+
+    /**
+     * 自然语言生成工作流草稿（只生成，不执行）：复用工详情 WorkflowGenerationService，
+     * 返回步骤结构与 stepsJson，供后端确认后再创建。
+     */
+    public Object workflowGenerate(WorkflowGenerateInput input) {
+        long userId = mcpServerProperties.userId();
+        String description = input == null ? null : input.description();
+        if (description == null || description.isBlank()) {
+            throw new IllegalArgumentException("description 不能为空");
+        }
+        com.devmind.workflow.WorkflowGenerationService.GenerationResult result =
+                workflowGenerationService.generate(userId, description.trim());
+        auditLogService.log(userId, "mcp.workflow_generate", "workflow", null, abbreviate(description));
+        return Map.of(
+                "stepsJson", result.stepsJson(),
+                "stepCount", result.steps() == null ? 0 : result.steps().size()
+        );
+    }
+
+    /**
+     * 按技能 id 执行其关联工作流：技能 references 中 type=workflow 的资源为执行目标。
+     * 一次技能执行一个关联工作流（取第一个），未关联则返回提示。
+     */
+    public Object skillInvoke(SkillInvokeInput input) {
+        long userId = mcpServerProperties.userId();
+        Long skillId = input == null ? null : input.skillId();
+        if (skillId == null || skillId <= 0) {
+            throw new IllegalArgumentException("skillId 必须为正整数");
+        }
+        com.devmind.skill.Skill skill = skillService.get(userId, skillId);
+        Long workflowId = extractWorkflowId(skill.references());
+        if (workflowId == null) {
+            auditLogService.log(userId, "mcp.skill_invoke", "skill", skillId, "无关联工作流");
+            return Map.of("skillId", skillId, "status", "NO_WORKFLOW", "message", "技能未关联工作流");
+        }
+        com.devmind.workflow.WorkflowRun run = workflowService.run(workflowId, userId);
+        auditLogService.log(userId, "mcp.skill_invoke", "skill", skillId, "workflowId=" + workflowId + ", runId=" + run.id());
+        return Map.of(
+                "skillId", skillId,
+                "workflowId", workflowId,
+                "runId", run.id(),
+                "status", run.status(),
+                "error", run.error() == null ? "" : run.error()
+        );
+    }
+
+    /** 从技能 references JSON 中提取第一个 type=workflow 的引用 id */
+    private Long extractWorkflowId(String referencesJson) {
+        if (referencesJson == null || referencesJson.isBlank() || "[]".equals(referencesJson.trim())) {
+            return null;
+        }
+        try {
+            var root = new com.fasterxml.jackson.databind.ObjectMapper().readTree(referencesJson);
+            if (root.isArray()) {
+                for (var node : root) {
+                    if ("workflow".equalsIgnoreCase(node.path("type").asText("")) && node.has("id")) {
+                        return node.get("id").asLong();
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("MCP skill_invoke 解析 references 失败: {}", ex.getMessage());
+        }
+        return null;
     }
 
     private static Map<String, Object> toHit(RetrievalResult result) {

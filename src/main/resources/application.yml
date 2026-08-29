@@ -121,7 +121,7 @@ devmind:
   # 二期·双向互联：MCP Server 工具白名单与服务账号（审计/访问校验归属）
   mcp-server:
     enabled: ${DEVMIND_MCP_SERVER_ENABLED:false}
-    tools: ${DEVMIND_MCP_TOOLS:kb_search,kb_chat}
+    tools: ${DEVMIND_MCP_TOOLS:kb_search,kb_chat,workflow_run,workflow_generate,skill_invoke}
     user-id: ${DEVMIND_MCP_SERVICE_USER_ID:1}
   # 二期·双向互联：n8n 工作流引擎（MCP Server Trigger，默认关）
   n8n:

@@ -53,6 +53,30 @@ public class McpServerConfig {
                     .inputType(DevMindMcpTools.KbChatInput.class)
                     .build());
         }
+        if (whitelist.contains("workflow_run")) {
+            callbacks.add(FunctionToolCallback
+                    .builder("workflow_run", (DevMindMcpTools.WorkflowRunInput input) -> tools.workflowRun(input))
+                    .description("执行 DevMind 中一个已启用的工作流（写操作）：走引擎选择/授权/审计/配额治理链路，"
+                            + "返回 runId 与执行状态")
+                    .inputType(DevMindMcpTools.WorkflowRunInput.class)
+                    .build());
+        }
+        if (whitelist.contains("workflow_generate")) {
+            callbacks.add(FunctionToolCallback
+                    .builder("workflow_generate", (DevMindMcpTools.WorkflowGenerateInput input) -> tools.workflowGenerate(input))
+                    .description("用自然语言生成工作流草稿（只生成不执行）：返回 stepsJson 步骤结构，"
+                            + "供确认后再创建为正式工作流")
+                    .inputType(DevMindMcpTools.WorkflowGenerateInput.class)
+                    .build());
+        }
+        if (whitelist.contains("skill_invoke")) {
+            callbacks.add(FunctionToolCallback
+                    .builder("skill_invoke", (DevMindMcpTools.SkillInvokeInput input) -> tools.skillInvoke(input))
+                    .description("执行一个技能关联的工作流（技能 references 中 type=workflow 的资源）："
+                            + "按声明注入接口，稳定可复现")
+                    .inputType(DevMindMcpTools.SkillInvokeInput.class)
+                    .build());
+        }
         List<ToolCallback> exposed = List.copyOf(callbacks);
         return () -> exposed.toArray(ToolCallback[]::new);
     }

@@ -57,12 +57,19 @@ class DevMindMcpToolsTest {
     private DevMindMcpTools tools;
 
     private final McpServerProperties mcpServerProperties = new McpServerProperties(true, "kb_search,kb_chat", 7L);
+    @Mock
+    private com.devmind.workflow.WorkflowService workflowService;
+    @Mock
+    private com.devmind.workflow.WorkflowGenerationService workflowGenerationService;
+    @Mock
+    private com.devmind.skill.SkillService skillService;
 
     @BeforeEach
     void setUp() {
         tools = new DevMindMcpTools(
                 knowledgeBaseService, retrievalService, modelGateway,
-                chatService, auditLogService, properties, mcpServerProperties
+                chatService, auditLogService, properties, mcpServerProperties,
+                workflowService, workflowGenerationService, skillService
         );
     }
 
@@ -164,5 +171,96 @@ class DevMindMcpToolsTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("question");
         verifyNoInteractions(chatService);
+    }
+
+    // ─── W3 工具：workflow_run / workflow_generate / skill_invoke ───
+
+    @Test
+    void workflowRunDelegatesAndWritesMcpAudit() {
+        stubDefaults();
+        when(workflowService.run(eq(20L), eq(7L))).thenReturn(new com.devmind.workflow.WorkflowRun(
+                5L, 20L, 1L, "manual", "SUCCESS", 0.0, "t0", "t1", null));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) tools.workflowRun(
+                new com.devmind.mcp.DevMindMcpTools.WorkflowRunInput(20L));
+
+        assertThat(result.get("workflowId")).isEqualTo(20L);
+        assertThat(result.get("runId")).isEqualTo(5L);
+        assertThat(result.get("status")).isEqualTo("SUCCESS");
+        verify(workflowService).run(20L, 7L);
+        verify(auditLogService).log(eq(7L), eq("mcp.workflow_run"), eq("workflow"), eq(20L), anyString());
+    }
+
+    @Test
+    void workflowRunRejectsInvalidId() {
+        stubDefaults();
+        assertThatThrownBy(() -> tools.workflowRun(new com.devmind.mcp.DevMindMcpTools.WorkflowRunInput(null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("workflowId");
+        verifyNoInteractions(workflowService);
+    }
+
+    @Test
+    void workflowGenerateReturnsStepsJsonAndAudits() {
+        stubDefaults();
+        when(workflowGenerationService.generate(eq(7L), eq("每日生成监控日报")))
+                .thenReturn(new com.devmind.workflow.WorkflowGenerationService.GenerationResult(
+                        java.util.List.of(), "[{\"tool\":\"a\"}]"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) tools.workflowGenerate(
+                new com.devmind.mcp.DevMindMcpTools.WorkflowGenerateInput("每日生成监控日报"));
+
+        assertThat(result.get("stepsJson")).isEqualTo("[{\"tool\":\"a\"}]");
+        assertThat(result.get("stepCount")).isEqualTo(0);
+        verify(workflowGenerationService).generate(7L, "每日生成监控日报");
+        verify(auditLogService).log(eq(7L), eq("mcp.workflow_generate"), eq("workflow"), eq(null), anyString());
+    }
+
+    @Test
+    void workflowGenerateRejectsBlankDescription() {
+        stubDefaults();
+        assertThatThrownBy(() -> tools.workflowGenerate(
+                new com.devmind.mcp.DevMindMcpTools.WorkflowGenerateInput("  ")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("description");
+        verifyNoInteractions(workflowGenerationService);
+    }
+
+    @Test
+    void skillInvokeRunsLinkedWorkflow() {
+        stubDefaults();
+        when(skillService.get(eq(7L), eq(3L))).thenReturn(new com.devmind.skill.Skill(
+                3L, 1L, "team", "监控日报", null, null, null,
+                "[{\"type\":\"workflow\",\"id\":20,\"name\":\"监控日报\"}]",
+                "from_workflow", 20L, true, 1L, 7L, "t0"));
+        when(workflowService.run(eq(20L), eq(7L))).thenReturn(new com.devmind.workflow.WorkflowRun(
+                8L, 20L, 1L, "manual", "SUCCESS", 0.0, "t0", "t1", null));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) tools.skillInvoke(
+                new com.devmind.mcp.DevMindMcpTools.SkillInvokeInput(3L));
+
+        assertThat(result.get("skillId")).isEqualTo(3L);
+        assertThat(result.get("workflowId")).isEqualTo(20L);
+        assertThat(result.get("runId")).isEqualTo(8L);
+        verify(workflowService).run(20L, 7L);
+        verify(auditLogService).log(eq(7L), eq("mcp.skill_invoke"), eq("skill"), eq(3L), anyString());
+    }
+
+    @Test
+    void skillInvokeWithoutLinkedWorkflowReturnsNoWorkflow() {
+        stubDefaults();
+        when(skillService.get(eq(7L), eq(4L))).thenReturn(new com.devmind.skill.Skill(
+                4L, 1L, "personal", "规范", null, null, null, "[]",
+                "manual", null, true, 0L, 7L, "t0"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) tools.skillInvoke(
+                new com.devmind.mcp.DevMindMcpTools.SkillInvokeInput(4L));
+
+        assertThat(result.get("status")).isEqualTo("NO_WORKFLOW");
+        verifyNoInteractions(workflowService);
     }
 }

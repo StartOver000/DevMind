@@ -4,13 +4,14 @@ import com.devmind.config.DevMindProperties;
 import com.devmind.config.DevMindQuotaProperties;
 import com.devmind.config.DevMindSecurityProperties;
 import com.devmind.config.McpSecurityProperties;
+import com.devmind.config.McpServerProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
-@EnableConfigurationProperties({DevMindProperties.class, DevMindSecurityProperties.class, DevMindQuotaProperties.class, McpSecurityProperties.class})
+@EnableConfigurationProperties({DevMindProperties.class, DevMindSecurityProperties.class, DevMindQuotaProperties.class, McpSecurityProperties.class, McpServerProperties.class})
 @EnableScheduling
 public class DevMindApplication {
 

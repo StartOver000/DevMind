@@ -123,6 +123,10 @@ devmind:
     enabled: ${DEVMIND_MCP_SERVER_ENABLED:false}
     tools: ${DEVMIND_MCP_TOOLS:kb_search,kb_chat}
     user-id: ${DEVMIND_MCP_SERVICE_USER_ID:1}
+  # 二期·双向互联：n8n 工作流引擎（MCP Server Trigger，默认关）
+  n8n:
+    mcp-url: ${DEVMIND_N8N_MCP_URL:}
+    timeout-ms: ${DEVMIND_N8N_TIMEOUT_MS:30000}
   # 接口工具 SSRF 防护：拦截私有/保留 IP 与 localhost/host.docker.internal 等（默认开）。
   # 本地仿真/开发需要调用 host.docker.internal 时，用 allowed-hosts 白名单放行。
   interface-tool-ssrf-enabled: ${DEVMIND_INTERFACE_TOOL_SSRF_ENABLED:true}

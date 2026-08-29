@@ -11,7 +11,6 @@ import com.devmind.mcp.DevMindMcpTools.KbChatInput;
 import com.devmind.mcp.DevMindMcpTools.KbSearchInput;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -57,14 +56,13 @@ class DevMindMcpToolsTest {
 
     private DevMindMcpTools tools;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
     private final McpServerProperties mcpServerProperties = new McpServerProperties(true, "kb_search,kb_chat", 7L);
 
     @BeforeEach
     void setUp() {
         tools = new DevMindMcpTools(
                 knowledgeBaseService, retrievalService, modelGateway,
-                chatService, auditLogService, properties, mcpServerProperties, objectMapper
+                chatService, auditLogService, properties, mcpServerProperties
         );
     }
 
@@ -86,11 +84,11 @@ class DevMindMcpToolsTest {
                 11L, 2L, "MySQL 索引专题.md", 0, "联合索引最左前缀……", Map.of("tags", List.of("mysql")), 0.87
         )));
 
-        String json = tools.kbSearch(new KbSearchInput(9L, "联合索引的最左前缀原则是什么", 3, List.of("mysql")));
+        String json = String.valueOf(tools.kbSearch(new KbSearchInput(9L, "联合索引的最左前缀原则是什么", 3, List.of("mysql"))));
 
-        assertThat(json).contains("\"hitCount\":1");
+        assertThat(json).contains("hitCount=1");
         assertThat(json).contains("MySQL 索引专题.md");
-        assertThat(json).contains("\"chunkId\":11");
+        assertThat(json).contains("chunkId=11");
         verify(knowledgeBaseService).requireEnabledKnowledgeBaseAccess(9L, 7L);
         verify(retrievalService).searchHybrid(
                 eq(9L), anyList(), eq("联合索引的最左前缀原则是什么"), eq(3),
@@ -105,9 +103,9 @@ class DevMindMcpToolsTest {
         when(modelGateway.embed(anyList())).thenThrow(new RuntimeException("embedding 不可用"));
         when(retrievalService.searchByKeywords(anyLong(), anyString(), anyInt(), any())).thenReturn(List.of());
 
-        String json = tools.kbSearch(new KbSearchInput(9L, "任意问题", null, null));
+        String json = String.valueOf(tools.kbSearch(new KbSearchInput(9L, "任意问题", null, null)));
 
-        assertThat(json).contains("\"hitCount\":0");
+        assertThat(json).contains("hitCount=0");
         verify(retrievalService).searchByKeywords(eq(9L), eq("任意问题"), eq(5), any());
         verify(retrievalService, org.mockito.Mockito.never()).searchHybrid(
                 anyLong(), anyList(), anyString(), anyInt(), anyDouble(), anyDouble(), anyDouble(), anyBoolean(), any()
@@ -151,10 +149,10 @@ class DevMindMcpToolsTest {
         when(chatService.chat(eq(9L), any(), eq(7L)))
                 .thenReturn(new ChatResponse(3L, "最左前缀原则指……", List.of()));
 
-        String json = tools.kbChat(new KbChatInput(9L, "解释最左前缀", null));
+        ChatResponse response = (ChatResponse) tools.kbChat(new KbChatInput(9L, "解释最左前缀", null));
 
-        assertThat(json).contains("\"conversationId\":3");
-        assertThat(json).contains("最左前缀原则指");
+        assertThat(response.conversationId()).isEqualTo(3L);
+        assertThat(response.answer()).isEqualTo("最左前缀原则指……");
         verify(knowledgeBaseService).requireEnabledKnowledgeBaseAccess(9L, 7L);
         verify(auditLogService).log(eq(7L), eq("mcp.kb_chat"), eq("knowledge_base"), eq(9L), anyString());
     }

@@ -11,8 +11,6 @@ import com.devmind.knowledge.KnowledgeBaseService;
 import com.devmind.retrieval.QueryRouter;
 import com.devmind.retrieval.RetrievalResult;
 import com.devmind.retrieval.RetrievalService;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -48,7 +46,6 @@ public class DevMindMcpTools {
     private final AuditLogService auditLogService;
     private final DevMindProperties properties;
     private final McpServerProperties mcpServerProperties;
-    private final ObjectMapper objectMapper;
 
     public DevMindMcpTools(
             KnowledgeBaseService knowledgeBaseService,
@@ -57,8 +54,7 @@ public class DevMindMcpTools {
             ChatService chatService,
             AuditLogService auditLogService,
             DevMindProperties properties,
-            McpServerProperties mcpServerProperties,
-            ObjectMapper objectMapper
+            McpServerProperties mcpServerProperties
     ) {
         this.knowledgeBaseService = knowledgeBaseService;
         this.retrievalService = retrievalService;
@@ -67,7 +63,6 @@ public class DevMindMcpTools {
         this.auditLogService = auditLogService;
         this.properties = properties;
         this.mcpServerProperties = mcpServerProperties;
-        this.objectMapper = objectMapper;
     }
 
     /** kb_search 工具入参（Spring AI 按此生成 MCP inputSchema） */
@@ -82,7 +77,7 @@ public class DevMindMcpTools {
      * 知识库纯语义检索（不调 LLM）：与 {@code /api/knowledge-bases/{id}/search} 同一条链路——
      * 问题向量化失败降级纯关键词检索；查询路由决定向量/关键词权重。
      */
-    public String kbSearch(KbSearchInput input) {
+    public Object kbSearch(KbSearchInput input) {
         long knowledgeBaseId = requireKnowledgeBaseId(input == null ? null : input.knowledgeBaseId());
         long userId = mcpServerProperties.userId();
         String question = input.question() == null ? "" : input.question().trim();
@@ -122,18 +117,18 @@ public class DevMindMcpTools {
                 .toList();
 
         auditLogService.log(userId, "mcp.kb_search", "knowledge_base", knowledgeBaseId, abbreviate(question));
-        return json(Map.of(
+        return Map.of(
                 "knowledgeBaseId", knowledgeBaseId,
                 "hitCount", hits.size(),
                 "hits", hits
-        ));
+        );
     }
 
     /**
      * 知识库 RAG 问答（检索增强 + 引用溯源）：与 {@code /api/knowledge-bases/{id}/chat} 同源，
      * 模型用量计入 MCP 服务账号，配额（日次数/日成本）照常拦截。
      */
-    public String kbChat(KbChatInput input) {
+    public Object kbChat(KbChatInput input) {
         long knowledgeBaseId = requireKnowledgeBaseId(input == null ? null : input.knowledgeBaseId());
         long userId = mcpServerProperties.userId();
         String question = input.question() == null ? "" : input.question().trim();
@@ -146,7 +141,7 @@ public class DevMindMcpTools {
         ChatResponse response = chatService.chat(knowledgeBaseId, request, userId);
 
         auditLogService.log(userId, "mcp.kb_chat", "knowledge_base", knowledgeBaseId, abbreviate(question));
-        return json(response);
+        return response;
     }
 
     private static Map<String, Object> toHit(RetrievalResult result) {
@@ -186,13 +181,5 @@ public class DevMindMcpTools {
 
     private static String abbreviate(String text) {
         return truncate(text, AUDIT_DETAIL_MAX);
-    }
-
-    private String json(Object value) {
-        try {
-            return objectMapper.writeValueAsString(value);
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("MCP 工具结果序列化失败", ex);
-        }
     }
 }

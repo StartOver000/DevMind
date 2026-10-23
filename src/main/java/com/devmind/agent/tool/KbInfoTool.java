@@ -16,6 +16,12 @@ import java.util.Map;
 @Component
 public class KbInfoTool implements AgentTool {
 
+    /** 只读工具：查询知识库信息，无副作用 */
+    @Override
+    public boolean writeOperation() {
+        return false;
+    }
+
     private final KnowledgeBaseService knowledgeBaseService;
     private final ObjectMapper objectMapper;
 

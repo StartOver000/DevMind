@@ -18,6 +18,12 @@ import java.util.Map;
 @Component
 public class SqlDiagnoseTool implements AgentTool {
 
+    /** 只读工具：EXPLAIN 诊断，不执行写 SQL */
+    @Override
+    public boolean writeOperation() {
+        return false;
+    }
+
     private final SqlDiagnosisService sqlDiagnosisService;
     private final ObjectMapper objectMapper;
 

@@ -2,6 +2,8 @@ package com.devmind.agent;
 
 import com.devmind.agent.dto.ToolTraceItem;
 import com.devmind.ai.AiModelGateway;
+import com.devmind.guard.TaskMode;
+import com.devmind.guard.ToolAccessDeniedException;
 import com.devmind.skill.SkillMatcher;
 import com.devmind.user.UserService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -93,7 +95,16 @@ public class AgentToolExecutor {
             AiModelGateway.ToolCall tc,
             Long userId
     ) {
-        return toolExecutor.submit(() -> executeToolCore(tc, userId));
+        return submitExecute(tc, userId, TaskMode.WRITE);
+    }
+
+    /** 带任务模式的并行执行提交：只读任务下的写工具会在执行前被拒绝 */
+    public java.util.concurrent.Future<ToolExecOutcome> submitExecute(
+            AiModelGateway.ToolCall tc,
+            Long userId,
+            TaskMode taskMode
+    ) {
+        return toolExecutor.submit(() -> executeToolCore(tc, userId, taskMode));
     }
 
     /**
@@ -101,6 +112,11 @@ public class AgentToolExecutor {
      * 不碰共享状态（messages/trace），供并行执行使用。
      */
     public ToolExecOutcome executeToolCore(AiModelGateway.ToolCall tc, Long userId) {
+        return executeToolCore(tc, userId, TaskMode.WRITE);
+    }
+
+    /** 带任务模式的单工具执行：执行期授权在 {@link ToolRegistry#execute} 内收口 */
+    public ToolExecOutcome executeToolCore(AiModelGateway.ToolCall tc, Long userId, TaskMode taskMode) {
         long start = System.currentTimeMillis();
         ToolCallValidator.Validation validation = toolCallValidator.validate(tc.name(), tc.argumentsJson());
         if (!validation.valid()) {
@@ -111,13 +127,24 @@ public class AgentToolExecutor {
         }
         try {
             java.util.concurrent.Future<String> future = toolExecutor.submit(() ->
-                    toolRegistry.execute(validation.toolName(), validation.argumentsJson(), userId));
+                    toolRegistry.execute(validation.toolName(), validation.argumentsJson(), userId, "agent", null, taskMode));
             String output = future.get(AgentTools.TOOL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
             return new ToolExecOutcome(output, true, System.currentTimeMillis() - start);
         } catch (java.util.concurrent.TimeoutException ex) {
             meterRegistry.counter("devmind.agent.tool_timeout").increment();
             log.warn("agent 工具 {} 执行超时（{}s）", tc.name(), AgentTools.TOOL_TIMEOUT_SECONDS);
             return new ToolExecOutcome("{\"error\": \"工具执行超时\"}",
+                    false, System.currentTimeMillis() - start);
+        } catch (java.util.concurrent.ExecutionException ex) {
+            // 授权拒绝在执行前抛出，被 Future 包装成 ExecutionException —— 解包成可读的拒绝结果回填模型
+            if (ex.getCause() instanceof ToolAccessDeniedException denied) {
+                meterRegistry.counter("devmind.agent.tool_denied").increment();
+                log.warn("agent 工具 {} 被授权策略拒绝: {}", tc.name(), denied.policyId());
+                return new ToolExecOutcome(deniedJson(denied), false, System.currentTimeMillis() - start);
+            }
+            String message = ex.getCause() == null ? ex.getMessage() : ex.getCause().getMessage();
+            log.warn("agent 工具 {} 执行失败: {}", tc.name(), message);
+            return new ToolExecOutcome("{\"error\": \"工具执行失败: " + message + "\"}",
                     false, System.currentTimeMillis() - start);
         } catch (Exception ex) {
             log.warn("agent 工具 {} 执行失败: {}", tc.name(), ex.getMessage());
@@ -168,7 +195,19 @@ public class AgentToolExecutor {
             Long conversationId,
             Consumer<ToolTraceItem> onTrace
     ) {
-        return backfillTool(tc, executeToolCore(tc, userId), messages, conversationId, onTrace);
+        return executeToolCall(tc, userId, messages, conversationId, onTrace, TaskMode.WRITE);
+    }
+
+    /** 带任务模式的单工具执行 + 回填（只读任务下写工具会被拒绝并以失败结果回填） */
+    public ToolTraceItem executeToolCall(
+            AiModelGateway.ToolCall tc,
+            Long userId,
+            List<java.util.Map<String, Object>> messages,
+            Long conversationId,
+            Consumer<ToolTraceItem> onTrace,
+            TaskMode taskMode
+    ) {
+        return backfillTool(tc, executeToolCore(tc, userId, taskMode), messages, conversationId, onTrace);
     }
 
     /**
@@ -182,6 +221,19 @@ public class AgentToolExecutor {
             List<ToolTraceItem> trace,
             Consumer<ToolTraceItem> onTrace,
             Long conversationId
+    ) {
+        return executePlan(planCall, userId, messages, trace, onTrace, conversationId, TaskMode.WRITE);
+    }
+
+    /** 带任务模式的计划执行（计划里的每个 step 同样受执行期授权约束） */
+    public boolean executePlan(
+            AiModelGateway.ToolCall planCall,
+            Long userId,
+            List<java.util.Map<String, Object>> messages,
+            List<ToolTraceItem> trace,
+            Consumer<ToolTraceItem> onTrace,
+            Long conversationId,
+            TaskMode taskMode
     ) {
         List<PlanStep> steps = parsePlan(planCall.argumentsJson());
         if (steps == null) {
@@ -211,7 +263,7 @@ public class AgentToolExecutor {
                     step.tool(),
                     step.argsJson() == null ? "{}" : step.argsJson()
             );
-            ToolTraceItem item = executeToolCall(stepCall, userId, messages, conversationId, onTrace);
+            ToolTraceItem item = executeToolCall(stepCall, userId, messages, conversationId, onTrace, taskMode);
             trace.add(item);
             if (!item.ok()) {
                 allOk = false;
@@ -226,6 +278,16 @@ public class AgentToolExecutor {
      * 交给 SkillService 用 LLM 重写技能内容。返回执行结果（供模型告知用户）。
      */
     public ToolExecOutcome executeUpdateSkill(AiModelGateway.ToolCall tc, Long userId) {
+        return executeUpdateSkill(tc, userId, TaskMode.WRITE);
+    }
+
+    /**
+     * 对话式修正技能（update_skill 内部工具）——带任务模式的入口：只读任务直接拒绝。
+     */
+    public ToolExecOutcome executeUpdateSkill(AiModelGateway.ToolCall tc, Long userId, TaskMode taskMode) {
+        if (taskMode == null || taskMode.readOnly()) {
+            return internalWriteDenied(AgentTools.UPDATE_SKILL_TOOL_NAME, userId, tc.argumentsJson());
+        }
         if (skillService == null) {
             return new ToolExecOutcome(
                     "{\"error\": \"技能服务不可用，请稍后再试\"}", false, 0);
@@ -302,6 +364,16 @@ public class AgentToolExecutor {
      * 删除对应用户记忆条目。返回执行结果（供模型告知用户）。
      */
     public ToolExecOutcome executeDeleteMemory(AiModelGateway.ToolCall tc, Long userId) {
+        return executeDeleteMemory(tc, userId, TaskMode.WRITE);
+    }
+
+    /**
+     * 对话式删除长期记忆（delete_memory 内部工具）——带任务模式的入口：只读任务直接拒绝。
+     */
+    public ToolExecOutcome executeDeleteMemory(AiModelGateway.ToolCall tc, Long userId, TaskMode taskMode) {
+        if (taskMode == null || taskMode.readOnly()) {
+            return internalWriteDenied(AgentTools.DELETE_MEMORY_TOOL_NAME, userId, tc.argumentsJson());
+        }
         long start = System.currentTimeMillis();
         try {
             JsonNode root = objectMapper.readTree(tc.argumentsJson() == null ? "{}" : tc.argumentsJson());
@@ -330,6 +402,16 @@ public class AgentToolExecutor {
      * 交给 WorkflowService.run 复用确定性编排引擎执行（顺序/并行/条件分支），返回运行结果。
      */
     public ToolExecOutcome executeRunWorkflow(AiModelGateway.ToolCall tc, Long userId) {
+        return executeRunWorkflow(tc, userId, TaskMode.WRITE);
+    }
+
+    /**
+     * 执行工作流（run_workflow 内部工具）——带任务模式的入口：只读任务直接拒绝。
+     */
+    public ToolExecOutcome executeRunWorkflow(AiModelGateway.ToolCall tc, Long userId, TaskMode taskMode) {
+        if (taskMode == null || taskMode.readOnly()) {
+            return internalWriteDenied(AgentTools.RUN_WORKFLOW_TOOL_NAME, userId, tc.argumentsJson());
+        }
         if (workflowService == null) {
             return new ToolExecOutcome(
                     "{\"error\": \"工作流服务不可用，请稍后再试\"}", false, 0);
@@ -355,6 +437,40 @@ public class AgentToolExecutor {
             return new ToolExecOutcome("{\"error\": \"工作流执行失败: " + message + "\"}", false,
                     System.currentTimeMillis() - start);
         }
+    }
+
+    /** 拒绝结果回填给模型：带策略号，便于模型向用户解释「为什么没做」 */
+    private String deniedJson(ToolAccessDeniedException denied) {
+        try {
+            return objectMapper.writeValueAsString(java.util.Map.of(
+                    "error", "工具调用被拒绝，未执行",
+                    "denied", true,
+                    "policy", denied.policyId(),
+                    "reason", denied.getMessage()
+            ));
+        } catch (Exception ex) {
+            return "{\"error\": \"工具调用被拒绝\", \"denied\": true}";
+        }
+    }
+
+    /**
+     * 只读任务下拦截内部写工具（update_skill / delete_memory / run_workflow）。
+     * 这些工具不经过 {@link ToolRegistry#execute}，因此在这里做同样的任务模式闸门，
+     * 并把拒绝写进 tool_call_log（与 registry 路径同一张表、同一口径）。
+     */
+    private ToolExecOutcome internalWriteDenied(String toolName, Long userId, String argumentsJson) {
+        meterRegistry.counter("devmind.agent.tool_denied", "tool", toolName, "policy", "TASK_SCOPE_READ_ONLY")
+                .increment();
+        if (toolRegistry != null) {
+            toolRegistry.recordDenied(toolName, userId, "agent", "TASK_SCOPE_READ_ONLY",
+                    "当前任务为只读模式，不允许写操作", argumentsJson);
+        }
+        log.info("只读任务拦截内部写工具: {}", toolName);
+        return new ToolExecOutcome(
+                "{\"error\":\"工具调用被拒绝，未执行\",\"denied\":true,"
+                        + "\"policy\":\"TASK_SCOPE_READ_ONLY\",\"tool\":\"" + toolName + "\","
+                        + "\"reason\":\"当前任务为只读模式，不允许写操作\"}",
+                false, 0);
     }
 
     /** 解析 plan 工具参数为有序步骤列表；无法解析（非数组/为空/工具名为空）返回 null */

@@ -1,6 +1,7 @@
 package com.devmind.workflow;
 
 import com.devmind.agent.ToolRegistry;
+import com.devmind.audit.OperationEvidenceService;
 import com.devmind.common.ApiException;
 import com.devmind.common.ErrorCode;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -36,6 +37,7 @@ public class WorkflowExecutor {
     private final ToolRegistry toolRegistry;
     private final WorkflowRunRepository runRepository;
     private final WorkflowApprovalRepository approvalRepository;
+    private final OperationEvidenceService operationEvidenceService;
     private final ObjectMapper objectMapper;
     private final WorkflowConditionEvaluator conditionEvaluator;
     /** 并行组执行线程池（M3-2） */
@@ -91,13 +93,15 @@ public class WorkflowExecutor {
             WorkflowRunRepository runRepository,
             WorkflowApprovalRepository approvalRepository,
             ObjectMapper objectMapper,
-            WorkflowConditionEvaluator conditionEvaluator
+            WorkflowConditionEvaluator conditionEvaluator,
+            OperationEvidenceService operationEvidenceService
     ) {
         this.toolRegistry = toolRegistry;
         this.runRepository = runRepository;
         this.approvalRepository = approvalRepository;
         this.objectMapper = objectMapper;
         this.conditionEvaluator = conditionEvaluator;
+        this.operationEvidenceService = operationEvidenceService;
     }
 
     @PreDestroy
@@ -317,6 +321,9 @@ public class WorkflowExecutor {
         }
         approvalRepository.decide(approvalId, approved ? "APPROVED" : "REJECTED", comment,
                 userId == null ? "system" : String.valueOf(userId));
+        // G3：审批决定先落证据（决定前状态 = 变量快照的摘要），再决定是否续跑
+        recordApprovalEvidence(workflow.tenantId(), runId, approvalId, approval.title(), approved,
+                userId == null ? "system" : String.valueOf(userId), comment, approval.varsSnapshot());
         if (!approved) {
             runRepository.finishRun(runId, "REJECTED", "审批拒绝: " + approval.title()
                     + (comment == null || comment.isBlank() ? "" : " - " + comment));
@@ -352,11 +359,40 @@ public class WorkflowExecutor {
             executeUnits(remainder, runId, workflow.id(), workflow.tenantId(), vars, userId,
                     workflow.name(), stepIndex, failure);
         } catch (ApprovalPauseException nextPause) {
-            // 后续又遇审批节点：再次暂停等待
+            // 后续又遇审批节点：先记执行证据（本段已执行完），再暂停等待
+            recordExecutionEvidence(workflow.tenantId(), runId, approvalId, vars);
             return runRepository.findRun(workflow.tenantId(), runId);
         }
+        recordExecutionEvidence(workflow.tenantId(), runId, approvalId, vars);
         runRepository.finishRun(runId, failure.get() == null ? "SUCCESS" : "FAILED", failure.get());
         return runRepository.findRun(workflow.tenantId(), runId);
+    }
+
+    /** G3：审批决定落证据链；审计是旁路，写失败不影响审批与执行 */
+    private void recordApprovalEvidence(Long tenantId, Long runId, Long approvalId, String title,
+                                        boolean approved, String decidedBy, String comment, String snapshot) {
+        if (operationEvidenceService == null) {
+            return;
+        }
+        try {
+            operationEvidenceService.appendDecision(tenantId, runId, approvalId, title, approved,
+                    decidedBy, comment, snapshot);
+        } catch (Exception ex) {
+            log.warn("审批证据写入失败 (run={}, approval={}): {}", runId, approvalId, ex.getMessage());
+        }
+    }
+
+    /** G3：审批通过后的执行结果落证据链（决定前 → 执行后，同一条哈希链） */
+    private void recordExecutionEvidence(Long tenantId, Long runId, Long approvalId, Map<String, Object> vars) {
+        if (operationEvidenceService == null) {
+            return;
+        }
+        try {
+            operationEvidenceService.appendExecution(tenantId, runId, approvalId,
+                    objectMapper.writeValueAsString(vars));
+        } catch (Exception ex) {
+            log.warn("执行证据写入失败 (run={}, approval={}): {}", runId, approvalId, ex.getMessage());
+        }
     }
 
     /** 并行执行所有步骤，等待全部完成 */

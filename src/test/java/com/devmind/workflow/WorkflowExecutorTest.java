@@ -20,11 +20,14 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -42,13 +45,16 @@ class WorkflowExecutorTest {
     @Mock
     private WorkflowApprovalRepository approvalRepository;
 
+    @Mock
+    private com.devmind.audit.OperationEvidenceService operationEvidenceService;
+
     private WorkflowExecutor executor;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
         executor = new WorkflowExecutor(toolRegistry, runRepository, approvalRepository, objectMapper,
-                new WorkflowConditionEvaluator());
+                new WorkflowConditionEvaluator(), operationEvidenceService);
     }
 
     private Workflow workflow(String stepsJson) {
@@ -722,6 +728,45 @@ class WorkflowExecutorTest {
         verify(toolRegistry).execute(eq("usage_query"), anyString(), eq(1L), eq("workflow"), eq(100L));
         verify(runRepository).finishRun(eq(100L), eq("WAITING_APPROVAL"), anyString());
         verify(runRepository).finishRun(eq(100L), eq("SUCCESS"), eq(null));
+        // G3：审批通过 → 决定证据 + 执行证据各一条，同一条链
+        verify(operationEvidenceService).appendDecision(eq(1L), eq(100L), eq(999L), eq("确认下单"),
+                eq(true), anyString(), eq("同意"), eq("{\"c\":\"{\\\"clients\\\":[1]}\"}"));
+        verify(operationEvidenceService).appendExecution(eq(1L), eq(100L), eq(999L), anyString());
+    }
+
+    @Test
+    void evidenceWriteFailureDoesNotBreakApprovalOrExecution() {
+        when(runRepository.hasRunning(1L, 1L)).thenReturn(false);
+        when(runRepository.insertRun(1L, 1L, "manual")).thenReturn(100L);
+        when(runRepository.findRun(1L, 100L)).thenReturn(
+                run(100L, "WAITING_APPROVAL"), run(100L, "SUCCESS"));
+        when(toolRegistry.execute(eq("customer_query"), anyString(), eq(1L), eq("workflow"), eq(100L)))
+                .thenReturn("{\"clients\":[1]}");
+        when(approvalRepository.create(anyLong(), eq(100L), anyLong(), anyString(), anyString(), anyString(), anyInt()))
+                .thenReturn(999L);
+        when(approvalRepository.findById(1L, 999L))
+                .thenReturn(pendingApproval(999L, 100L, "{}", 1));
+        // 证据链是旁路：写失败只 warn，不能回滚审批/执行
+        doThrow(new IllegalStateException("evidence store down")).when(operationEvidenceService)
+                .appendDecision(anyLong(), anyLong(), anyLong(), anyString(), anyBoolean(), anyString(), any(), anyString());
+        doThrow(new IllegalStateException("evidence store down")).when(operationEvidenceService)
+                .appendExecution(anyLong(), anyLong(), anyLong(), anyString());
+
+        String stepsJson = """
+                [{"tool":"customer_query","params":{},"output_var":"c"},
+                 {"approve":"确认下单","assignee":"1","then":[
+                    {"tool":"ai_generate","params":{}}]},
+                 {"tool":"usage_query","params":{}}]
+                """;
+        Workflow workflow = workflow(stepsJson);
+        assertThat(executor.execute(workflow, 1L, "manual").status()).isEqualTo("WAITING_APPROVAL");
+
+        WorkflowRun resumed = executor.resumeAfterApproval(workflow, 100L, 999L, true, "同意", 1L);
+
+        assertThat(resumed.status()).isEqualTo("SUCCESS");
+        verify(approvalRepository).decide(eq(999L), eq("APPROVED"), eq("同意"), anyString());
+        verify(toolRegistry).execute(eq("ai_generate"), anyString(), eq(1L), eq("workflow"), eq(100L));
+        verify(runRepository).finishRun(eq(100L), eq("SUCCESS"), eq(null));
     }
 
     @Test
@@ -754,6 +799,10 @@ class WorkflowExecutorTest {
         verify(toolRegistry, never()).execute(eq("ai_generate"), anyString(), eq(1L), eq("workflow"), eq(100L));
         verify(toolRegistry, never()).execute(eq("usage_query"), anyString(), eq(1L), eq("workflow"), eq(100L));
         verify(runRepository).finishRun(eq(100L), eq("REJECTED"), anyString());
+        // G3：拒绝也要留证据；拒绝后无执行证据
+        verify(operationEvidenceService).appendDecision(eq(1L), eq(100L), eq(999L), eq("确认下单"),
+                eq(false), anyString(), eq("金额不对"), eq("{}"));
+        verify(operationEvidenceService, never()).appendExecution(anyLong(), anyLong(), anyLong(), anyString());
     }
 
     @Test
@@ -769,6 +818,9 @@ class WorkflowExecutorTest {
         assertThat(result.status()).isEqualTo("SUCCESS");
         verify(approvalRepository, never()).decide(anyLong(), anyString(), anyString(), anyString());
         verify(toolRegistry, never()).execute(anyString(), anyString(), eq(1L), eq("workflow"), eq(100L));
+        // G3：重复决定不重复落证据
+        verify(operationEvidenceService, never()).appendDecision(anyLong(), anyLong(), anyLong(), anyString(),
+                anyBoolean(), anyString(), anyString(), anyString());
     }
 
     @Test

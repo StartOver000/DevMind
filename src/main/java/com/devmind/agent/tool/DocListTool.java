@@ -20,6 +20,12 @@ import java.util.Map;
 @Component
 public class DocListTool implements AgentTool {
 
+    /** 只读工具：列出文档，无副作用 */
+    @Override
+    public boolean writeOperation() {
+        return false;
+    }
+
     private final DocumentService documentService;
     private final KnowledgeBaseService knowledgeBaseService;
     private final ObjectMapper objectMapper;

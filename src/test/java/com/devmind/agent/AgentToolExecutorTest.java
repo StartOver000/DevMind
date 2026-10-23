@@ -1,6 +1,8 @@
 package com.devmind.agent;
 
 import com.devmind.agent.dto.ToolTraceItem;
+import com.devmind.guard.TaskMode;
+import com.devmind.guard.ToolGuard;
 import com.devmind.ai.AiModelGateway;
 import com.devmind.skill.Skill;
 import com.devmind.skill.SkillMatcher;
@@ -20,9 +22,11 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -193,6 +197,40 @@ class AgentToolExecutorTest {
         assertThat(outcome.output()).contains("已更新技能").contains("旧内容").contains("新内容");
     }
 
+    // ---------- 内部写工具在只读任务下必须被拦截（C1） ----------
+
+    @Test
+    void readOnlyTaskBlocksUpdateSkill() {
+        executor.setSkillService(skillService);
+
+        AgentToolExecutor.ToolExecOutcome outcome = executor.executeUpdateSkill(
+                call("u1", "update_skill", "{\"skillId\":5,\"instruction\":\"改\"}"), 1L, TaskMode.READ_ONLY);
+
+        assertThat(outcome.ok()).isFalse();
+        assertThat(outcome.output()).contains("\"denied\":true").contains("TASK_SCOPE_READ_ONLY");
+        verify(skillService, never()).updateByInstruction(anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    void readOnlyTaskBlocksDeleteMemory() {
+        AgentToolExecutor.ToolExecOutcome outcome = executor.executeDeleteMemory(
+                call("d1", "delete_memory", "{\"memoryId\":7}"), 1L, TaskMode.READ_ONLY);
+
+        assertThat(outcome.ok()).isFalse();
+        assertThat(outcome.output()).contains("\"denied\":true").contains("TASK_SCOPE_READ_ONLY");
+        verify(memoryRepository, never()).deleteById(anyLong(), anyLong());
+    }
+
+    @Test
+    void readOnlyTaskBlocksRunWorkflow() {
+        AgentToolExecutor.ToolExecOutcome outcome = executor.executeRunWorkflow(
+                call("w1", "run_workflow", "{\"workflowId\":2}"), 1L, TaskMode.READ_ONLY);
+
+        assertThat(outcome.ok()).isFalse();
+        assertThat(outcome.output()).contains("\"denied\":true").contains("TASK_SCOPE_READ_ONLY");
+        verify(workflowService, never()).run(anyLong(), anyLong());
+    }
+
     // ---------- load_skill ----------
 
     @Test
@@ -271,5 +309,41 @@ class AgentToolExecutorTest {
 
         assertThat(outcome.ok()).isFalse();
         assertThat(outcome.output()).contains("工作流服务不可用");
+    }
+
+    // ---------- G1 执行期授权：拒绝结果回填模型（而不是抛异常中断对话） ----------
+
+    private AgentToolExecutor guardedExecutor(AgentTool... tools) {
+        ToolRegistry guarded = new ToolRegistry(List.of(tools), null, null, userService,
+                new ToolGuard(true, java.util.Set.of("ADMIN"), java.util.Set.of()));
+        return new AgentToolExecutor(guarded, new ToolCallValidator(guarded),
+                new SimpleMeterRegistry(), conversationStore, memoryRepository, userService);
+    }
+
+    @Test
+    void deniedWriteToolReturnsDeniedPayloadInsteadOfGenericFailure() {
+        AgentTool writeTool = tool("reimburse_submit");
+        lenient().when(writeTool.writeOperation()).thenReturn(true);
+        when(userService.isAdmin(2L)).thenReturn(true);
+        AgentToolExecutor guarded = guardedExecutor(writeTool);
+
+        AgentToolExecutor.ToolExecOutcome outcome =
+                guarded.executeToolCore(call("g1", "reimburse_submit", "{\"amount\":4800}"), 2L, TaskMode.READ_ONLY);
+
+        assertThat(outcome.ok()).isFalse();
+        assertThat(outcome.output()).contains("\"denied\":true").contains("TASK_SCOPE_READ_ONLY");
+        verify(writeTool, never()).execute(anyString(), eq(2L));
+    }
+
+    @Test
+    void readOnlyTaskStillExecutesReadTools() {
+        lenient().when(kbTool.execute(anyString(), eq(1L))).thenReturn("doc");
+        AgentToolExecutor guarded = guardedExecutor(kbTool);
+
+        AgentToolExecutor.ToolExecOutcome outcome =
+                guarded.executeToolCore(call("g2", "kb_search", "{}"), 1L, TaskMode.READ_ONLY);
+
+        assertThat(outcome.ok()).isTrue();
+        assertThat(outcome.output()).isEqualTo("doc");
     }
 }

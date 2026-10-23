@@ -58,6 +58,46 @@ public class ToolAuditService {
         return runRepository.statsByWorkflow(tenantId, Math.max(1, Math.min(days, 90)));
     }
 
+    /**
+     * 管理员回放：某用户最近 N 分钟的工具调用时间线 + 拒绝摘要（G2）。
+     *
+     * <p>回放要回答的是「这次操作到底发生了什么」：按发生顺序列出每个工具调用，
+     * 带授权结论（ALLOW/DENY）与命中策略号、参数摘要、耗时、结果状态；
+     * 摘要部分给出总次数、被拒绝次数、涉及工具与被拒策略，便于一眼看出「该不该发生」。</p>
+     */
+    public Map<String, Object> adminReplay(Long operatorId, Long targetUserId, int minutes) {
+        requireAdmin(operatorId);
+        if (targetUserId == null) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, "回放需要指定 userId");
+        }
+        Long tenantId = userService.tenantIdOf(operatorId);
+        int window = Math.max(1, Math.min(minutes, 24 * 60));
+        List<Map<String, Object>> events = callLogRepository.timeline(tenantId, targetUserId, window);
+
+        int denied = 0;
+        java.util.Set<String> tools = new java.util.LinkedHashSet<>();
+        java.util.Set<String> deniedPolicies = new java.util.LinkedHashSet<>();
+        for (Map<String, Object> event : events) {
+            tools.add(String.valueOf(event.get("tool_name")));
+            if ("DENY".equals(event.get("decision"))) {
+                denied++;
+                Object policy = event.get("policy_id");
+                if (policy != null) {
+                    deniedPolicies.add(String.valueOf(policy));
+                }
+            }
+        }
+        java.util.Map<String, Object> replay = new java.util.LinkedHashMap<>();
+        replay.put("userId", targetUserId);
+        replay.put("windowMinutes", window);
+        replay.put("total", events.size());
+        replay.put("denied", denied);
+        replay.put("tools", List.copyOf(tools));
+        replay.put("deniedPolicies", List.copyOf(deniedPolicies));
+        replay.put("events", events);
+        return replay;
+    }
+
     private void requireAdmin(Long userId) {
         if (!userService.isAdmin(userId)) {
             throw new ApiException(ErrorCode.FORBIDDEN, "仅管理员可查看审计数据");

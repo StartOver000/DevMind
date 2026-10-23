@@ -36,13 +36,59 @@ class ToolCallLogRepositoryTest {
 
     @Test
     void insertPassesAllFields() {
-        ToolCallLog log = new ToolCallLog(1L, 2L, "kb_search", "builtin", "agent", null, "success", 12, null);
+        ToolCallLog log = new ToolCallLog(1L, 2L, "kb_search", "builtin", "agent", null, "success", 12, null,
+                "abc123", "ALLOW", "DEFAULT_ALLOW");
 
         repository.insert(log);
 
         verify(jdbcTemplate).update(anyString(),
                 eq(1L), eq(2L), eq("kb_search"), eq("builtin"), eq("agent"),
-                isNull(), eq("success"), eq(12L), isNull());
+                isNull(), eq("success"), eq(12L), isNull(),
+                eq("abc123"), eq("ALLOW"), eq("DEFAULT_ALLOW"));
+    }
+
+    @Test
+    void legacyConstructorDefaultsToAllow() {
+        ToolCallLog log = new ToolCallLog(1L, 2L, "kb_search", "builtin", "agent", null, "success", 12, null);
+
+        assertThat(log.decision()).isEqualTo("ALLOW");
+        assertThat(log.policyId()).isNull();
+        assertThat(log.argsHash()).isNull();
+    }
+
+    @Test
+    void logsSelectExposesDecisionAndPolicy() {
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of());
+
+        repository.logs(1L, 2L, 7, 10);
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForList(sql.capture(), any(Object[].class));
+        assertThat(sql.getValue()).contains("decision").contains("policy_id").contains("args_hash");
+    }
+
+    @Test
+    void timelineFiltersByUserAndOrdersAscending() {
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of());
+
+        repository.timeline(1L, 2L, 30);
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).queryForList(sql.capture(), args.capture());
+        assertThat(sql.getValue()).contains("user_id = ?").contains("ORDER BY id ASC");
+        assertThat(args.getValue()).containsExactly(1L, 2L, 30);
+    }
+
+    @Test
+    void timelineCapsWindowAtOneDay() {
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of());
+
+        repository.timeline(1L, 2L, 99999);
+
+        ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).queryForList(anyString(), args.capture());
+        assertThat(args.getValue()[2]).isEqualTo(1440);
     }
 
     @Test

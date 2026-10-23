@@ -508,22 +508,52 @@ public class DatabaseInitializer implements ApplicationRunner {
         jdbcTemplate.execute("""
                 CREATE INDEX IF NOT EXISTS idx_workflow_approval_run ON workflow_approval(run_id)
                 """);
+        // 操作证据链（G3）：审批决定 / 执行结果各一行，record_hash 由前序哈希串成链，事后可校验。
+        // 只落状态摘要（SHA-256），不落变量原文。
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS operation_evidence (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id BIGINT NOT NULL DEFAULT 1,
+                    run_id BIGINT NOT NULL,
+                    approval_id BIGINT,
+                    action VARCHAR(20) NOT NULL,                -- APPROVE | REJECT | EXECUTE
+                    node_title VARCHAR(500),
+                    decided_by VARCHAR(255),
+                    comment VARCHAR(1000),
+                    before_hash VARCHAR(64),                    -- 决定前状态摘要
+                    after_hash VARCHAR(64),                     -- 执行后状态摘要
+                    prev_hash VARCHAR(64) NOT NULL,             -- 上一条 record_hash；链首 GENESIS
+                    record_hash VARCHAR(64) NOT NULL,           -- 本条 SHA-256
+                    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE INDEX IF NOT EXISTS idx_operation_evidence_run ON operation_evidence(tenant_id, run_id)
+                """);
         // 工具调用审计：Agent / 工作流每次工具调用的完整轨迹（M2-3）
+        // G1 追加：args_hash/decision/policy_id —— 审计不落参数原文，只落摘要 + 授权结论
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS tool_call_log (
                     id BIGSERIAL PRIMARY KEY,
                     tenant_id BIGINT NOT NULL DEFAULT 1,
                     user_id BIGINT NOT NULL,
                     tool_name VARCHAR(100) NOT NULL,
-                    tool_type VARCHAR(20) NOT NULL DEFAULT 'builtin',  -- builtin | interface
+                    tool_type VARCHAR(20) NOT NULL DEFAULT 'builtin',  -- builtin | interface | mcp
                     source VARCHAR(20) NOT NULL DEFAULT 'agent',       -- agent | workflow
                     workflow_run_id BIGINT,
-                    status VARCHAR(10) NOT NULL DEFAULT 'success',     -- success | fail
+                    status VARCHAR(10) NOT NULL DEFAULT 'success',     -- success | fail | denied
                     cost_ms BIGINT NOT NULL DEFAULT 0,
                     error VARCHAR(500),
+                    args_hash VARCHAR(64),                             -- 参数 SHA-256（不落原文）
+                    decision VARCHAR(10) NOT NULL DEFAULT 'ALLOW',     -- ALLOW | DENY
+                    policy_id VARCHAR(40),                             -- 命中的授权策略号
                     created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """);
+        // 旧库升级（G1）：已有 tool_call_log 补三列
+        jdbcTemplate.execute("ALTER TABLE tool_call_log ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64)");
+        jdbcTemplate.execute("ALTER TABLE tool_call_log ADD COLUMN IF NOT EXISTS decision VARCHAR(10) NOT NULL DEFAULT 'ALLOW'");
+        jdbcTemplate.execute("ALTER TABLE tool_call_log ADD COLUMN IF NOT EXISTS policy_id VARCHAR(40)");
         jdbcTemplate.execute("""
                 CREATE INDEX IF NOT EXISTS idx_tool_call_log_time ON tool_call_log(created_time)
                 """);

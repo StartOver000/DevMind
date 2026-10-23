@@ -15,6 +15,12 @@ import java.util.Map;
 @Component
 public class UsageQueryTool implements AgentTool {
 
+    /** 只读工具：查询模型用量，无副作用 */
+    @Override
+    public boolean writeOperation() {
+        return false;
+    }
+
     private final ModelUsageService modelUsageService;
     private final ObjectMapper objectMapper;
 

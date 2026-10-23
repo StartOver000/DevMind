@@ -92,6 +92,15 @@ public class InterfaceToolAdapter implements AgentTool {
         return "{\"type\":\"object\",\"properties\":{}}";
     }
 
+    /**
+     * 接口工具的副作用由 HTTP 方法决定：GET 视为读，其余（POST/PUT/PATCH/DELETE）视为写。
+     * 方法解析与执行时保持一致（同样走 {@link #parseMethod()}），避免判定和实际请求不一致。
+     */
+    @Override
+    public boolean writeOperation() {
+        return parseMethod() != HttpMethod.GET;
+    }
+
     @Override
     public String execute(String argumentsJson, Long userId) {
         try {

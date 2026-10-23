@@ -179,15 +179,56 @@ POST            /api/sql-diagnosis                       # SQL 执行计划诊�
 GET             /api/evaluations/retrieval               # 检索评估（48 条样本）
 GET             /api/model-usage                         # 模型用量
 GET             /api/audit-logs                          # 审计日志
+GET             /api/admin/audit/tools/replay?userId=2&minutes=30  # 操作回放（G2）
+GET             /api/audit/operations/{runId}             # 操作证据包 + 链校验（G4，管理员）
 POST            /api/auth/login                          # 登录
 ```
+
+## 执行期授权与操作回放
+
+工具调用在**执行期**（不只是接入期）有两道收口，都挂在 `ToolRegistry` 这个唯一出口上：
+
+| 环节 | 机制 | 配置 |
+| --- | --- | --- |
+| 调用前授权 `ToolGuard` | 按「任务模式 × 是否写操作 × 用户角色 × 工具名」判定；拒绝时**不执行工具**，返回 `denied` 并落审计 | `DEVMIND_GUARD_ENABLED`（默认 true）、`DEVMIND_GUARD_WRITE_ROLES`（默认 ADMIN）、`DEVMIND_GUARD_DENIED_TOOLS`（逗号分隔） |
+| 调用后留痕 | 每次调用写 `tool_call_log`：授权结论 `decision`、命中策略 `policy_id`、参数摘要 `args_hash`（参数原文不入库） | 无需配置 |
+
+策略优先级（命中即停）：`GUARD_DISABLED` → `TOOL_DENIED` → `TASK_SCOPE_READ_ONLY` → `WRITE_REQUIRES_ROLE` → `DEFAULT_ALLOW`；另有 `GUARD_ERROR`：判定所需的角色解析本身失败（DB 抖动等）时按拒绝处理并留痕，宁可拦错也不静默放行。
+
+任务模式随请求传入（`taskMode`）：`read_only` 任务里所有写工具被拦截（例：「总结工单」任务中模型试图提交报销 → 拒绝）；写工具还要求用户具备写角色。写操作由 `AgentTool#writeOperation()` 声明——**默认 true（fail-closed）**：新工具忘了标注会被拦下而不是放行；8 个只读内置工具显式标注为读，接口工具按 HTTP 方法判定（GET 为读），MCP 工具一律视为写。`taskMode` 为空按 `write`（兼容旧客户端），非空但拼错（如 `read_onlyy`）直接 400，不会静默降级为可写。判定写在**工具真正执行前**，因此拒绝不会产生任何副作用。收口范围：Agent 工具（含 `update_skill` / `delete_memory` / `run_workflow` 三个内部特判工具，它们不经过 registry，被拦时同样写 `tool_call_log`）、工作流步骤、接口工具都经过 `ToolRegistry`；入站 MCP Server（`kb_search` / `kb_chat` 等只读路径）与接口连通性测试不经过 registry，只记 `audit_log`——这是刻意保留的边界，不是遗漏。
+
+**升级影响与回滚**：把 `DEVMIND_GUARD_ENABLED` 保持默认 `true` 时，`DEVMIND_GUARD_WRITE_ROLES` 默认只有 `ADMIN`。工作流/定时任务/webhook 用**创建者**的 userId 执行，因此非管理员创建的、含 POST/PUT/DELETE 接口步骤的工作流在升级后会 `denied`。要么把演示用户设为 ADMIN，要么放宽写角色（`DEVMIND_GUARD_WRITE_ROLES=ADMIN,USER`）；需要完全退回旧行为时 `DEVMIND_GUARD_ENABLED=false`（仍会落 `ALLOW` 审计）。
+
+操作回放把这套留痕变成可读的时间线：`GET /api/admin/audit/tools/replay` 返回某用户最近 N 分钟的每次调用（放行/拦截、命中策略、参数摘要、结果、耗时）+ 拒绝摘要；前端在「审计日志 → 操作回放」页签。
+
+## 审批与执行证据链
+
+高风险节点（`approve` 步）通过后不只是改状态：审批决定与随后的执行结果各落一条证据到 `operation_evidence`，用前序哈希串成链（`prev_hash` → `record_hash`），事后可按 run 校验「顺序没被静默改过」。
+
+- 证据只存**状态摘要**（`before_hash` / `after_hash`，SHA-256），不存变量原文；拒绝同样留证（`REJECT`）。
+- 哈希口径是稳定契约：`SHA-256(tenantId|runId|approvalId|action|nodeTitle|decidedBy|comment|beforeHash|afterHash|prevHash)`，链首 `prevHash=GENESIS`。**改口径等于改协议**：历史行不能用新口径复算，升级时要么重建证据表，要么保留旧字段口径。
+- 证据写入是旁路：失败只告警，不影响审批与执行主流程。
+- 边界：单库单机下它能证明「记录之后没被应用层误改、且与前一条同源」，不是 WORM，也不是对外可验的第三方存证。
+
+证据包端点：`GET /api/audit/operations/{runId}`（管理员）返回一次运行的全部证据 + 链校验结果：
+
+```json
+{ "runId": 100, "valid": true, "recordCount": 2, "brokenIndex": -1, "reason": null,
+  "approved": true, "rejected": false, "executed": true, "decidedBy": "7",
+  "lastRecordHash": "…", "records": [ { "action": "APPROVE", "beforeHash": "…",
+  "prevHash": "GENESIS", "recordHash": "…" }, … ] }
+```
+
+`valid=false` 时 `brokenIndex`（1-based 记录序号，空链为 -1）与 `reason` 指出断点：哈希被改 →「哈希不匹配」；记录被删/乱序 →「前序哈希断链」；链首被删 →「链首前序哈希不是 GENESIS」。**删链尾检测不到**：链尾没有外部锚点，删掉最后一条仍会 `valid=true`，要防这一点需把末条哈希锚到 `workflow_run` 或第二存储，本次没做。演示 C2 就是手工 `UPDATE` 一条证据再查这个端点，看它变红。存量库的表结构由 `db/migration/V4__guard_audit_evidence.sql` 升级（与 `DatabaseInitializer` 的 baseline DDL 一致）。
+
+前端入口：审计日志 → 操作回放，表格里带 `workflow_run_id` 的行有「查看」按钮，点开右侧抽屉显示链校验状态、四要素摘要（决定/决定人/记录数/末条哈希）与逐条证据（动作/节点/决定人/前序哈希/状态摘要/本条哈希），断链那一条高亮标红（`frontend/src/components/EvidenceDrawer.vue`）。
 
 ## 架构决策（主动取舍）
 
 | 决策 | 理由 |
 | --- | --- |
 | **JdbcTemplate 直用，不引 ORM** | pgvector 向量检索需要精确控制 SQL（`<=>` 距离、HNSW、jsonb 过滤）；JdbcTemplate 可读可控，避免 ORM 对向量类型的阻抗 |
-| **启动幂等建表，不用 Flyway** | 单机作品数据量小、表结构演进靠 ALTER 幂等，刻意不引入迁移框架；若演进到多实例会补 Flyway |
+| **启动幂等建表 + `db/migration` 迁移** | `DatabaseInitializer` 负责全新库的 baseline（幂等建表），结构与基线不一致的存量库由 `SchemaMigrator` 按 `V{n}__*.sql` 升级并校验校验和；这样既保留「一条命令起库」的便利，又让结构变更可追踪 |
 | **限流 120/min/路径/用户** | 防刷设计（防 AI 工具被无限调用产生费用）；压测时显式调高排除干扰 |
 | **同工作流并发排队串行** | 并发触发从「拒绝」改「排队」（per-workflow 闸门 + 上限/超时兜底）；不同工作流互不影响 |
 | **单实例，不用 Nacos/注册中心** | 演示与单机场景无多实例需求；模型多级备援已在网关层解决可用性 |
@@ -195,7 +236,7 @@ POST            /api/auth/login                          # 登录
 ## 质量证据
 
 - **CI**：GitHub Actions 全绿，~2min（并行 + 依赖缓存 + 跳过冗余步骤）
-- **测试**：后端 **496** 单测/集成（含越权/注入防护/模型降级/并发排队/Agent 组件/工作流 Loop 与断点/记忆分层/Faithfulness/**MCP 工具契约**）+ 前端 43 vitest + **6 条 Playwright E2E**，全绿
+- **测试**：后端 **544** 单测/集成（含越权/注入防护/模型降级/并发排队/Agent 组件/工作流 Loop 与断点/记忆分层/Faithfulness/**MCP 工具契约**/**执行期授权与证据链**）+ 前端 **49** vitest + **6 条 Playwright E2E**，全绿
 - **Agent 行为评测**：真实模型 **8/8 = 100%** 工具选择（含内置工具 + Stripe 真实接口 + 复合任务，DeepSeek 官方复验 35 秒跑完）；真实模型累计 1,884 次调用成本仅 **$0.5**
 - **二期端到端**：MCP Server 冒烟（SSE 握手 → tools/list → kb_search 真实命中 → kb_chat 带引用回答 → `mcp.*` 审计落盘）`scripts/mcp/mcp-smoke.mjs` 可复跑；WorkflowEngine SPI 契约测试（builtin 行为零变化）
 - **压测基线**（mock，16 并发，100% 成功）：

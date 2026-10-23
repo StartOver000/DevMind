@@ -16,6 +16,17 @@ public interface AgentTool {
     String parametersJsonSchema();
 
     /**
+     * 是否为有副作用的写操作（G1 授权判定用）。
+     *
+     * <p><b>默认 true（fail-closed）</b>：新工具若忘了标注，在只读任务里会被拦下，
+     * 而不是被静默放行；只读工具必须显式覆写为 {@code false}。
+     * 接口工具按 HTTP 方法判定（GET 为读），MCP 工具一律视为写。</p>
+     */
+    default boolean writeOperation() {
+        return true;
+    }
+
+    /**
      * 执行工具并返回结果（文本或 JSON）。
      *
      * @param argumentsJson 模型生成的参数（JSON）

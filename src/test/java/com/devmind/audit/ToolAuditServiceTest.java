@@ -74,4 +74,47 @@ class ToolAuditServiceTest {
         assertThat(service.workflowStats(2L, 7)).isEmpty();
         verify(runRepository).statsByWorkflow(1L, 7);
     }
+
+    // ---------- G2 回放：一次操作的时间线 + 拒绝摘要 ----------
+
+    @Test
+    void adminReplayAggregatesDeniedCallsAndPolicies() {
+        when(userService.isAdmin(1L)).thenReturn(true);
+        when(userService.tenantIdOf(1L)).thenReturn(1L);
+        when(callLogRepository.timeline(1L, 2L, 30)).thenReturn(List.of(
+                Map.of("id", 10, "tool_name", "kb_search", "decision", "ALLOW", "policy_id", "DEFAULT_ALLOW"),
+                Map.of("id", 11, "tool_name", "reimburse_submit", "decision", "DENY", "policy_id", "TASK_SCOPE_READ_ONLY"),
+                Map.of("id", 12, "tool_name", "reimburse_submit", "decision", "DENY", "policy_id", "WRITE_REQUIRES_ROLE")
+        ));
+
+        Map<String, Object> replay = service.adminReplay(1L, 2L, 30);
+
+        assertThat(replay).containsEntry("total", 3).containsEntry("denied", 2);
+        assertThat(asStrings(replay.get("deniedPolicies")))
+                .containsExactly("TASK_SCOPE_READ_ONLY", "WRITE_REQUIRES_ROLE");
+        assertThat(asStrings(replay.get("tools"))).containsExactly("kb_search", "reimburse_submit");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> asStrings(Object value) {
+        return (List<String>) value;
+    }
+
+    @Test
+    void adminReplayRequiresTargetUser() {
+        when(userService.isAdmin(1L)).thenReturn(true);
+
+        assertThatThrownBy(() -> service.adminReplay(1L, null, 30))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("userId");
+    }
+
+    @Test
+    void adminReplayRejectsNonAdmin() {
+        when(userService.isAdmin(2L)).thenReturn(false);
+
+        assertThatThrownBy(() -> service.adminReplay(2L, 1L, 30))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("管理员");
+    }
 }

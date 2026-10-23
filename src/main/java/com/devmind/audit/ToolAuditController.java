@@ -60,4 +60,17 @@ public class ToolAuditController {
     ) {
         return auditService.adminToolLogs(operatorId, userId, days, limit);
     }
+
+    /**
+     * 管理员：回放某用户最近 N 分钟的工具调用时间线（G2）。
+     * 每条含授权结论（decision）、命中策略号（policy_id）、参数摘要（args_hash）、结果与耗时。
+     */
+    @GetMapping("/api/admin/audit/tools/replay")
+    public Map<String, Object> adminToolReplay(
+            @RequestParam Long userId,
+            @RequestParam(defaultValue = "30") int minutes,
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long operatorId
+    ) {
+        return auditService.adminReplay(operatorId, userId, minutes);
+    }
 }

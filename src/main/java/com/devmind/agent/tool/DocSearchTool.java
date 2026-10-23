@@ -19,6 +19,12 @@ import java.util.Map;
 @Component
 public class DocSearchTool implements AgentTool {
 
+    /** 只读工具：按名称检索文档，无副作用 */
+    @Override
+    public boolean writeOperation() {
+        return false;
+    }
+
     private final DocumentRepository documentRepository;
     private final ObjectMapper objectMapper;
 

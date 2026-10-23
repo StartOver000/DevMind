@@ -63,6 +63,15 @@ public class McpAgentTool implements AgentTool {
         return parametersJsonSchema;
     }
 
+    /**
+     * MCP 工具无法静态区分读写（inputSchema 里没有副作用声明），保守一律视为写操作：
+     * 只读任务下 MCP 工具会被拒绝，需要时用 {@code devmind.guard.write-roles} 放行。
+     */
+    @Override
+    public boolean writeOperation() {
+        return true;
+    }
+
     @Override
     public String execute(String argumentsJson, Long userId) {
         McpSyncClient client = clientHolder.client();

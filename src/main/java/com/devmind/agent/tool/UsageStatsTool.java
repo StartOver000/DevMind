@@ -16,6 +16,12 @@ import java.util.Map;
 @Component
 public class UsageStatsTool implements AgentTool {
 
+    /** 只读工具：查询用量统计，无副作用 */
+    @Override
+    public boolean writeOperation() {
+        return false;
+    }
+
     private final ToolAuditService auditService;
     private final ObjectMapper objectMapper;
 

@@ -146,6 +146,14 @@ devmind:
   zhipu-embedding-model: ${DEVMIND_ZHIPU_EMBEDDING_MODEL:embedding-2}
   zhipu-max-tokens: ${DEVMIND_ZHIPU_MAX_TOKENS:2000}
   auth-enabled: ${DEVMIND_AUTH_ENABLED:false}
+  # 执行期授权（G1）：工具真正执行前按「任务模式 + 角色 + 拒绝清单」判定；
+  # 拒绝时不执行工具、审计落 status=denied + 策略号。关掉即回到 G1 之前的完全放行。
+  guard:
+    enabled: ${DEVMIND_GUARD_ENABLED:true}
+    # 允许执行写操作的角色（逗号分隔）。角色当前由 userService.isAdmin 映射为 ADMIN/USER
+    write-roles: ${DEVMIND_GUARD_WRITE_ROLES:ADMIN}
+    # 一律拒绝的工具名（逗号分隔），优先于其它规则
+    denied-tools: ${DEVMIND_GUARD_DENIED_TOOLS:}
   quota:
     daily-calls-limit: ${DEVMIND_QUOTA_DAILY_CALLS:0}
     daily-cost-limit: ${DEVMIND_QUOTA_DAILY_COST:0}

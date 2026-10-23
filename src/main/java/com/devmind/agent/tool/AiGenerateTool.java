@@ -16,6 +16,12 @@ import java.util.Map;
 @Component
 public class AiGenerateTool implements AgentTool {
 
+    /** 只读工具：纯文本生成，不落库、无副作用 */
+    @Override
+    public boolean writeOperation() {
+        return false;
+    }
+
     private final ChatRouter chatRouter;
     private final ObjectMapper objectMapper;
 

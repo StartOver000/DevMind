@@ -1,6 +1,7 @@
 package com.devmind.agent;
 
 import com.devmind.agent.dto.AgentChatRequest;
+import com.devmind.guard.TaskMode;
 import com.devmind.agent.dto.AgentChatResponse;
 import com.devmind.agent.dto.AgentMessage;
 import com.devmind.agent.dto.MemoryUpdateRequest;
@@ -270,6 +271,13 @@ public class AgentService {
         }
         // LLM 输入统一防护（P1-1）：对话内容命中 Prompt 注入模式即拒绝，防止注入指令进入模型
         llmInputGuard.checkText(rawQuestion);
+        // 任务模式（G1）：READ_ONLY 时本次对话的写工具在执行前被拒绝；空 = WRITE，拼错直接 400
+        TaskMode taskMode;
+        try {
+            taskMode = TaskMode.from(request.taskMode());
+        } catch (IllegalArgumentException ex) {
+            throw new ApiException(ErrorCode.INVALID_ARGUMENT, ex.getMessage());
+        }
         // 上传文件注入：fileIds 对应的文本作为分析上下文拼到问题前
         String question = enrichWithFiles(rawQuestion, request.fileIds(), userId);
 
@@ -403,12 +411,12 @@ public class AgentService {
                 for (AiModelGateway.ToolCall tc : toolCalls) {
                     if (AgentTools.PLAN_TOOL_NAME.equals(tc.name())) {
                         hasPlan = true;
-                        if (!toolExecutor.executePlan(tc, userId, messages, trace, onTrace, conversationId)) {
+                        if (!toolExecutor.executePlan(tc, userId, messages, trace, onTrace, conversationId, taskMode)) {
                             planAllOk = false;
                         }
                     } else if (AgentTools.UPDATE_SKILL_TOOL_NAME.equals(tc.name())) {
                         // 对话式修正技能：特判执行，结果回填
-                        AgentToolExecutor.ToolExecOutcome outcome = toolExecutor.executeUpdateSkill(tc, userId);
+                        AgentToolExecutor.ToolExecOutcome outcome = toolExecutor.executeUpdateSkill(tc, userId, taskMode);
                         trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
                     } else if (AgentTools.LOAD_SKILL_TOOL_NAME.equals(tc.name())) {
                         // 按需加载技能全文：特判执行，结果回填
@@ -416,15 +424,15 @@ public class AgentService {
                         trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
                     } else if (AgentTools.DELETE_MEMORY_TOOL_NAME.equals(tc.name())) {
                         // 对话式删除长期记忆：特判执行，结果回填
-                        AgentToolExecutor.ToolExecOutcome outcome = toolExecutor.executeDeleteMemory(tc, userId);
+                        AgentToolExecutor.ToolExecOutcome outcome = toolExecutor.executeDeleteMemory(tc, userId, taskMode);
                         trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
                     } else if (AgentTools.RUN_WORKFLOW_TOOL_NAME.equals(tc.name())) {
                         // 技能引用工作流联动执行：特判执行，结果回填
-                        AgentToolExecutor.ToolExecOutcome outcome = toolExecutor.executeRunWorkflow(tc, userId);
+                        AgentToolExecutor.ToolExecOutcome outcome = toolExecutor.executeRunWorkflow(tc, userId, taskMode);
                         trace.add(toolExecutor.backfillTool(tc, outcome, messages, conversationId, onTrace));
                     } else {
                         parallelCalls.add(tc);
-                        futures.put(tc, toolExecutor.submitExecute(tc, userId));
+                        futures.put(tc, toolExecutor.submitExecute(tc, userId, taskMode));
                     }
                 }
                 // 并发工具：按 tool_calls 原顺序等待结果并回填，保证 tool 消息与调用一一对应

@@ -24,6 +24,12 @@ import java.util.Map;
 @Component
 public class KbSearchTool implements AgentTool {
 
+    /** 只读工具：知识库混合检索，无副作用 */
+    @Override
+    public boolean writeOperation() {
+        return false;
+    }
+
     private static final Logger log = LoggerFactory.getLogger(KbSearchTool.class);
 
     private final RetrievalService retrievalService;

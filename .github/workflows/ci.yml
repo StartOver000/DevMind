@@ -124,7 +124,7 @@ jobs:
       # type=gha 缓存：pom.xml/Dockerfile 未变时依赖下载与编译层跨 run 复用，
       # 避免每次 push 都重新下载全部 Maven 依赖（docker job 从 ~10min 降到 ~1-2min）。
       - name: Build Docker image (cached)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: false

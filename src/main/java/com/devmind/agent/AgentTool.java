@@ -27,6 +27,17 @@ public interface AgentTool {
     }
 
     /**
+     * 本次调用实际以谁的身份执行（写入审计 tool_call_log.executed_as）。
+     *
+     * <p>默认按平台服务账号执行：{@code service:<工具名>}。支持「以调用人身份执行」的工具
+     * （如接口工具配置了 identity=passthrough）应覆写为 {@code user:<用户 id>}，
+     * 让证据链能回答「业务系统里到底是谁干的」，而不只是「哪个 AI 调了」。</p>
+     */
+    default String executedAs(Long userId) {
+        return "service:" + name();
+    }
+
+    /**
      * 执行工具并返回结果（文本或 JSON）。
      *
      * @param argumentsJson 模型生成的参数（JSON）

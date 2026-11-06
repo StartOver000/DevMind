@@ -191,7 +191,8 @@ POST            /api/auth/login                          # 登录
 | 环节 | 机制 | 配置 |
 | --- | --- | --- |
 | 调用前授权 `ToolGuard` | 按「任务模式 × 是否写操作 × 用户角色 × 工具名」判定；拒绝时**不执行工具**，返回 `denied` 并落审计 | `DEVMIND_GUARD_ENABLED`（默认 true）、`DEVMIND_GUARD_WRITE_ROLES`（默认 ADMIN）、`DEVMIND_GUARD_DENIED_TOOLS`（逗号分隔） |
-| 调用后留痕 | 每次调用写 `tool_call_log`：授权结论 `decision`、命中策略 `policy_id`、参数摘要 `args_hash`（参数原文不入库） | 无需配置 |
+| 调用后留痕 | 每次调用写 `tool_call_log`：授权结论 `decision`、命中策略 `policy_id`、参数摘要 `args_hash`（参数原文不入库）、实际执行身份 `executed_as` | 无需配置 |
+| 执行身份 | 接口工具可配置为「以调用人身份执行」：把调用人 ID 注入下游请求头，审计记 `user:<id>`；未配置则服务账号代持，审计记 `service:<工具名>` | 工具 `auth_config` 的 `identity` 段，见下 |
 
 策略优先级（命中即停）：`GUARD_DISABLED` → `TOOL_DENIED` → `TASK_SCOPE_READ_ONLY` → `WRITE_REQUIRES_ROLE` → `DEFAULT_ALLOW`；另有 `GUARD_ERROR`：判定所需的角色解析本身失败（DB 抖动等）时按拒绝处理并留痕，宁可拦错也不静默放行。
 
@@ -199,7 +200,16 @@ POST            /api/auth/login                          # 登录
 
 **升级影响与回滚**：把 `DEVMIND_GUARD_ENABLED` 保持默认 `true` 时，`DEVMIND_GUARD_WRITE_ROLES` 默认只有 `ADMIN`。工作流/定时任务/webhook 用**创建者**的 userId 执行，因此非管理员创建的、含 POST/PUT/DELETE 接口步骤的工作流在升级后会 `denied`。要么把演示用户设为 ADMIN，要么放宽写角色（`DEVMIND_GUARD_WRITE_ROLES=ADMIN,USER`）；需要完全退回旧行为时 `DEVMIND_GUARD_ENABLED=false`（仍会落 `ALLOW` 审计）。
 
-操作回放把这套留痕变成可读的时间线：`GET /api/admin/audit/tools/replay` 返回某用户最近 N 分钟的每次调用（放行/拦截、命中策略、参数摘要、结果、耗时）+ 拒绝摘要；前端在「审计日志 → 操作回放」页签。
+操作回放把这套留痕变成可读的时间线：`GET /api/admin/audit/tools/replay` 返回某用户最近 N 分钟的每次调用（放行/拦截、命中策略、参数摘要、结果、耗时、执行身份）+ 拒绝摘要；前端在「审计日志 → 操作回放」页签，调用明细与回放时间线都展示「执行身份」列。
+
+**执行身份（谁的身份执行）**：接口工具默认用工具自己配置的凭据（服务账号）调用，此时审计记 `service:<工具名>`——出事时业务系统里的操作人是服务账号，追责链是断的。配置透传后改为「以调用人身份执行」，审计记 `user:<id>`，业务系统记录的也是调用人：
+
+```json
+{ "auth_type": "api_key", "auth_config": { "header": "X-API-Key", "value": "...",
+  "identity": { "mode": "passthrough", "header": "X-Operator-Id" } } }
+```
+
+透传只在有调用人时生效（Agent 任务带 userId；定时/系统触发无调用人则不注入，仍按服务账号执行并记 `service:`）。下游要认这个头才算真透传——配置前先确认业务系统会把 `X-Operator-Id` 记为操作人，否则只是换了标签。
 
 ## 审批与执行证据链
 
@@ -219,7 +229,7 @@ POST            /api/auth/login                          # 登录
   "prevHash": "GENESIS", "recordHash": "…" }, … ] }
 ```
 
-`valid=false` 时 `brokenIndex`（1-based 记录序号，空链为 -1）与 `reason` 指出断点：哈希被改 →「哈希不匹配」；记录被删/乱序 →「前序哈希断链」；链首被删 →「链首前序哈希不是 GENESIS」。**删链尾检测不到**：链尾没有外部锚点，删掉最后一条仍会 `valid=true`，要防这一点需把末条哈希锚到 `workflow_run` 或第二存储，本次没做。演示 C2 就是手工 `UPDATE` 一条证据再查这个端点，看它变红。存量库的表结构由 `db/migration/V4__guard_audit_evidence.sql` 升级（与 `DatabaseInitializer` 的 baseline DDL 一致）。
+`valid=false` 时 `brokenIndex`（1-based 记录序号，空链为 -1）与 `reason` 指出断点：哈希被改 →「哈希不匹配」；记录被删/乱序 →「前序哈希断链」；链首被删 →「链首前序哈希不是 GENESIS」。**删链尾检测不到**：链尾没有外部锚点，删掉最后一条仍会 `valid=true`，要防这一点需把末条哈希锚到 `workflow_run` 或第二存储，本次没做。演示 C2 就是手工 `UPDATE` 一条证据再查这个端点，看它变红。存量库的表结构由 `db/migration/V4__guard_audit_evidence.sql`、`V5__execution_identity.sql` 升级（与 `DatabaseInitializer` 的 baseline DDL 一致）。
 
 前端入口：审计日志 → 操作回放，表格里带 `workflow_run_id` 的行有「查看」按钮，点开右侧抽屉显示链校验状态、四要素摘要（决定/决定人/记录数/末条哈希）与逐条证据（动作/节点/决定人/前序哈希/状态摘要/本条哈希），断链那一条高亮标红（`frontend/src/components/EvidenceDrawer.vue`）。
 
@@ -236,7 +246,7 @@ POST            /api/auth/login                          # 登录
 ## 质量证据
 
 - **CI**：GitHub Actions 全绿，~2min（并行 + 依赖缓存 + 跳过冗余步骤）
-- **测试**：后端 **544** 单测/集成（含越权/注入防护/模型降级/并发排队/Agent 组件/工作流 Loop 与断点/记忆分层/Faithfulness/**MCP 工具契约**/**执行期授权与证据链**）+ 前端 **49** vitest + **6 条 Playwright E2E**，全绿
+- **测试**：后端 **543** 单测/集成（含越权/注入防护/模型降级/并发排队/Agent 组件/工作流 Loop 与断点/记忆分层/Faithfulness/**MCP 工具契约**/**执行期授权、执行身份与证据链**）+ 前端 **51** vitest + **6 条 Playwright E2E**，全绿（本地无 PG 时 3 个需真库的集成测试报认证失败，属环境限制，CI 全绿）
 - **Agent 行为评测**：真实模型 **8/8 = 100%** 工具选择（含内置工具 + Stripe 真实接口 + 复合任务，DeepSeek 官方复验 35 秒跑完）；真实模型累计 1,884 次调用成本仅 **$0.5**
 - **二期端到端**：MCP Server 冒烟（SSE 握手 → tools/list → kb_search 真实命中 → kb_chat 带引用回答 → `mcp.*` 审计落盘）`scripts/mcp/mcp-smoke.mjs` 可复跑；WorkflowEngine SPI 契约测试（builtin 行为零变化）
 - **压测基线**（mock，16 并发，100% 成功）：

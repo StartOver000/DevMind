@@ -26,12 +26,12 @@ public class ToolCallLogRepository {
         jdbcTemplate.update("""
                 INSERT INTO tool_call_log
                     (tenant_id, user_id, tool_name, tool_type, source, workflow_run_id,
-                     status, cost_ms, error, args_hash, decision, policy_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     status, cost_ms, error, args_hash, decision, policy_id, executed_as)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 log.tenantId(), log.userId(), log.toolName(), log.toolType(),
                 log.source(), log.workflowRunId(), log.status(), log.costMs(), log.error(),
-                log.argsHash(), log.decision(), log.policyId()
+                log.argsHash(), log.decision(), log.policyId(), log.executedAs()
         );
     }
 
@@ -64,7 +64,7 @@ public class ToolCallLogRepository {
     public List<Map<String, Object>> logs(Long tenantId, Long userId, int days, int limit) {
         StringBuilder sql = new StringBuilder("""
                 SELECT id, user_id, tool_name, tool_type, source, workflow_run_id, status,
-                       decision, policy_id, args_hash, cost_ms, error, created_time
+                       decision, policy_id, args_hash, executed_as, cost_ms, error, created_time
                 FROM tool_call_log
                 WHERE tenant_id = ? AND created_time >= CURRENT_TIMESTAMP - make_interval(days => ?)
                 """);
@@ -88,7 +88,7 @@ public class ToolCallLogRepository {
         int window = Math.max(1, Math.min(minutes, 24 * 60));
         return jdbcTemplate.queryForList("""
                 SELECT id, user_id, tool_name, tool_type, source, workflow_run_id, status,
-                       decision, policy_id, args_hash, cost_ms, error, created_time
+                       decision, policy_id, args_hash, executed_as, cost_ms, error, created_time
                 FROM tool_call_log
                 WHERE tenant_id = ? AND user_id = ?
                   AND created_time >= CURRENT_TIMESTAMP - make_interval(mins => ?)
@@ -103,6 +103,7 @@ public class ToolCallLogRepository {
      * @param argsHash 参数摘要（不落原文，避免把敏感参数写进审计）
      * @param decision ALLOW / DENY（G1 授权结论）
      * @param policyId 命中的策略编号（回放时说明「为什么允许/为什么拦住」）
+     * @param executedAs 实际执行身份：service:&lt;工具名&gt;（平台服务账号）或 user:&lt;用户 id&gt;（以调用人身份执行）
      */
     public record ToolCallLog(
             Long tenantId,
@@ -116,13 +117,14 @@ public class ToolCallLogRepository {
             String error,
             String argsHash,
             String decision,
-            String policyId
+            String policyId,
+            String executedAs
     ) {
         /** 兼容旧调用点（G1 之前的 9 参形态） */
         public ToolCallLog(Long tenantId, Long userId, String toolName, String toolType,
                            String source, Long workflowRunId, String status, long costMs, String error) {
             this(tenantId, userId, toolName, toolType, source, workflowRunId, status, costMs, error,
-                    null, "ALLOW", null);
+                    null, "ALLOW", null, "service");
         }
     }
 }

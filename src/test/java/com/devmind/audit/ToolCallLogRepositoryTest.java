@@ -37,14 +37,45 @@ class ToolCallLogRepositoryTest {
     @Test
     void insertPassesAllFields() {
         ToolCallLog log = new ToolCallLog(1L, 2L, "kb_search", "builtin", "agent", null, "success", 12, null,
-                "abc123", "ALLOW", "DEFAULT_ALLOW");
+                "abc123", "ALLOW", "DEFAULT_ALLOW", "service:kb_search");
 
         repository.insert(log);
 
         verify(jdbcTemplate).update(anyString(),
                 eq(1L), eq(2L), eq("kb_search"), eq("builtin"), eq("agent"),
                 isNull(), eq("success"), eq(12L), isNull(),
-                eq("abc123"), eq("ALLOW"), eq("DEFAULT_ALLOW"));
+                eq("abc123"), eq("ALLOW"), eq("DEFAULT_ALLOW"), eq("service:kb_search"));
+    }
+
+    @Test
+    void insertPassesExecutedAs() {
+        ToolCallLog log = new ToolCallLog(1L, 2L, "create_order", "interface", "agent", null,
+                "success", 12, null, "abc123", "ALLOW", "DEFAULT_ALLOW", "user:2");
+
+        repository.insert(log);
+
+        verify(jdbcTemplate).update(anyString(),
+                eq(1L), eq(2L), eq("create_order"), eq("interface"), eq("agent"),
+                isNull(), eq("success"), eq(12L), isNull(),
+                eq("abc123"), eq("ALLOW"), eq("DEFAULT_ALLOW"), eq("user:2"));
+    }
+
+    @Test
+    void legacyConstructorDefaultsToServiceIdentity() {
+        ToolCallLog log = new ToolCallLog(1L, 2L, "kb_search", "builtin", "agent", null, "success", 12, null);
+
+        assertThat(log.executedAs()).isEqualTo("service");
+    }
+
+    @Test
+    void logsSelectExposesExecutedAs() {
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of());
+
+        repository.logs(1L, 2L, 7, 10);
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForList(sql.capture(), any(Object[].class));
+        assertThat(sql.getValue()).contains("executed_as");
     }
 
     @Test

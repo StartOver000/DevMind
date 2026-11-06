@@ -196,7 +196,9 @@ public class ToolRegistry {
                     source, workflowRunId, status, costMs, error,
                     hashArgs(argumentsJson),
                     decision.decision().name(),
-                    decision.policyId()
+                    decision.policyId(),
+                    // 执行身份：让审计能回答「业务系统里到底是谁干的」，而不只是「哪个 AI 调了」
+                    tool == null ? "service" : tool.executedAs(userId)
             ));
         } catch (Exception ex) {
             log.warn("工具调用审计写入失败 (tool={}): {}", name, ex.getMessage());

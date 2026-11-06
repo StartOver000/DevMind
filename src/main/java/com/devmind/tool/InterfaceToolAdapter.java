@@ -101,17 +101,32 @@ public class InterfaceToolAdapter implements AgentTool {
         return parseMethod() != HttpMethod.GET;
     }
 
+    /**
+     * 执行身份：配置了 identity=passthrough 且本次有调用人时，实际以该用户身份执行；
+     * 否则走工具自带的凭据（平台服务账号）。
+     */
+    @Override
+    public String executedAs(Long userId) {
+        if (userId != null) {
+            JsonNode cfg = readAuthConfig();
+            if (cfg != null && "passthrough".equalsIgnoreCase(cfg.path("identity").path("mode").asText(""))) {
+                return "user:" + userId;
+            }
+        }
+        return "service:" + def.name();
+    }
+
     @Override
     public String execute(String argumentsJson, Long userId) {
         try {
-            return doExecute(argumentsJson);
+            return doExecute(argumentsJson, userId);
         } catch (Exception ex) {
             log.warn("接口工具 {} 调用失败: {}", def.name(), ex.getMessage());
             return "{\"error\": \"接口调用失败: " + sanitize(ex.getMessage()) + "\"}";
         }
     }
 
-    private String doExecute(String argumentsJson) {
+    private String doExecute(String argumentsJson, Long userId) {
         String endpoint = def.endpointUrl();
         if (endpoint == null || endpoint.isBlank()) {
             return "{\"error\": \"接口工具未配置 endpointUrl\"}";
@@ -143,10 +158,14 @@ public class InterfaceToolAdapter implements AgentTool {
         if (ssrfError != null) {
             return ssrfError;
         }
-        // 鉴权（解密后注入）
+        // 鉴权 + 执行身份：配置只解密一次，两者共用同一份 auth_config
         Map<String, String> authHeaders = new LinkedHashMap<>();
         Map<String, String> authQuery = new LinkedHashMap<>();
-        applyAuth(authHeaders, authQuery);
+        JsonNode authConfig = readAuthConfig();
+        if (authConfig != null) {
+            applyAuth(authHeaders, authQuery, authConfig);
+            applyIdentity(authHeaders, userId, authConfig);
+        }
 
         UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(resolvedEndpoint);
         authQuery.forEach(uriBuilder::queryParam);
@@ -269,15 +288,26 @@ public class InterfaceToolAdapter implements AgentTool {
         return null;
     }
 
+    /** 解密并解析 auth_config（鉴权与执行身份共用）；缺失或解析失败返回 null */
+    private JsonNode readAuthConfig() {
+        if (def.authConfigEncrypted() == null || def.authConfigEncrypted().isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(secretCipher.resolve(def.authConfigEncrypted()));
+        } catch (Exception ex) {
+            log.warn("接口工具 {} 鉴权配置解析失败: {}", def.name(), ex.getMessage());
+            return null;
+        }
+    }
+
     /** 鉴权配置解析（解密后注入 header/query）；支持 none/api_key/basic/oauth2 */
-    private void applyAuth(Map<String, String> headers, Map<String, String> query) {
+    private void applyAuth(Map<String, String> headers, Map<String, String> query, JsonNode cfg) {
         String authType = def.authType() == null ? "none" : def.authType();
-        if ("none".equals(authType) || def.authConfigEncrypted() == null || def.authConfigEncrypted().isBlank()) {
+        if ("none".equals(authType)) {
             return;
         }
         try {
-            String plain = secretCipher.resolve(def.authConfigEncrypted());
-            JsonNode cfg = objectMapper.readTree(plain);
             switch (authType) {
                 case "api_key" -> {
                     String location = cfg.path("location").asText("header");
@@ -307,6 +337,25 @@ public class InterfaceToolAdapter implements AgentTool {
         } catch (Exception ex) {
             log.warn("接口工具 {} 鉴权配置解析失败: {}", def.name(), ex.getMessage());
         }
+    }
+
+    /**
+     * 执行身份透传（auth_config.identity）：{"identity":{"mode":"passthrough","header":"X-Operator-Id"}}。
+     * 下游据此记录真实操作人，而不是平台服务账号；无调用人（定时/系统触发）时不透传。
+     */
+    private void applyIdentity(Map<String, String> headers, Long userId, JsonNode cfg) {
+        if (userId == null) {
+            return;
+        }
+        JsonNode identity = cfg.path("identity");
+        if (identity.isMissingNode() || !"passthrough".equalsIgnoreCase(identity.path("mode").asText(""))) {
+            return;
+        }
+        String header = identity.path("header").asText("X-Operator-Id");
+        if (header == null || header.isBlank()) {
+            header = "X-Operator-Id";
+        }
+        headers.put(header, String.valueOf(userId));
     }
 
     /**

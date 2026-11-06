@@ -192,6 +192,59 @@ class InterfaceToolAdapterTest {
     }
 
     @Test
+    void passthroughIdentityInjectsCallerIdHeader() {
+        // 执行身份透传：以调用人身份执行——把调用人 id 作为请求头注入下游系统，
+        // 下游据此记录「真实操作人」，而不是平台服务账号。
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("http://api.example.com/orders"))
+                .andExpect(header("X-Operator-Id", "42"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+        when(secretCipher.resolve("enc:ident")).thenReturn(
+                "{\"identity\":{\"mode\":\"passthrough\",\"header\":\"X-Operator-Id\"}}");
+
+        InterfaceToolAdapter adapter = adapter(def(
+                "create_order", "http://api.example.com/orders", "POST", "none", "enc:ident", null));
+
+        adapter.execute("{}", 42L);
+        server.verify();
+    }
+
+    @Test
+    void passthroughWithoutCallerDoesNotInjectHeader() {
+        // 无调用人（工作流/定时任务）时不透传，避免注入 "null"
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("http://api.example.com/orders"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+        when(secretCipher.resolve("enc:ident")).thenReturn(
+                "{\"identity\":{\"mode\":\"passthrough\",\"header\":\"X-Operator-Id\"}}");
+
+        InterfaceToolAdapter adapter = adapter(def(
+                "create_order", "http://api.example.com/orders", "POST", "none", "enc:ident", null));
+
+        adapter.execute("{}", null);
+        server.verify();
+    }
+
+    @Test
+    void reportsCallerIdentityWhenPassthroughEnabled() {
+        when(secretCipher.resolve("enc:ident")).thenReturn(
+                "{\"identity\":{\"mode\":\"passthrough\",\"header\":\"X-Operator-Id\"}}");
+
+        InterfaceToolAdapter adapter = adapter(def(
+                "create_order", "http://api.example.com/orders", "POST", "none", "enc:ident", null));
+
+        assertThat(adapter.executedAs(42L)).isEqualTo("user:42");
+    }
+
+    @Test
+    void reportsServiceIdentityWhenToolUsesItsOwnCredential() {
+        InterfaceToolAdapter adapter = adapter(def(
+                "customer_query", "http://api.example.com/customers", "GET", "none", null, null));
+
+        assertThat(adapter.executedAs(42L)).isEqualTo("service:customer_query");
+    }
+
+    @Test
     void oauth2ExchangesTokenThenCallsBusinessApi() {
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         // 首次调用：先向 token_url 换 token（client_credentials）

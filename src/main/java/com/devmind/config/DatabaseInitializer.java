@@ -547,6 +547,7 @@ public class DatabaseInitializer implements ApplicationRunner {
                     args_hash VARCHAR(64),                             -- 参数 SHA-256（不落原文）
                     decision VARCHAR(10) NOT NULL DEFAULT 'ALLOW',     -- ALLOW | DENY
                     policy_id VARCHAR(40),                             -- 命中的授权策略号
+                    executed_as VARCHAR(64) NOT NULL DEFAULT 'service', -- service:<工具名> | user:<用户id>
                     created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """);
@@ -554,6 +555,8 @@ public class DatabaseInitializer implements ApplicationRunner {
         jdbcTemplate.execute("ALTER TABLE tool_call_log ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64)");
         jdbcTemplate.execute("ALTER TABLE tool_call_log ADD COLUMN IF NOT EXISTS decision VARCHAR(10) NOT NULL DEFAULT 'ALLOW'");
         jdbcTemplate.execute("ALTER TABLE tool_call_log ADD COLUMN IF NOT EXISTS policy_id VARCHAR(40)");
+        // 旧库升级（执行身份）：记录本次调用实际以谁的身份执行
+        jdbcTemplate.execute("ALTER TABLE tool_call_log ADD COLUMN IF NOT EXISTS executed_as VARCHAR(64) NOT NULL DEFAULT 'service'");
         jdbcTemplate.execute("""
                 CREATE INDEX IF NOT EXISTS idx_tool_call_log_time ON tool_call_log(created_time)
                 """);

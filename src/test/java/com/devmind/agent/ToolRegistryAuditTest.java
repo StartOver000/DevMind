@@ -117,6 +117,33 @@ class ToolRegistryAuditTest {
     }
 
     @Test
+    void auditRecordsIdentityReportedByTool() {
+        when(userService.tenantIdOf(42L)).thenReturn(1L);
+        AgentTool onBehalfOfUser = new AgentTool() {
+            @Override public String name() { return "create_order"; }
+            @Override public String description() { return "d"; }
+            @Override public String parametersJsonSchema() { return "{}"; }
+            @Override public String execute(String argumentsJson, Long userId) { return "ok"; }
+            @Override public String executedAs(Long userId) { return "user:" + userId; }
+        };
+        ToolRegistry scoped = new ToolRegistry(List.of(onBehalfOfUser),
+                auditRepository, toolDefinitionRepository, userService);
+
+        scoped.execute("create_order", "{}", 42L);
+
+        verify(auditRepository).insert(argThat(l -> "user:42".equals(l.executedAs())));
+    }
+
+    @Test
+    void auditDefaultsToServiceIdentity() {
+        when(userService.tenantIdOf(1L)).thenReturn(1L);
+
+        registry.execute("kb_search", "{}", 1L);
+
+        verify(auditRepository).insert(argThat(l -> "service:kb_search".equals(l.executedAs())));
+    }
+
+    @Test
     void legacyConstructorSkipsAudit() {
         ToolRegistry legacy = new ToolRegistry(List.of(tool("kb_search", "ok")));
         assertThat(legacy.execute("kb_search", "{}", 1L)).isEqualTo("ok");

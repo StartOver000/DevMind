@@ -111,12 +111,15 @@ onMounted(loadAudit);
           <div v-if="!logs.length" class="empty small">暂无工具调用记录</div>
           <table v-else>
             <thead>
-              <tr><th>时间</th><th>用户</th><th>工具</th><th>类型</th><th>来源</th><th>状态</th><th>耗时</th><th>错误</th></tr>
+              <tr><th>时间</th><th>用户</th><th>执行身份</th><th>工具</th><th>类型</th><th>来源</th><th>状态</th><th>耗时</th><th>错误</th></tr>
             </thead>
             <tbody>
               <tr v-for="log in logs" :key="log.id">
                 <td>{{ formatTime(log.created_time) }}</td>
                 <td>#{{ log.user_id }}</td>
+                <td class="identity-cell" :title="log.executed_as === 'service' ? '以平台服务账号执行' : ''">
+                  {{ log.executed_as || '-' }}
+                </td>
                 <td><b>{{ log.tool_name }}</b></td>
                 <td>{{ toolTypeLabel(log.tool_type) }}</td>
                 <td>{{ sourceLabel(log.source) }}</td>
@@ -156,13 +159,14 @@ onMounted(loadAudit);
             </div>
             <table v-else>
               <thead>
-                <tr><th>时间</th><th>工具</th><th>来源</th><th>授权</th><th>策略</th><th>参数摘要</th><th>状态</th><th>耗时</th><th>证据</th></tr>
+                <tr><th>时间</th><th>工具</th><th>来源</th><th>执行身份</th><th>授权</th><th>策略</th><th>参数摘要</th><th>状态</th><th>耗时</th><th>证据</th></tr>
               </thead>
               <tbody>
                 <tr v-for="ev in replay.events" :key="ev.id" :class="{ denied: ev.decision === 'DENY' }">
                   <td>{{ formatTime(ev.created_time) }}</td>
                   <td><b>{{ ev.tool_name }}</b></td>
                   <td>{{ sourceLabel(ev.source) }}</td>
+                  <td class="identity-cell">{{ ev.executed_as || '-' }}</td>
                   <td>
                     <span class="status-badge" :class="ev.decision === 'DENY' ? 'fail' : 'ok'">
                       {{ decisionLabel(ev.decision) }}
@@ -307,5 +311,13 @@ tr.denied {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   color: var(--muted);
+}
+
+/* 执行身份：user:<id> 表示以调用人身份执行，service:<工具名> 表示平台服务账号代持 */
+.identity-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 </style>
